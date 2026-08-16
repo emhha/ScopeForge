@@ -1,0 +1,13 @@
+# 形态 A(赛事,docs/06 §5.2):scopeforge + mock 平台(离线闭环)。
+# 启动: docker compose up -d --build;打开 http://localhost:8080
+services:
+  scopeforge:
+    build: ..
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data                     # 持久化 scopeforge.yaml / .env / scopeforge.db / reports
+    command: serve --addr :8080 --config /data
+
+  # 无平台服务:阶段二平台抽象层删除,目标与提交语义由 skill 卡承载。
+volumes: {}

@@ -1,0 +1,86 @@
+# ScopeForge 默认配置(首次启动会复制到 <dataDir>/scopeforge.yaml)。
+# 密钥只放环境变量或 ScopeForge home 的 .env(默认 ~/.scopeforge/.env;
+# --config DIR 时为 DIR/.env),不要把真实 key 写进本文件。
+#
+# 最小部署三件事:
+#   1) 按需修改 providers(至少保留一个实例)
+#   2) 在 ~/.scopeforge/.env 设置 DEEPSEEK_API_KEY
+#   3) 在 ~/.scopeforge/.env 设置 SCOPEFORGE_TOKEN(Web 写操作鉴权)
+providers:
+  - name: deepseek-main
+    kind: openai
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    pricing: { input: 0.27, output: 1.10, cache_hit: 0.027 }
+  # 本地 Ollama 或其他 OpenAI 兼容网关示例:
+  # - name: local-ollama
+  #   kind: openai
+  #   base_url: http://127.0.0.1:11434/v1
+  #   model: qwen3:32b
+  #   api_key_env: OLLAMA_API_KEY
+
+agent:
+  max_turns: 200
+  context_window: 65536
+  compact: { soft: 0.5, snip: 0.6, compact: 0.8, force: 0.9, tail: 16384 }
+  max_subagent_depth: 2
+  max_subagent_concurrency: 6
+  max_parallel_writers: 3
+
+tools:
+  permissions: auto
+  blacklist: ["rm -rf /", "sh -i", "bash -i >& /dev/tcp/", "--network host"]
+  domain_allowlist: ["*.example.com", "api.deepseek.com", "127.0.0.1"]
+
+skills:
+  dir: ""
+  paths: []
+  disabled: []
+
+mcp:
+  servers: []
+
+memory:
+  dir: ""
+
+platform:
+  task_profile:
+    goal_shape: coverage
+    description: ""
+    constraints:
+      targets: []
+      exclusions: []
+
+constraints:
+  max_cost_usd: 10
+  max_tokens_per_challenge: 0
+  max_turns_per_challenge: 300
+
+scheduler:
+  tick_interval: 30s
+  stale_timeout: 1h
+  max_concurrency: 5
+  reason_lease_ttl: 10m
+  max_ticks: 120
+  observer_every_n_turns: 3
+  worker_turns: { scout: 15, executor: 30, analyst: 15, synthesizer: 10 }
+
+models:
+  role_map: {}
+  race: false
+  gate: { max_concurrent: 0, min_interval: "" }
+  failover: []
+
+serve:
+  addr: ":8080"
+  auth: { token_env: SCOPEFORGE_TOKEN }
+
+capability:
+  tmux: { enabled: true, session_prefix: pf, capture_max_lines: 80 }
+  route: { enabled: true }
+  listener: { enabled: true, base_port: 18000 }
+  traffic: { enabled: true }
+  sandbox: { enabled: false, image: scopeforge-attacker, memory_mb: 512, pids: 512, network: bridge, tmpfs_size: 128m, dockerfile: deploy/executor/Dockerfile }
+  knowledge: { enabled: true, plugins_dir: "" }
+  guard: { enabled: true, deny_patterns: [], exfil_patterns: [] }

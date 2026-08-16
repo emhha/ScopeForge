@@ -1,0 +1,29 @@
+# 运行时产物
+scopeforge.db
+*.db
+*.db-shm
+*.db-wal
+reports/
+data/
+plugins/
+*.log
+bin/
+bench-out/
+bench-juice-out/
+
+# 测试产物
+*.out
+*.test
+
+# 前端
+web_back/
+web/node_modules/
+.bench-tmp/
+.env
+
+# 运行时 materialize 产物(内置技能/提示词解出目录,可从源码常量/builtinskills 重建)
+skills/
+prompts/
+internal/integration/skills/
+# agent 运行输出
+internal/api/webdist/
