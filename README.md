@@ -62,6 +62,21 @@ AI 自主渗透测试系统（Go 后端 + Vite 前端）
 
 ---
 
+## 本地构建
+
+需要 Go 1.26.3+、Node.js 22.22+、npm 和 GNU Make。
+
+```sh
+make                 # 构建前端并内嵌到 ./artex
+make build-backend   # 只构建后端，适合配合前端开发服务
+make run             # 开发运行后端，可加 ARGS="-addr :8787"
+make dev-web         # 另一个终端运行前端开发服务
+make test            # Go 测试、前端类型检查及测试
+make clean           # 清理产物
+```
+
+可通过 `VERSION=v1.0.0`、`BINARY=dist/artex`、`GO=go`、`NPM=npm` 覆盖构建参数。当前后端仍需要 PostgreSQL 配置；SQLite 与原生 tRPC 迁移进度见 [迁移计划](MIGRATION_PLAN.md)。
+
 ## 安装
 
 > 依赖数据库 **PostgreSQL**；探索需配置 **LLM**（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，也可在 UI 里配）。

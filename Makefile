@@ -6,7 +6,7 @@ BINARY ?= artex
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: build build-backend build-web release run dev-web test test-go test-web clean help
-build: build-backend
+build: release
 
 build-backend:
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/artex
@@ -19,7 +19,6 @@ build-web: web/node_modules/.scopeforge-deps
 	cd web && $(NPM) run build
 
 release: build-web
-	mkdir -p server/webui/dist
 	$(RM) -r server/webui/dist
 	mkdir -p server/webui/dist
 	cp -R web/out/. server/webui/dist/
@@ -44,7 +43,7 @@ clean:
 	$(RM) -r web/out server/webui/dist web/tsconfig.tsbuildinfo
 
 help:
-	@echo 'make build      构建后端'
+	@echo 'make build      构建内嵌前端的完整程序'
 	@echo 'make release    构建内嵌前端的单文件程序'
 	@echo 'make run        开发运行后端（ARGS=...）'
 	@echo 'make dev-web    启动前端开发服务'
