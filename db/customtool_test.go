@@ -10,7 +10,7 @@ import (
 func TestCustomToolCRUD(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer d.Close()
 

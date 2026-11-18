@@ -39,7 +39,7 @@ func TestFindingPaginationParam(t *testing.T) {
 func TestFindingGroupsReturnsTaskBucketsAndNormalizesPagination(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
 	marker := fmt.Sprintf("__server_finding_groups_%d__", time.Now().UnixNano())
@@ -149,7 +149,7 @@ func TestFindingGroupsReturnsTaskBucketsAndNormalizesPagination(t *testing.T) {
 func TestDeepenFindingCreatesAuditedIntentAndRevivesTask(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
 
@@ -278,7 +278,7 @@ func TestDeepenFindingValidatesDescription(t *testing.T) {
 func TestDeepenAdmissionFailureDiscardsFollowUpIntent(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
+		t.Fatalf("SQLite unavailable (%v) - skipping", err)
 	}
 	defer m.Close()
 	task, err := m.CreateTask("deepen rollback", "leave no orphan intent", nil, 0, 0)
@@ -311,7 +311,7 @@ func TestDeepenAdmissionFailureDiscardsFollowUpIntent(t *testing.T) {
 	}
 	// Keep the in-memory handle and graph available while forcing the atomic
 	// admission UPDATE to reject this soft-deleted row.
-	if _, err := m.pg.Exec(`UPDATE tasks SET deleted_at=now() WHERE id=$1`, taskID); err != nil {
+	if _, err := m.pg.Exec(`UPDATE tasks SET deleted_at=utc_now() WHERE id=$1`, taskID); err != nil {
 		t.Fatal(err)
 	}
 

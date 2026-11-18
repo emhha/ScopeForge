@@ -109,7 +109,7 @@ func TestInterceptExecutionNavigation(t *testing.T) {
 		if _, err = d.GetInterceptExecution(deletedApproval); !errors.Is(err, ErrInterceptSessionDeleted) {
 			t.Fatalf("deleted session: %v", err)
 		}
-		if _, err = d.Exec(`UPDATE tasks SET archived_at=NOW() WHERE id=$1`, task.ID); err != nil {
+		if _, err = d.Exec(`UPDATE tasks SET archived_at=utc_now() WHERE id=$1`, task.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = d.GetInterceptExecution(deletedApproval); !errors.Is(err, ErrInterceptTaskDeleted) {

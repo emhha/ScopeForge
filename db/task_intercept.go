@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
 )
 
@@ -110,7 +109,7 @@ func (s *AssetStore) ToggleTaskInterceptRule(taskID, ruleID int64, enabled bool)
 
 // insertTaskInterceptRules inserts task-level rules within the task-creation
 // transaction (mirrors insertTaskCompanies).
-func insertTaskInterceptRules(tx *sql.Tx, taskID int64, rules []TaskInterceptRuleInput) error {
+func insertTaskInterceptRules(tx *Tx, taskID int64, rules []TaskInterceptRuleInput) error {
 	for _, r := range rules {
 		if _, err := tx.Exec(`
 INSERT INTO task_intercept_rules(task_id, enabled, action, kind, pattern, note)

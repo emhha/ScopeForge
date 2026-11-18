@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +18,7 @@ func ArchiveEvidenceSnapshots(snapshot *TaskArchiveSnapshot) ([]TrafficEvidenceS
 	return out, err
 }
 
-func restoreFindingTrafficTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
+func restoreFindingTrafficTx(tx *Tx, snapshot *TaskArchiveSnapshot) error {
 	snapshots, err := ArchiveEvidenceSnapshots(snapshot)
 	if err != nil {
 		return err
@@ -61,10 +60,10 @@ func restoreFindingTrafficTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
 	}
 	if len(rows) > 0 {
 		raw, _ := json.Marshal(rows)
-		if _, err = tx.Exec(`INSERT INTO finding_traffic_bindings SELECT * FROM json_populate_recordset(NULL::finding_traffic_bindings,$1::json)`, string(raw)); err != nil {
+		if err = insertArchiveRows(tx, "finding_traffic_bindings", raw); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE traffic_evidence_snapshots s SET unreferenced_at=NULL WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`)
+		_, err = tx.Exec(`UPDATE traffic_evidence_snapshots AS s SET unreferenced_at=NULL WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`)
 	}
 	return err
 }

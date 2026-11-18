@@ -16,29 +16,15 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// isFKViolation reports whether err is a Postgres foreign-key violation (SQLSTATE
-// 23503) — e.g. an activity insert whose exploration_id has no parent row.
-func isFKViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23503"
-}
-
-// dropReason classifies why an activity write was dropped, so the log can be
-// grouped/analysed by cause rather than by raw error text.
+func isFKViolation(err error) bool { return db.IsForeignKeyViolation(err) }
 func dropReason(err error) string {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch pgErr.Code {
-		case "23503":
-			return "fk_violation(23503,父exploration不存在)"
-		case "23505":
-			return "unique_violation(23505)"
-		default:
-			return "pg_error(" + pgErr.Code + ")"
-		}
+	if db.IsForeignKeyViolation(err) {
+		return "fk_violation(父exploration不存在)"
+	}
+	if db.IsUniqueViolation(err) {
+		return "unique_violation"
 	}
 	return "write_error"
 }
@@ -807,6 +793,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 
 	// runRound 跑一轮规划(含 debounce 合并 + 各 guard)。src 仅用于日志区分触发来源。
 	runRound := func(src string) {
+		// A pending notification and cancellation can both be ready in select.
+		// Cancellation wins even when the notification branch was selected.
+		if ctx.Err() != nil {
+			return
+		}
 		// debounce: coalesce a burst of changes into one planning round
 		timer := time.NewTimer(e.debounce)
 	drain:

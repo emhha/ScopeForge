@@ -82,14 +82,27 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 	defer tx.Rollback()
 	var title string
 	var snapshot []byte
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(f.name,''), NULLIF(f.vulnclass,''), '未分类'),
-	jsonb_build_object('finding', to_jsonb(f),
-	 'assets', COALESCE((SELECT jsonb_agg(to_jsonb(a)) FROM assets a WHERE f.asset_ids @> to_jsonb(ARRAY[a.id])), '[]'::jsonb),
-	 'constraints', COALESCE((SELECT jsonb_agg(to_jsonb(c)) FROM task_constraints c JOIN tasks t ON t.exploration_id=c.exploration_id WHERE t.id=f.task_id), '[]'::jsonb))
-	FROM findings f WHERE f.id=$1 FOR UPDATE OF f`, findingID).Scan(&title, &snapshot)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(name,''),NULLIF(vulnclass,''),'未分类') FROM findings WHERE id=$1`, findingID).Scan(&title)
 	if err != nil {
 		return nil, nil, false, err
 	}
+	finding, _, err := queryArchiveRows(tx, `SELECT * FROM findings WHERE id=$1`, findingID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	assets, _, err := queryArchiveRows(tx, `SELECT a.* FROM assets a JOIN findings f ON f.id=$1 WHERE a.id IN (SELECT value FROM json_each(f.asset_ids))`, findingID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	constraints, _, err := queryArchiveRows(tx, `SELECT c.* FROM task_constraints c JOIN tasks t ON t.exploration_id=c.exploration_id JOIN findings f ON f.task_id=t.id WHERE f.id=$1`, findingID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	snapshot, err = json.Marshal(map[string]json.RawMessage{"finding": firstArchiveRow(finding), "assets": assets, "constraints": constraints})
+	if err != nil {
+		return nil, nil, false, err
+	}
+
 	r, err := scanRetest(tx.QueryRowContext(ctx, `SELECT `+retestCols+` FROM finding_retests WHERE finding_id=$1 AND status IN ('pending','running')`, findingID))
 	if err != nil {
 		return nil, nil, false, err
@@ -164,13 +177,13 @@ func (d *DB) FindingRetestForConversation(ctx context.Context, conversationID in
 // every later 发起复测 is deduped against a run that is not happening, with only
 // a process restart (RecoverFindingRetests) able to clear it.
 func (d *DB) FailPendingRetestForConversation(conversationID int64, reason string) error {
-	_, err := d.Exec(`UPDATE finding_retests SET status='failed', error=$2, finished_at=now()
+	_, err := d.Exec(`UPDATE finding_retests SET status='failed', error=$2, finished_at=utc_now()
 		WHERE conversation_id=$1 AND status IN ('pending','running')`, conversationID, reason)
 	return err
 }
 
 func (d *DB) StartFindingRetest(ctx context.Context, id int64) (bool, error) {
-	res, err := d.ExecContext(ctx, `UPDATE finding_retests SET status='running', started_at=now() WHERE id=$1 AND status='pending'`, id)
+	res, err := d.ExecContext(ctx, `UPDATE finding_retests SET status='running', started_at=utc_now() WHERE id=$1 AND status='pending'`, id)
 	if err != nil {
 		return false, err
 	}
@@ -218,7 +231,7 @@ func (d *DB) FinishFindingRetest(id int64, status, reason string) error {
 	defer tx.Rollback()
 	// Lock the finding before the retest, matching creation and cascading deletion.
 	var findingID int64
-	err = tx.QueryRow(`SELECT f.id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1) FOR UPDATE OF f`, id).Scan(&findingID)
+	err = tx.QueryRow(`SELECT f.id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1) `, id).Scan(&findingID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // Finding/retest already deleted.
 	}
@@ -229,7 +242,7 @@ func (d *DB) FinishFindingRetest(id int64, status, reason string) error {
 	err = tx.QueryRow(`UPDATE finding_retests SET
 	status=CASE WHEN $2='completed' AND verdict='' THEN 'failed' ELSE $2 END,
 	error=CASE WHEN $2='completed' AND verdict='' THEN 'Agent 未保存复测结论，请查看会话后重新复测' ELSE $3 END,
-	finished_at=now() WHERE id=$1 AND status IN ('pending','running') RETURNING status,verdict`, id, status, reason).Scan(&finalStatus, &verdict)
+	finished_at=utc_now() WHERE id=$1 AND status IN ('pending','running') RETURNING status,verdict`, id, status, reason).Scan(&finalStatus, &verdict)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // A replay must not overwrite a later manual triage decision.
 	}
@@ -254,6 +267,6 @@ func (d *DB) FinishFindingRetest(id int64, status, reason string) error {
 }
 
 func (d *DB) RecoverFindingRetests() error {
-	_, err := d.Exec(`UPDATE finding_retests SET status='stopped', error='服务重启，复测已中断，请重新发起', finished_at=now() WHERE status IN ('pending','running')`)
+	_, err := d.Exec(`UPDATE finding_retests SET status='stopped', error='服务重启，复测已中断，请重新发起', finished_at=utc_now() WHERE status IN ('pending','running')`)
 	return err
 }

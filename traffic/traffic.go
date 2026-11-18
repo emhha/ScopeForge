@@ -1270,7 +1270,7 @@ func (t *Traffic) stageTreesForArchive(dirs, hosts []string, archiveID, taskID i
 		planned = append(planned, stagedTrafficPath{source: source})
 	}
 	// 归档路径即使一个历史 host 目录都没有(新装机的流量只落在 SQLite + _blobs)
-	// 也必须留下 journal：崩溃点若落在 PostgreSQL 提交与 SQLite 提交之间，重启后
+	// 也必须留下 journal：崩溃点若落在 SQLite 提交与 SQLite 提交之间，重启后
 	// SQLite 事务被回滚，只有这份 journal 能让恢复流程补做 host 行的删除。少了它，
 	// 已转冷任务的独占流量会永久留在热库里。
 	uniqueHosts := uniqueArchiveHosts(hosts)
@@ -1383,7 +1383,7 @@ func (t *Traffic) DeleteHostsExact(hosts []string) (int64, error) {
 }
 
 // HostDeleteStage keeps the SQLite delete transaction open so a task deletion
-// can be coordinated with PostgreSQL: the traffic side is staged here and only
+// can be coordinated with SQLite: the traffic side is staged here and only
 // committed once the caller's own transaction has succeeded. The Traffic write
 // lock is held until Commit or Rollback, so no recorder can add rows or a blob
 // reference for a host that is mid-deletion. Rolling back is just a transaction
@@ -1476,7 +1476,7 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64)
 
 // RecoverHostDeleteStages resolves filesystem moves left by a process exit.
 // SQLite rolls open transactions back on restart, while the supplied callback
-// identifies task archives whose PostgreSQL compaction already committed.
+// identifies task archives whose SQLite compaction already committed.
 func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (bool, error)) error {
 	if t == nil {
 		return nil
@@ -1645,7 +1645,7 @@ func (s *HostDeleteStage) rollbackLocked() error {
 }
 
 // Commit makes the staged deletion permanent. SQLite is committed only after
-// the caller has committed its PostgreSQL task deletion.
+// the caller has committed its SQLite task deletion.
 func (s *HostDeleteStage) Commit() error {
 	if s == nil || s.done {
 		return nil

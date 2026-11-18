@@ -8,6 +8,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -36,11 +37,7 @@ func (p retestProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2
 
 func newRetestServer(t *testing.T) (*Server, int64) {
 	t.Helper()
-	dsn, _, err := db.DSN()
-	if err != nil {
-		t.Skip("test postgres not configured")
-	}
-	pg, err := db.Open(dsn)
+	pg, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

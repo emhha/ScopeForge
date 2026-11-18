@@ -61,9 +61,9 @@ type TaskDeleteResult struct {
 	LLMRecordsDeleted int64
 }
 
-// TaskDeletePreparation is produced inside the PostgreSQL deletion transaction
+// TaskDeletePreparation is produced inside the SQLite deletion transaction
 // after asset and anchor writers have been excluded. Prepare callbacks may use
-// TrafficHosts to stage an external traffic deletion before PostgreSQL commits.
+// TrafficHosts to stage an external traffic deletion before SQLite commits.
 type TaskDeletePreparation struct {
 	ExplorationID int64
 	TrafficHosts  []string
@@ -251,7 +251,7 @@ RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, descripti
 	return t, tx.Commit()
 }
 
-func insertTaskCompanies(tx *sql.Tx, taskID int64, companyIDs []int64) error {
+func insertTaskCompanies(tx *Tx, taskID int64, companyIDs []int64) error {
 	if len(companyIDs) == 0 {
 		return nil
 	}
@@ -260,23 +260,19 @@ func insertTaskCompanies(tx *sql.Tx, taskID int64, companyIDs []int64) error {
 	if err := lockCompanyScopeMutation(tx); err != nil {
 		return err
 	}
-	var inserted int
-	err := tx.QueryRow(`
-WITH requested(company_id, position) AS (
-    SELECT company_id, position
-    FROM unnest($2::bigint[]) WITH ORDINALITY AS requested(company_id, position)
-), inserted AS (
-    INSERT INTO task_scope(task_id, kind, company_id, source, reason)
-    SELECT $1, 'company', companies.id, 'manual', '任务创建时关联企业'
-    FROM requested
-    JOIN companies ON companies.id=requested.company_id
-    ORDER BY requested.position
-    RETURNING company_id
-)
-SELECT count(*) FROM inserted`, taskID, companyIDs).Scan(&inserted)
+	result, err := tx.Exec(`INSERT INTO task_scope(task_id,kind,company_id,source,reason)
+ SELECT $1,'company',companies.id,'manual','任务创建时关联企业'
+ FROM json_each($2) requested JOIN companies ON companies.id=requested.value
+ ORDER BY CAST(requested.key AS INTEGER)`, taskID, companyIDs)
 	if err != nil {
 		return err
 	}
+	inserted64, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	inserted := int(inserted64)
+
 	if inserted != len(companyIDs) {
 		return fmt.Errorf("%w: one or more companies do not exist", ErrTaskCompanyNotFound)
 	}
@@ -287,10 +283,10 @@ SELECT count(*) FROM inserted`, taskID, companyIDs).Scan(&inserted)
 	if _, err := tx.Exec(`
 UPDATE assets
 SET task_ids=CASE
-    WHEN $1=ANY(task_ids) THEN task_ids
-    ELSE array_append(task_ids, $1)
+    WHEN $1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids
+    ELSE json_array_add(task_ids, $1)
 END
-WHERE company_id=ANY($2::bigint[])`, taskID, companyIDs); err != nil {
+WHERE company_id IN (SELECT value FROM json_each($2))`, taskID, companyIDs); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`
@@ -298,8 +294,8 @@ INSERT INTO task_asset_links(task_id, asset_id, source, source_summary)
 SELECT $1, asset.id, $3, '任务创建时关联企业：' || company.name
 FROM assets asset
 JOIN companies company ON company.id=asset.company_id
-WHERE asset.company_id=ANY($2::bigint[])
-  AND $1=ANY(asset.task_ids)
+WHERE asset.company_id IN (SELECT value FROM json_each($2))
+  AND $1 IN (SELECT value FROM json_each(asset.task_ids))
 ON CONFLICT (task_id, asset_id) DO UPDATE
 SET source=EXCLUDED.source,
     source_summary=EXCLUDED.source_summary,
@@ -309,7 +305,7 @@ SET source=EXCLUDED.source,
 	return nil
 }
 
-func insertTaskRelations(tx *sql.Tx, taskID int64, sourceIDs []int64) error {
+func insertTaskRelations(tx *Tx, taskID int64, sourceIDs []int64) error {
 	seen := map[int64]bool{}
 	for _, sourceID := range sourceIDs {
 		if sourceID <= 0 || sourceID == taskID || seen[sourceID] {
@@ -328,7 +324,7 @@ SELECT $1, id FROM tasks WHERE id=$2 AND deleted_at IS NULL`, taskID, sourceID)
 	return nil
 }
 
-func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
+func insertTaskLLMProfiles(tx *Tx, taskID int64, profileIDs []int64) error {
 	seen := map[int64]bool{}
 	for position, profileID := range profileIDs {
 		if profileID <= 0 || seen[profileID] {
@@ -398,10 +394,10 @@ type TaskPatch struct {
 // Re-pinning an already pinned task preserves its original position.
 func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
 	task, err := scanTask(d.QueryRow(`UPDATE tasks SET
-	name = CASE WHEN $2::boolean THEN $3 ELSE name END,
+	name = CASE WHEN $2 THEN $3 ELSE name END,
 	pinned_at = CASE
-		WHEN $4::boolean IS NULL THEN pinned_at
-		WHEN $4::boolean THEN COALESCE(pinned_at, now())
+		WHEN $4 IS NULL THEN pinned_at
+		WHEN $4 THEN COALESCE(pinned_at, utc_now())
 		ELSE NULL
 	END
 WHERE id=$1 AND deleted_at IS NULL
@@ -444,7 +440,7 @@ func (d *DB) Enqueue(id int64, mode string) error {
 	}
 	_, err := d.Exec(`UPDATE tasks
 SET queued=true,
-    queued_at=CASE WHEN queued THEN COALESCE(queued_at, now()) ELSE now() END,
+    queued_at=CASE WHEN queued THEN COALESCE(queued_at, utc_now()) ELSE utc_now() END,
     queue_mode=CASE
         WHEN queue_mode='bootstrap' OR $2='bootstrap' THEN 'bootstrap'
         ELSE 'resume'
@@ -481,7 +477,7 @@ func (d *DB) SetStatus(id int64, status string) error {
 	_, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
-       completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, now()) ELSE NULL END
+       completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, utc_now()) ELSE NULL END
  WHERE id = $2`, status, id)
 	return err
 }
@@ -494,7 +490,7 @@ func (d *DB) SetTerminalStatusGuarded(id int64, status string) (won bool, err er
 	res, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
-       completed_at = COALESCE(completed_at, now())
+       completed_at = COALESCE(completed_at, utc_now())
  WHERE id = $2 AND status NOT IN ('done','failed','timeout')`, status, id)
 	if err != nil {
 		return false, err
@@ -511,10 +507,10 @@ func (d *DB) StampFirstRun(id int64, timeoutSeconds int) (*time.Time, error) {
 	var deadline *time.Time
 	err := d.QueryRow(`
 UPDATE tasks
-   SET first_run_at = COALESCE(first_run_at, now()),
+   SET first_run_at = COALESCE(first_run_at, utc_now()),
        deadline_at  = CASE
            WHEN first_run_at IS NOT NULL THEN deadline_at            -- 已盖过章：不动
-           WHEN $2 > 0 THEN now() + make_interval(secs => $2)
+           WHEN $2 > 0 THEN datetime(utc_now(), '+' || $2 || ' seconds')
            ELSE NULL END
  WHERE id = $1
  RETURNING deadline_at`, id, timeoutSeconds).Scan(&deadline)
@@ -539,13 +535,13 @@ func (d *DB) DeleteTaskCascade(id int64, deleteAssets, deleteFindings bool, dele
 }
 
 // DeleteTaskCascadePrepared coordinates reversible external deletion with the
-// PostgreSQL cascade. When prepare is non-nil, host ownership is resolved and
+// SQLite cascade. When prepare is non-nil, host ownership is resolved and
 // prepare is invoked inside this transaction while asset and anchor writers are
 // excluded. The locks remain held through commit, closing the window where a
 // host could become shared after its traffic had already been staged.
 //
 // prepare must only stage reversible work. Any returned error or later database
-// error rolls PostgreSQL back; the caller remains responsible for rolling back
+// error rolls SQLite back; the caller remains responsible for rolling back
 // external work that its callback staged successfully.
 func (d *DB) DeleteTaskCascadePrepared(
 	id int64,
@@ -559,7 +555,7 @@ func (d *DB) DeleteTaskCascadePrepared(
 	}
 	defer tx.Rollback()
 	var expID int64
-	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1 FOR UPDATE`, id).Scan(&expID); err != nil {
+	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1 `, id).Scan(&expID); err != nil {
 		if err == sql.ErrNoRows {
 			return result, nil // already gone
 		}
@@ -570,11 +566,7 @@ func (d *DB) DeleteTaskCascadePrepared(
 	// tables and with another coordinated deletion. Taking both in one fixed order
 	// prevents phantoms (a distinct asset row for the same host) as well as new
 	// ownership/anchor references until the deletion transaction commits.
-	if deleteAssets || prepare != nil {
-		if _, err := tx.Exec(`LOCK TABLE assets, exploration_anchors IN SHARE ROW EXCLUSIVE MODE`); err != nil {
-			return result, err
-		}
-	}
+
 	if prepare != nil {
 		hosts, err := hostsForTaskDeletion(tx, id, expID)
 		if err != nil {
@@ -594,7 +586,7 @@ func (d *DB) DeleteTaskCascadePrepared(
 		// evidence anchored by another task.
 		res, err := tx.Exec(`
 WITH candidate_assets AS (
-  SELECT id FROM assets WHERE $1 = ANY(task_ids)
+  SELECT id FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))
   UNION
   SELECT ea.asset_id
   FROM exploration_anchors ea
@@ -607,7 +599,7 @@ deletable AS (
   JOIN candidate_assets c ON c.id=a.id
   WHERE NOT EXISTS (
     SELECT 1 FROM tasks t
-    WHERE t.id<>$1 AND t.deleted_at IS NULL AND t.id=ANY(a.task_ids)
+    WHERE t.id<>$1 AND t.deleted_at IS NULL AND t.id IN (SELECT value FROM json_each(a.task_ids))
   ) AND NOT EXISTS (
     SELECT 1
     FROM exploration_anchors ea
@@ -616,13 +608,13 @@ deletable AS (
     WHERE ea.asset_id=a.id AND t.id<>$1 AND t.deleted_at IS NULL
   )
 )
-DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
+DELETE FROM assets WHERE id IN (SELECT id FROM deletable)`, id, expID)
 		if err != nil {
 			return result, err
 		}
 		result.AssetsDeleted, _ = res.RowsAffected()
 
-		res, err = tx.Exec(`UPDATE assets SET task_ids = array_remove(task_ids, $1) WHERE $1 = ANY(task_ids)`, id)
+		res, err = tx.Exec(`UPDATE assets SET task_ids = json_array_remove(task_ids, $1) WHERE $1 IN (SELECT value FROM json_each(task_ids))`, id)
 		if err != nil {
 			return result, err
 		}

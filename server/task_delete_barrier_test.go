@@ -147,7 +147,7 @@ func TestTaskLifecycleRechecksDeleteBarrierAfterConcLock(t *testing.T) {
 func TestAbortTaskDeleteUsesPersistedPauseAndQueueState(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
+		t.Fatalf("SQLite unavailable (%v) - skipping", err)
 	}
 	defer m.Close()
 	task, err := m.CreateTask("delete abort state", "restore persisted barrier", nil, 0, 0)
@@ -360,5 +360,20 @@ func TestCommittedTaskDeleteReturnsSuccessWithCleanupWarning(t *testing.T) {
 	}
 	if got.Deleted != "7" || !got.FilesDeleted || !strings.Contains(got.CleanupWarning, "cleanup incomplete") {
 		t.Fatalf("unexpected response: %+v", got)
+	}
+}
+
+func TestCancelledPlannerIgnoresQueuedWakeup(t *testing.T) {
+	for i := 0; i < 64; i++ {
+		e := NewEngine(nil)
+		e.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) {
+			t.Fatal("cancelled planner resolved agents for a queued wakeup")
+			return nil, nil
+		})
+		task := &Task{ID: "cancelled", notify: make(chan struct{}, 1)}
+		task.Notify()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		e.plannerLoop(ctx, task)
 	}
 }

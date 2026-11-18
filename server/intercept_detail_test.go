@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,11 +14,7 @@ import (
 )
 
 func TestInterceptDetailHTTP(t *testing.T) {
-	dsn, _, err := db.DSN()
-	if err != nil {
-		t.Skip("no test database configured")
-	}
-	d, err := db.Open(dsn)
+	d, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -238,27 +238,27 @@ WHERE t.llm_profile_id=$1
        WHERE x.task_id=t.id AND x.profile_id=$1
    )
 ORDER BY t.id
-FOR UPDATE OF t`, id)
+`, id)
 	if err != nil {
 		return false, err
 	}
 	lockedAgents, err := lockProfileReferenceRows(ctx, tx, `SELECT id FROM agents
 WHERE llm_profile_id=$1
 ORDER BY id
-FOR UPDATE`, id)
+`, id)
 	if err != nil {
 		return false, err
 	}
 	lockedConversations, err := lockProfileReferenceRows(ctx, tx, `SELECT id FROM conversations
 WHERE llm_profile_id=$1
 ORDER BY id
-FOR UPDATE`, id)
+`, id)
 	if err != nil {
 		return false, err
 	}
 
 	var isDefault bool
-	if err := tx.QueryRowContext(ctx, `SELECT is_default FROM llm_profiles WHERE id=$1 FOR UPDATE`, id).Scan(&isDefault); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT is_default FROM llm_profiles WHERE id=$1 `, id).Scan(&isDefault); err != nil {
 		if err == sql.ErrNoRows {
 			return false, ErrLLMProfileNotFound
 		}
@@ -279,7 +279,7 @@ FOR UPDATE`, id)
 	// was not part of the task-first lock set. Never acquire a new task lock while
 	// holding the profile lock, because that would recreate the inversion.
 	rows, err := tx.QueryContext(ctx, `SELECT ref_kind, ref_id FROM (
-	SELECT 'task'::text AS ref_kind, t.id AS ref_id
+	SELECT 'task' AS ref_kind, t.id AS ref_id
 FROM tasks t
 WHERE t.llm_profile_id=$1
    OR t.active_llm_profile_id=$1
@@ -395,7 +395,7 @@ WHERE id=$1`, task.id, next); err != nil {
 	return false, nil
 }
 
-func lockProfileReferenceRows(ctx context.Context, tx *sql.Tx, query string, profileID int64) (map[int64]struct{}, error) {
+func lockProfileReferenceRows(ctx context.Context, tx *Tx, query string, profileID int64) (map[int64]struct{}, error) {
 	rows, err := tx.QueryContext(ctx, query, profileID)
 	if err != nil {
 		return nil, err
@@ -533,7 +533,7 @@ func (d *DB) AgentBindingCounts() (mcp map[int64]int, skill map[int64]int, tools
 	if err = byID(`SELECT agent_id, count(*) FROM agent_skill_visibility WHERE enabled GROUP BY agent_id`, skill); err != nil {
 		return
 	}
-	rows, e := d.Query(`SELECT elem, count(*) FROM tools, jsonb_array_elements_text(agents) AS elem GROUP BY elem`)
+	rows, e := d.Query(`SELECT elem.value, count(*) FROM tools, json_each(agents) AS elem GROUP BY elem.value`)
 	if e != nil {
 		err = e
 		return
@@ -603,7 +603,7 @@ func (d *DB) SetAgentLLMProfile(key string, id *int64) error {
 	// DeleteProfile locks reference rows before the profile row. Keep the same
 	// order here so a concurrent rebind cannot form a child/profile deadlock.
 	var agentID int64
-	if err := tx.QueryRow(`SELECT id FROM agents WHERE key=$1 FOR UPDATE`, key).Scan(&agentID); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM agents WHERE key=$1 `, key).Scan(&agentID); err != nil {
 		if err == sql.ErrNoRows {
 			// Preserve the previous UPDATE semantics: an unknown key is a no-op.
 			return tx.Commit()
@@ -621,12 +621,12 @@ func (d *DB) SetAgentLLMProfile(key string, id *int64) error {
 
 // lockLLMProfileForReference makes the profile side of the shared lock-order
 // protocol explicit. Callers must already own the referencing child row.
-func lockLLMProfileForReference(tx *sql.Tx, profileID *int64) error {
+func lockLLMProfileForReference(tx *Tx, profileID *int64) error {
 	if profileID == nil {
 		return nil
 	}
 	var lockedID int64
-	if err := tx.QueryRow(`SELECT id FROM llm_profiles WHERE id=$1 FOR KEY SHARE`, *profileID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM llm_profiles WHERE id=$1`, *profileID).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrLLMProfileNotFound
 		}
@@ -815,7 +815,7 @@ type MCPServer struct {
 	Env       json.RawMessage `json:"env"`
 	URL       string          `json:"url,omitempty"`
 	Enabled   bool            `json:"enabled"`
-	Insecure  bool            `json:"insecure"` // http: skip TLS cert verification (self-signed servers, issue #108)
+	Insecure  bool            `json:"insecure"`        // http: skip TLS cert verification (self-signed servers, issue #108)
 	Tools     []string        `json:"tools,omitempty"` // cached tool names (mcp_tools_cache)
 }
 

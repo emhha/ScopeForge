@@ -21,7 +21,7 @@ type ConvTokenSummary struct {
 // result-row token usage (0 for conversations with no completed run yet).
 func (d *DB) ConversationTokenSummaries() ([]ConvTokenSummary, error) {
 	rows, err := d.Query(`
-SELECT c.llm_profile_id, c.created_at::text,
+SELECT c.llm_profile_id, c.created_at,
        COALESCE(sum(ca.input_tokens),0), COALESCE(sum(ca.output_tokens),0),
        COALESCE(sum(ca.cache_read_tokens),0), COALESCE(sum(ca.cache_write_tokens),0)
 FROM conversations c
@@ -122,7 +122,7 @@ func (d *DB) UpdateConversationProfile(id int64, llmProfileID *int64) error {
 	defer tx.Rollback()
 
 	var lockedID int64
-	if err := tx.QueryRow(`SELECT id FROM conversations WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM conversations WHERE id=$1 `, id).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			// Preserve the previous UPDATE semantics: an unknown id is a no-op.
 			return tx.Commit()
@@ -173,10 +173,10 @@ func (d *DB) GetConversation(id int64) (*Conversation, error) {
 // row. Pinning an already-pinned conversation preserves its original pin order.
 func (d *DB) UpdateConversation(id int64, patch ConversationPatch) (*Conversation, error) {
 	c, err := scanConv(d.QueryRow(`UPDATE conversations SET
-	title = CASE WHEN $2::boolean THEN $3 ELSE title END,
+	title = CASE WHEN $2 THEN $3 ELSE title END,
 	pinned_at = CASE
-		WHEN $4::boolean IS NULL THEN pinned_at
-		WHEN $4::boolean THEN COALESCE(pinned_at, now())
+		WHEN $4 IS NULL THEN pinned_at
+		WHEN $4 THEN COALESCE(pinned_at, utc_now())
 		ELSE NULL
 	END
 WHERE id=$1
@@ -199,7 +199,7 @@ func (d *DB) RenameConversation(id int64, title string) error {
 
 // TouchConversation bumps updated_at so the thread floats to the top of the list.
 func (d *DB) TouchConversation(id int64) error {
-	_, err := d.Exec(`UPDATE conversations SET updated_at=now() WHERE id=$1`, id)
+	_, err := d.Exec(`UPDATE conversations SET updated_at=utc_now() WHERE id=$1`, id)
 	return err
 }
 
@@ -215,7 +215,7 @@ func (d *DB) DeleteConversations(ids []int64) ([]int64, error) {
 	if len(ids) == 0 {
 		return []int64{}, nil
 	}
-	rows, err := d.Query(`DELETE FROM conversations WHERE id=ANY($1::bigint[]) RETURNING id`, ids)
+	rows, err := d.Query(`DELETE FROM conversations WHERE id IN (SELECT value FROM json_each($1)) RETURNING id`, ids)
 	if err != nil {
 		return nil, err
 	}

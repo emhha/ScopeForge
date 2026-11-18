@@ -20,7 +20,7 @@ import (
 func TestCoreTaskLifecyclePG(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
 	td := t.TempDir()
@@ -128,9 +128,6 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	nid, _ := strconv.ParseInt(id, 10, 64)
 	findingID, err := m.pg.AddFinding(nid, 0, "__core_task_delete__", "", db.SeverityHigh, "summary", "evidence", "tester", nil)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.pg.EnsureLLMRecordsTable(); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.pg.InsertLLMRecord(&db.LLMRecord{TaskID: id, SessionID: "delete-test", Status: "ok", RequestBody: "secret"}); err != nil {

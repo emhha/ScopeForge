@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const MaxTaskCategoryNameRunes = 80
@@ -56,8 +54,7 @@ func normalizeTaskCategoryName(name string) (string, string, error) {
 }
 
 func taskCategoryUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	return IsUniqueViolation(err)
 }
 
 func (d *DB) CreateTaskCategory(name string) (*TaskCategory, error) {
@@ -66,14 +63,8 @@ func (d *DB) CreateTaskCategory(name string) (*TaskCategory, error) {
 		return nil, err
 	}
 	category, err := scanTaskCategory(d.QueryRow(`
-WITH inserted AS (
-    INSERT INTO task_categories(name, nkey)
-    VALUES ($1,$2)
-    ON CONFLICT (nkey) DO NOTHING
-    RETURNING *
-)
-SELECT inserted.id, inserted.name, inserted.nkey, 0, inserted.created_at, inserted.updated_at
-FROM inserted`, name, nkey))
+INSERT INTO task_categories(name,nkey) VALUES($1,$2) ON CONFLICT(nkey) DO NOTHING
+ RETURNING id,name,nkey,0,created_at,updated_at`, name, nkey))
 	if err == sql.ErrNoRows {
 		return nil, ErrTaskCategoryNameConflict
 	}
@@ -126,24 +117,32 @@ func (d *DB) RenameTaskCategory(id int64, name string) (*TaskCategory, error) {
 	if err != nil {
 		return nil, err
 	}
-	category, err := scanTaskCategory(d.QueryRow(`
-WITH updated AS (
-    UPDATE task_categories SET name=$2, nkey=$3 WHERE id=$1 RETURNING *
-)
-SELECT updated.id, updated.name, updated.nkey,
-       (SELECT count(*) FROM tasks WHERE category_id=updated.id AND deleted_at IS NULL),
-       updated.created_at, updated.updated_at
-FROM updated`, id, name, nkey))
-	if err == sql.ErrNoRows {
-		return nil, ErrTaskCategoryNotFound
+	tx, err := d.Begin()
+	if err != nil {
+		return nil, err
 	}
-	if taskCategoryUniqueViolation(err) {
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE task_categories SET name=$2,nkey=$3,updated_at=utc_now() WHERE id=$1`, id, name, nkey)
+	if IsUniqueViolation(err) {
 		return nil, ErrTaskCategoryNameConflict
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &category, nil
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return nil, ErrTaskCategoryNotFound
+	}
+	category, err := taskCategoryTx(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	return category, tx.Commit()
+}
+func taskCategoryTx(tx *Tx, id int64) (*TaskCategory, error) {
+	category, err := scanTaskCategory(tx.QueryRow(`SELECT `+taskCategoryCols+` FROM task_categories category
+ LEFT JOIN tasks task ON task.category_id=category.id WHERE category.id=$1 GROUP BY category.id`, id))
+	return &category, err
 }
 
 // DeleteTaskCategory moves affected tasks to the uncategorized bucket through
@@ -176,32 +175,32 @@ func (d *DB) SetTaskCategory(taskID int64, categoryID *int64) (*TaskCategory, er
 	if *categoryID <= 0 {
 		return nil, fmt.Errorf("%w: category id must be positive", ErrTaskCategoryInvalid)
 	}
-	category, err := scanTaskCategory(d.QueryRow(`
-WITH selected AS (
-    SELECT * FROM task_categories WHERE id=$2
-), updated AS (
-    UPDATE tasks SET category_id=$2
-    WHERE id=$1 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM selected)
-    RETURNING id
-)
-SELECT selected.id, selected.name, selected.nkey,
-       (SELECT count(*) FROM tasks WHERE category_id=selected.id AND deleted_at IS NULL),
-       selected.created_at, selected.updated_at
-FROM selected, updated`, taskID, *categoryID))
-	if err == sql.ErrNoRows {
-		var taskExists bool
-		if checkErr := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND deleted_at IS NULL)`, taskID).Scan(&taskExists); checkErr != nil {
-			return nil, checkErr
-		}
-		if !taskExists {
-			return nil, ErrTaskCategoryTaskNotFound
-		}
-		return nil, ErrTaskCategoryNotFound
-	}
+	tx, err := d.Begin()
 	if err != nil {
 		return nil, err
 	}
-	return &category, nil
+	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND deleted_at IS NULL)`, taskID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrTaskCategoryTaskNotFound
+	}
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM task_categories WHERE id=$1)`, *categoryID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrTaskCategoryNotFound
+	}
+	if _, err := tx.Exec(`UPDATE tasks SET category_id=$2 WHERE id=$1`, taskID, *categoryID); err != nil {
+		return nil, err
+	}
+	category, err := taskCategoryTx(tx, *categoryID)
+	if err != nil {
+		return nil, err
+	}
+	return category, tx.Commit()
 }
 
 // SetTasksCategory moves several tasks into one category (nil = uncategorized)
@@ -243,7 +242,7 @@ func (d *DB) SetTasksCategory(taskIDs []int64, categoryID *int64) ([]int64, *Tas
 	}
 	rows, err := tx.Query(`
 UPDATE tasks SET category_id=$2
-WHERE id=ANY($1::bigint[]) AND deleted_at IS NULL
+WHERE id IN (SELECT value FROM json_each($1)) AND deleted_at IS NULL
 RETURNING id`, taskIDs, categoryID)
 	if err != nil {
 		return nil, nil, err

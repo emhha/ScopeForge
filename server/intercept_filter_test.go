@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
@@ -11,11 +12,7 @@ import (
 )
 
 func TestInterceptFilterHTTP(t *testing.T) {
-	dsn, _, err := db.DSN()
-	if err != nil {
-		t.Skip("no test database configured")
-	}
-	d, err := db.Open(dsn)
+	d, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -155,6 +155,15 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if hc, _ := disabledCoverage["host_count"].(int); hc < 1 {
 		t.Fatalf("coverage-disabled task lost company asset host count: %#v", disabledCoverage["host_count"])
 	}
+
+	disabledScope, ok := disabledCoverage["scope"].([]map[string]any)
+	if !ok || len(disabledScope) != 1 {
+		t.Fatalf("coverage switch hid task scope: %#v", disabledCoverage)
+	}
+	disabledRules, ok := disabledScope[0]["company_scope"].([]map[string]any)
+	if !ok || len(disabledRules) != len(inputs) {
+		t.Fatalf("coverage switch hid company scope: %#v", disabledScope)
+	}
 	if _, exists := disabledCoverage["denominator"]; exists {
 		t.Fatalf("coverage-disabled task unexpectedly exposed metrics: %#v", disabledCoverage)
 	}

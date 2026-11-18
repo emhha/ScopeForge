@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/config"
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
@@ -213,7 +214,7 @@ type DeleteTaskResult struct {
 	CleanupWarning    string `json:"cleanup_warning,omitempty"`
 }
 
-// Manager owns the PostgreSQL data source (asset graph + every task's exploration
+// Manager owns the SQLite data source (asset graph + every task's exploration
 // graph + config) and the in-memory set of task handles.
 type Manager struct {
 	dir         string
@@ -224,7 +225,7 @@ type Manager struct {
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 
 	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
-	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and
+	// taskStateMu preserves commit order between SQLite lifecycle writes and
 	// their in-memory mirrors. lifecycleMu makes snapshots race-free, but without
 	// this outer write lock an older request could commit first and publish last.
 	taskStateMu sync.Mutex
@@ -339,8 +340,8 @@ func (m *Manager) SetWorkers(n int) error {
 // Enrich returns the asset auto-completion engine (may be nil if init failed).
 func (m *Manager) Enrich() *enrich.Engine { return m.enrich }
 
-// NewManager connects to PostgreSQL and, if proxyAddr is non-empty, starts the
-// traffic-recording proxy. PostgreSQL is required (it is the single data source).
+// NewManager connects to SQLite and, if proxyAddr is non-empty, starts the
+// traffic-recording proxy. SQLite is required (it is the single data source).
 func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// Resolve the data dir to an ABSOLUTE path up front. Every data path derives
 	// from it — notably the MITM CA cert, whose path is injected into worker shells
@@ -354,11 +355,11 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	dsn, source, err := pgdb.DSN()
+	dsn, source, err := config.SQLitePath(dir)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[pg] 数据库配置来源: %s", source)
+	log.Printf("[sqlite] 数据库配置来源: %s", source)
 	pg, err := pgdb.Open(dsn)
 	if err != nil {
 		return nil, err
@@ -366,12 +367,6 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if err := pg.RecoverFindingRetests(); err != nil {
 		pg.Close()
 		return nil, fmt.Errorf("recover finding retests: %w", err)
-	}
-	if err := pg.EnsureLLMRecordsTable(); err != nil {
-		log.Printf("[llmrec] create table: %v", err)
-	}
-	if err := pg.EnsureLLMUsageTable(); err != nil {
-		log.Printf("[llmusage] create table: %v", err)
 	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
 	if proxyAddr != "" {
@@ -1166,15 +1161,15 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	err = m.pg.QueryRow(`UPDATE tasks
 	SET status=$2,
 	    completed_at=CASE
-	        WHEN $2 IN ('done','failed','timeout') THEN COALESCE(completed_at, now())
+	        WHEN $2 IN ('done','failed','timeout') THEN COALESCE(completed_at, utc_now())
 	        ELSE NULL
 	    END,
 	    paused=false,
 	    queued=$3,
 	    queued_at=CASE
 	        WHEN NOT $3 THEN NULL
-	        WHEN $5 AND queued THEN COALESCE(queued_at, now())
-	        ELSE now()
+	        WHEN $5 AND queued THEN COALESCE(queued_at, utc_now())
+	        ELSE utc_now()
 	    END,
 	    queue_mode=CASE
 	        WHEN NOT $3 THEN ''
@@ -1279,7 +1274,7 @@ func (m *Manager) EnqueueTask(id, mode string) error {
 	var committedMode string
 	err = m.pg.QueryRow(`UPDATE tasks
 		SET queued=true,
-		    queued_at=CASE WHEN queued THEN COALESCE(queued_at, now()) ELSE now() END,
+		    queued_at=CASE WHEN queued THEN COALESCE(queued_at, utc_now()) ELSE utc_now() END,
 		    queue_mode=CASE
 		        WHEN queue_mode='bootstrap' OR $2='bootstrap' THEN 'bootstrap'
 		        ELSE 'resume'
@@ -1437,7 +1432,7 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 // DeleteTask removes a task and optionally its related global data. Traffic has
 // no task-id column, so related exchanges are resolved by exact hosts from the
 // task's asset rows. Files are staged before the database operation; traffic is
-// staged while PostgreSQL excludes asset/anchor writers. Both are restored on a
+// staged while SQLite excludes asset/anchor writers. Both are restored on a
 // database failure and purged only after its commit.
 func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResult, error) {
 	result := DeleteTaskResult{Deleted: id}
@@ -1490,7 +1485,7 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	result.FindingsDeleted = dbResult.FindingsDeleted
 	result.LLMRecordsDeleted = dbResult.LLMRecordsDeleted
 
-	// PostgreSQL is now authoritative: finalize the staged external deletion and
+	// SQLite is now authoritative: finalize the staged external deletion and
 	// forget the live task even if a final purge reports an error. Such errors are
 	// typed so the HTTP layer can still tear down the task runtime instead of
 	// incorrectly reviving a task whose database row is already gone.
@@ -1512,7 +1507,7 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	return result, nil
 }
 
-// taskDeleteCommittedError means PostgreSQL deletion succeeded but purging one
+// taskDeleteCommittedError means SQLite deletion succeeded but purging one
 // of the recoverable staging directories failed. The task must stay deleted.
 type taskDeleteCommittedError struct{ err error }
 
@@ -1525,7 +1520,7 @@ func (e *taskDeleteCommittedError) Unwrap() error { return e.err }
 func rollbackTaskDelete(cause error, trafficStage *traffic.HostDeleteStage, fileStage *taskFileDeleteStage) error {
 	errs := []error{cause}
 	// Reverse the preparation order. Both restorations are attempted even if the
-	// first one fails, and errors.Join preserves the original PostgreSQL error.
+	// first one fails, and errors.Join preserves the original SQLite error.
 	if trafficStage != nil {
 		if err := trafficStage.Rollback(); err != nil {
 			errs = append(errs, fmt.Errorf("restore traffic after task delete failure: %w", err))

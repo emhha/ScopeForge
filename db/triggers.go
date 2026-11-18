@@ -117,7 +117,7 @@ func (d *DB) queryTriggers(q string, args ...any) ([]*AgentTrigger, error) {
 
 // TouchTriggerFire records an interval trigger's fire time (now).
 func (d *DB) TouchTriggerFire(id int64) error {
-	_, err := d.Exec(`UPDATE agent_triggers SET last_fire=now() WHERE id=$1`, id)
+	_, err := d.Exec(`UPDATE agent_triggers SET last_fire=utc_now() WHERE id=$1`, id)
 	return err
 }
 

@@ -6,37 +6,33 @@ import (
 	"testing"
 )
 
-func TestPostgresDSNPrecedence(t *testing.T) {
+func TestSQLitePathPrecedenceAndLegacyProtection(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	os.WriteFile(cfgPath, []byte(`{"database":{"host":"10.1.2.3","port":6000,"user":"u","password":"p","dbname":"d","sslmode":"require"}}`), 0o644)
-	t.Setenv("ARTEX_CONFIG", cfgPath)
-
-	// no env DSN → built from config file fields
+	path := filepath.Join(dir, "config.json")
+	t.Setenv("ARTEX_CONFIG", path)
+	t.Setenv("ARTEX_DB_PATH", "")
 	t.Setenv("ARTEX_PG_DSN", "")
-	got, _, err := PostgresDSN()
-	want := "postgres://u:p@10.1.2.3:6000/d?sslmode=require"
-	if err != nil || got != want {
-		t.Fatalf("from file: got %q err %v want %q", got, err, want)
+	got, _, err := SQLitePath(filepath.Join(dir, "data"))
+	if err != nil || got != filepath.Join(dir, "data", "artex.sqlite") {
+		t.Fatalf("default=%s %v", got, err)
 	}
-
-	// env wins over config file
-	t.Setenv("ARTEX_PG_DSN", "postgres://envwins/x")
-	if got, _, err := PostgresDSN(); err != nil || got != "postgres://envwins/x" {
-		t.Fatalf("env should win, got %q err %v", got, err)
+	if err = os.WriteFile(path, []byte(`{"database":{"path":"local/store.sqlite","driver":"sqlite"}}`), 0600); err != nil {
+		t.Fatal(err)
 	}
-
-	// no env, no file → error (no built-in default)
-	t.Setenv("ARTEX_PG_DSN", "")
-	t.Setenv("ARTEX_CONFIG", filepath.Join(dir, "nope.json"))
-	if got, _, err := PostgresDSN(); err == nil {
-		t.Fatalf("missing config should error, got %q", got)
+	got, _, err = SQLitePath("")
+	if err != nil || got != filepath.Join(dir, "local", "store.sqlite") {
+		t.Fatalf("configured=%s %v", got, err)
 	}
-
-	// full dsn in config file is used verbatim
-	os.WriteFile(cfgPath, []byte(`{"database":{"dsn":"postgres://full/dsn"}}`), 0o644)
-	t.Setenv("ARTEX_CONFIG", cfgPath)
-	if got, _, err := PostgresDSN(); err != nil || got != "postgres://full/dsn" {
-		t.Fatalf("file dsn verbatim, got %q err %v", got, err)
+	t.Setenv("ARTEX_DB_PATH", filepath.Join(dir, "override.sqlite"))
+	got, _, err = SQLitePath("")
+	if err != nil || got != filepath.Join(dir, "override.sqlite") {
+		t.Fatalf("env=%s %v", got, err)
+	}
+	t.Setenv("ARTEX_DB_PATH", "")
+	if err = os.WriteFile(path, []byte(`{"database":{"host":"localhost","user":"old"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = SQLitePath(""); err == nil {
+		t.Fatal("legacy PostgreSQL configuration silently created an empty SQLite database")
 	}
 }

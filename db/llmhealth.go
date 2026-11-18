@@ -22,7 +22,7 @@ type LLMHealth struct {
 // call, not resurrected as broken.
 func (d *DB) LoadLLMHealth() ([]LLMHealth, error) {
 	rows, err := d.Query(`SELECT profile_id,fails,trips,open_until,COALESCE(last_error,''),last_at
-FROM llm_profile_health WHERE open_until IS NOT NULL AND open_until > now()`)
+FROM llm_profile_health WHERE open_until IS NOT NULL AND open_until > utc_now()`)
 	if err != nil {
 		return nil, err
 	}
@@ -42,10 +42,10 @@ FROM llm_profile_health WHERE open_until IS NOT NULL AND open_until > now()`)
 func (d *DB) SaveLLMHealth(h LLMHealth) error {
 	_, err := d.Exec(`
 INSERT INTO llm_profile_health(profile_id,fails,trips,open_until,last_error,last_at)
-VALUES ($1,$2,$3,$4,$5,now())
+VALUES ($1,$2,$3,$4,$5,utc_now())
 ON CONFLICT (profile_id) DO UPDATE SET
   fails=EXCLUDED.fails, trips=EXCLUDED.trips, open_until=EXCLUDED.open_until,
-  last_error=EXCLUDED.last_error, last_at=now()`,
+  last_error=EXCLUDED.last_error, last_at=utc_now()`,
 		h.ProfileID, h.Fails, h.Trips, h.OpenUntil, h.LastError)
 	return err
 }

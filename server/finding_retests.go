@@ -205,10 +205,7 @@ func (s *Server) seedFindingRetester() error {
 		return err
 	}
 	defer tx.Rollback()
-	// Lock this migration, including concurrent server initialization.
-	if _, err = tx.Exec(`SELECT pg_advisory_xact_lock(7337741010)`); err != nil {
-		return err
-	}
+	// BEGIN IMMEDIATE serializes concurrent initialization.
 	var done string
 	err = tx.QueryRow(`SELECT value FROM settings WHERE key=$1`, flag).Scan(&done)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {

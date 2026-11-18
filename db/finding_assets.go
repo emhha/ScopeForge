@@ -141,7 +141,7 @@ func (d *DB) buildFindingAssetTree(f FindingFilter, maxNodes int) (*FindingAsset
 	where, args := f.where()
 
 	rows, err := d.Query(`SELECT COALESCE(f.severity,''), f.created_at,
-       COALESCE(f.asset_ids::text,'[]')
+       COALESCE(f.asset_ids,'[]')
 FROM findings f LEFT JOIN tasks t ON f.task_id = t.id`+where, args...)
 	if err != nil {
 		return nil, err
@@ -255,7 +255,7 @@ func (d *DB) loadFindingAssetRows(ids map[int64]bool) (map[int64]*assetRow, erro
 	for id := range ids {
 		idList = append(idList, id)
 	}
-	rows, err := d.Query(`SELECT `+findingAssetSelectCols+` FROM assets a WHERE a.id = ANY($1::bigint[])`, idList)
+	rows, err := d.Query(`SELECT `+findingAssetSelectCols+` FROM assets a WHERE a.id IN (SELECT value FROM json_each($1))`, idList)
 	if err != nil {
 		return nil, err
 	}
@@ -410,19 +410,19 @@ func (d *DB) loadAssetsByHost(want missingHosts, byID map[int64]*assetRow) (int,
 		return nil
 	}
 	if err := load(`SELECT `+findingAssetSelectCols+` FROM assets a
-WHERE a.type='service' AND (a.domain = ANY($1::text[]) OR a.ip = ANY($1::text[]))`, want.services); err != nil {
+WHERE a.type='service' AND (a.domain IN (SELECT value FROM json_each($1)) OR a.ip IN (SELECT value FROM json_each($1)))`, want.services); err != nil {
 		return 0, err
 	}
 	if err := load(`SELECT `+findingAssetSelectCols+` FROM assets a
-WHERE a.type='subdomain' AND a.domain = ANY($1::text[])`, want.domains); err != nil {
+WHERE a.type='subdomain' AND a.domain IN (SELECT value FROM json_each($1))`, want.domains); err != nil {
 		return 0, err
 	}
 	if err := load(`SELECT `+findingAssetSelectCols+` FROM assets a
-WHERE a.type='ip' AND a.ip = ANY($1::text[])`, want.ips); err != nil {
+WHERE a.type='ip' AND a.ip IN (SELECT value FROM json_each($1))`, want.ips); err != nil {
 		return 0, err
 	}
 	if err := load(`SELECT `+findingAssetSelectCols+` FROM assets a
-WHERE a.type='root_domain' AND a.domain = ANY($1::text[])`, want.roots); err != nil {
+WHERE a.type='root_domain' AND a.domain IN (SELECT value FROM json_each($1))`, want.roots); err != nil {
 		return 0, err
 	}
 	return added, nil
@@ -533,7 +533,7 @@ func (d *DB) attachCompanyNodes(nodes map[string]*FindingAssetNode, parentOf map
 	for id := range want {
 		ids = append(ids, id)
 	}
-	rows, err := d.Query(`SELECT id, COALESCE(name,'') FROM companies WHERE id = ANY($1::bigint[])`, ids)
+	rows, err := d.Query(`SELECT id, COALESCE(name,'') FROM companies WHERE id IN (SELECT value FROM json_each($1))`, ids)
 	if err != nil {
 		return err
 	}

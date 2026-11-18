@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -156,8 +154,7 @@ func normalizeTaskTemplatePatch(patch TaskTemplatePatch) (TaskTemplatePatch, *st
 }
 
 func taskTemplateUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	return IsUniqueViolation(err)
 }
 
 // CreateTaskTemplate inserts one globally reusable preset.
@@ -238,12 +235,12 @@ func (d *DB) PatchTaskTemplate(id int64, patch TaskTemplatePatch) (*TaskTemplate
 		return nil, err
 	}
 	t, err := scanTaskTemplate(d.QueryRow(`UPDATE task_templates
-SET name=CASE WHEN $2 THEN $3::text ELSE name END,
-    nkey=CASE WHEN $2 THEN $4::text ELSE nkey END,
-    description=CASE WHEN $5 THEN $6::text ELSE description END,
-    goal=CASE WHEN $7 THEN $8::text ELSE goal END,
-    category_id=CASE WHEN $9 THEN $10::bigint ELSE category_id END,
-    intercept_rules=CASE WHEN $11 THEN $12::jsonb ELSE intercept_rules END
+SET name=CASE WHEN $2 THEN $3 ELSE name END,
+    nkey=CASE WHEN $2 THEN $4 ELSE nkey END,
+    description=CASE WHEN $5 THEN $6 ELSE description END,
+    goal=CASE WHEN $7 THEN $8 ELSE goal END,
+    category_id=CASE WHEN $9 THEN $10 ELSE category_id END,
+    intercept_rules=CASE WHEN $11 THEN $12 ELSE intercept_rules END
 WHERE id=$1
 RETURNING `+taskTemplateCols,
 		id,

@@ -26,43 +26,6 @@ type LLMUsage struct {
 	Status        string `json:"status"` // ok | error
 }
 
-const llmUsageSchema = `
-CREATE TABLE IF NOT EXISTS llm_usage (
-    id             BIGSERIAL PRIMARY KEY,
-    ts             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    task_id        TEXT,
-    exploration_id BIGINT,
-    worker         TEXT,
-    model          TEXT,
-    profile_name   TEXT,
-    latency_ms     INTEGER,
-    input_tokens   INTEGER NOT NULL DEFAULT 0,
-    output_tokens  INTEGER NOT NULL DEFAULT 0,
-    cache_read     INTEGER NOT NULL DEFAULT 0,
-    cache_write    INTEGER NOT NULL DEFAULT 0,
-    status         TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
-CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
-CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
-`
-
-// EnsureLLMUsageTable creates the llm_usage metering table if it does not exist.
-func (d *DB) EnsureLLMUsageTable() error {
-	tx, err := d.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if err := coordinateWithSchemaMigration(tx); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(llmUsageSchema); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // InsertLLMUsage appends one metering row. Best-effort: callers log and continue on
 // error (a lost metering row must never break the LLM call).
 func (d *DB) InsertLLMUsage(u *LLMUsage) error {
@@ -201,10 +164,10 @@ func (d *DB) UsageDaily(days int) ([]ProfileDayUsage, error) {
 	}
 	rows, err := d.Query(`
 SELECT COALESCE(profile_name,'') AS profile_name,
-       to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+       date(ts) AS day,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cache_read),0)
 FROM llm_usage
-WHERE ts >= now() - ($1 * interval '1 day')
+WHERE ts >= datetime(utc_now(), '-' || $1 || ' days')
 GROUP BY profile_name, day
 ORDER BY day`, days)
 	if err != nil {
@@ -299,10 +262,10 @@ WHERE worker = 'judge'`).Scan(&u.Calls, &u.InputTokens, &u.OutputTokens,
 		return JudgeUsage{}, err
 	}
 	rows, err := d.Query(`
-SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+SELECT date(ts) AS day,
        COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
 FROM llm_usage
-WHERE worker = 'judge' AND ts >= now() - ($1 * interval '1 day')
+WHERE worker = 'judge' AND ts >= datetime(utc_now(), '-' || $1 || ' days')
 GROUP BY day
 ORDER BY day`, days)
 	if err != nil {

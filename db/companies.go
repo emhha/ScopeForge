@@ -81,12 +81,6 @@ func ValidateCompanyScopeInputBounds(inputs []ScopeInput) error {
 	return nil
 }
 
-// Scope writes rebuild derived asset ownership globally, so serialize them to
-// ensure the committed attribution always reflects the latest committed rules.
-// This key is reserved for company mutations; 7337741001 is the schema lock and
-// 7337741002 is the cross-package test-suite lock.
-const companyScopeMutationLock int64 = 7337741003
-
 // Companies returns the company store.
 func (d *DB) Companies() *CompanyStore { return &CompanyStore{db: d} }
 
@@ -103,14 +97,25 @@ func (s *CompanyStore) UpsertCompany(name, logo string) (id int64, created bool,
 	if logo != "" {
 		logoVal = logo
 	}
-	err = s.db.QueryRow(`
-INSERT INTO companies(name, nkey, logo)
-VALUES ($1, $2, $3)
-ON CONFLICT (nkey) DO UPDATE SET
-    name = EXCLUDED.name,
-    logo = COALESCE(EXCLUDED.logo, companies.logo),
-    updated_at = now()
-RETURNING id, (xmax = 0)`, name, nkey, logoVal).Scan(&id, &created)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+	var existing int64
+	err = tx.QueryRow(`SELECT id FROM companies WHERE nkey=$1`, nkey).Scan(&existing)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, false, err
+	}
+	created = err == sql.ErrNoRows
+	err = tx.QueryRow(`INSERT INTO companies(name,nkey,logo) VALUES($1,$2,$3)
+ ON CONFLICT(nkey) DO UPDATE SET name=EXCLUDED.name,logo=COALESCE(EXCLUDED.logo,companies.logo),updated_at=utc_now()
+ RETURNING id`, name, nkey, logoVal).Scan(&id)
+	if err != nil {
+		return 0, false, err
+	}
+	err = tx.Commit()
+
 	return
 }
 
@@ -174,7 +179,7 @@ RETURNING id`, name, nkey, logoVal).Scan(&id); err != nil {
 func (s *CompanyStore) GetCompany(id int64) (*Company, error) {
 	c := &Company{}
 	err := s.db.QueryRow(`
-SELECT id, name, nkey, logo, created_at::text, updated_at::text
+SELECT id, name, nkey, logo, created_at, updated_at
 FROM companies WHERE id = $1`, id).Scan(
 		&c.ID, &c.Name, &c.NKey, &c.Logo, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -188,7 +193,7 @@ func (s *CompanyStore) GetCompanyByName(name string) (*Company, error) {
 	nkey := companyNKey(name)
 	c := &Company{}
 	err := s.db.QueryRow(`
-SELECT id, name, nkey, logo, created_at::text, updated_at::text
+SELECT id, name, nkey, logo, created_at, updated_at
 FROM companies WHERE nkey = $1`, nkey).Scan(
 		&c.ID, &c.Name, &c.NKey, &c.Logo, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -259,7 +264,7 @@ func (s *CompanyStore) DeleteCompanyWithAssets(id int64, deleteAssets bool) (ass
 // ListCompanies returns all companies with scope and asset count.
 func (s *CompanyStore) ListCompanies() ([]*CompanyWithScope, error) {
 	rows, err := s.db.Query(`
-SELECT c.id, c.name, c.nkey, c.logo, c.created_at::text, c.updated_at::text,
+SELECT c.id, c.name, c.nkey, c.logo, c.created_at, c.updated_at,
        COUNT(DISTINCT a.id) AS asset_count
 FROM companies c
 LEFT JOIN assets a ON a.company_id = c.id
@@ -297,7 +302,7 @@ ORDER BY c.name`)
 func (s *CompanyStore) GetScope(companyID int64) ([]ScopeRule, error) {
 	rows, err := s.db.Query(`
 SELECT id, company_id, kind,
-       COALESCE(domain,''), COALESCE(net::text,''), COALESCE(value,''), raw, COALESCE(reason,'')
+       COALESCE(domain,''), COALESCE(net,''), COALESCE(value,''), raw, COALESCE(reason,'')
 FROM company_scope
 WHERE company_id = $1
 ORDER BY id`, companyID)
@@ -412,7 +417,7 @@ func validateParsedScopeBounds(rules []ParsedScope) error {
 	return nil
 }
 
-func ensureCompanyExistsTx(tx *sql.Tx, companyID int64) error {
+func ensureCompanyExistsTx(tx *Tx, companyID int64) error {
 	var exists bool
 	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1)`, companyID).Scan(&exists); err != nil {
 		return err
@@ -423,12 +428,10 @@ func ensureCompanyExistsTx(tx *sql.Tx, companyID int64) error {
 	return nil
 }
 
-func lockCompanyScopeMutation(tx *sql.Tx) error {
-	_, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, companyScopeMutationLock)
-	return err
-}
+// The SQLite writer transaction already owns the mutation boundary.
+func lockCompanyScopeMutation(tx *Tx) error { return nil }
 
-func insertScopeRulesTx(tx *sql.Tx, companyID int64, rules []ParsedScope, reason string) (
+func insertScopeRulesTx(tx *Tx, companyID int64, rules []ParsedScope, reason string) (
 	added, skipped int, needsAttribution bool, err error,
 ) {
 	for _, rule := range rules {
@@ -448,20 +451,20 @@ func insertScopeRulesTx(tx *sql.Tx, companyID int64, rules []ParsedScope, reason
 
 // insertScopeRuleTx inserts a scope rule. inserted=false means a duplicate was
 // ignored by ON CONFLICT, not an error.
-func insertScopeRuleTx(tx *sql.Tx, companyID int64, rule ParsedScope, reason string) (inserted bool, err error) {
+func insertScopeRuleTx(tx *Tx, companyID int64, rule ParsedScope, reason string) (inserted bool, err error) {
 	var res interface{ RowsAffected() (int64, error) }
 	switch rule.Kind {
 	case "domain":
 		res, err = tx.Exec(`
 INSERT INTO company_scope(company_id, kind, domain, raw, reason)
 VALUES ($1, 'domain', $2, $3, $4)
-ON CONFLICT ON CONSTRAINT uq_sv2_domain DO NOTHING`,
+ON CONFLICT(company_id,domain) DO NOTHING`,
 			companyID, rule.Domain, rule.Raw, reason)
 	case "ip", "cidr":
 		res, err = tx.Exec(`
 INSERT INTO company_scope(company_id, kind, net, raw, reason)
-VALUES ($1, $2, $3::cidr, $4, $5)
-ON CONFLICT ON CONSTRAINT uq_sv2_net DO NOTHING`,
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT(company_id,net) DO NOTHING`,
 			companyID, rule.Kind, rule.Net, rule.Raw, reason)
 	case "icp", "keyword":
 		res, err = tx.Exec(`
@@ -503,7 +506,7 @@ func (s *CompanyStore) RecomputeAttribution() error {
 // for assets whose ip column cannot be parsed: try_inet skips them instead of
 // aborting the statement, so without this they would silently never receive a
 // network-based company. Callers surface the warning and it is always logged.
-func recomputeAttributionTx(tx *sql.Tx) (string, error) {
+func recomputeAttributionTx(tx *Tx) (string, error) {
 	// Only derived rows are cleared. Historical rows migrated without provenance
 	// are marked explicit by schema.sql, which is the non-destructive default.
 	if _, err := tx.Exec(`
@@ -515,17 +518,14 @@ WHERE company_source = 'scope'`); err != nil {
 
 	// Domain-based attribution (root_domain exact match).
 	if _, err := tx.Exec(`
-WITH matched AS (
-    SELECT DISTINCT ON (a.id) a.id AS asset_id, cs.company_id
+WITH matched AS ( SELECT asset_id,company_id FROM ( SELECT a.id AS asset_id,cs.company_id, ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY length(cs.domain) DESC, cs.company_id) AS choice
     FROM assets a
     JOIN company_scope cs ON cs.kind = 'domain' AND a.root_domain = cs.domain
     WHERE a.company_id IS NULL
       AND a.type IN ('root_domain','subdomain','service','endpoint')
       AND a.root_domain IS NOT NULL
-    ORDER BY a.id, length(cs.domain) DESC, cs.company_id
-)
-UPDATE assets a
-SET company_id = matched.company_id, company_source = 'scope'
+    ) WHERE choice=1 )
+UPDATE assets AS a SET company_id = matched.company_id, company_source = 'scope'
 FROM matched
 WHERE a.id = matched.asset_id`); err != nil {
 		return "", err
@@ -533,17 +533,14 @@ WHERE a.id = matched.asset_id`); err != nil {
 
 	// IP/CIDR attribution for still-unowned assets.
 	if _, err := tx.Exec(`
-WITH matched AS (
-    SELECT DISTINCT ON (a.id) a.id AS asset_id, cs.company_id
+WITH matched AS ( SELECT asset_id,company_id FROM ( SELECT a.id AS asset_id,cs.company_id, ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY masklen(cs.net) DESC, cs.company_id) AS choice
     FROM assets a
-    JOIN company_scope cs ON cs.kind IN ('ip','cidr') AND cs.net >>= try_inet(a.ip)
+    JOIN company_scope cs ON cs.kind IN ('ip','cidr') AND cidr_contains(cs.net,try_inet(a.ip))
     WHERE a.company_id IS NULL
       AND a.type IN ('ip','subdomain','service','endpoint')
       AND a.ip IS NOT NULL
-    ORDER BY a.id, masklen(cs.net) DESC, cs.company_id
-)
-UPDATE assets a
-SET company_id = matched.company_id, company_source = 'scope'
+    ) WHERE choice=1 )
+UPDATE assets AS a SET company_id = matched.company_id, company_source = 'scope'
 FROM matched
 WHERE a.id = matched.asset_id`); err != nil {
 		return "", err
@@ -551,8 +548,7 @@ WHERE a.id = matched.asset_id`); err != nil {
 
 	// Exact normalized ICP attribution after domain/network precedence.
 	if _, err := tx.Exec(`
-WITH matched AS (
-    SELECT DISTINCT ON (a.id) a.id AS asset_id, cs.company_id
+WITH matched AS ( SELECT asset_id,company_id FROM ( SELECT a.id AS asset_id,cs.company_id, ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY cs.company_id) AS choice
     FROM assets a
     JOIN company_scope cs ON cs.kind = 'icp'
       AND (
@@ -561,10 +557,8 @@ WITH matched AS (
       )
 	WHERE a.company_id IS NULL
       AND (COALESCE(a.icp,'') <> '' OR COALESCE(a.app_icp,'') <> '')
-    ORDER BY a.id, cs.company_id
-)
-UPDATE assets a
-SET company_id = matched.company_id, company_source = 'scope'
+    ) WHERE choice=1 )
+UPDATE assets AS a SET company_id = matched.company_id, company_source = 'scope'
 FROM matched
 WHERE a.id = matched.asset_id`); err != nil {
 		return "", err
@@ -585,10 +579,10 @@ func logAttributionWarning(warning string) {
 	}
 }
 
-// malformedIPAssetQueryer is satisfied by both *sql.Tx and *DB so the warning
+// malformedIPAssetQueryer is satisfied by both *Tx and *DB so the warning
 // can be produced inside a recompute transaction or read standalone by the API.
 type malformedIPAssetQueryer interface {
-	Query(query string, args ...any) (*sql.Rows, error)
+	Query(query string, args ...any) (*Rows, error)
 }
 
 // MalformedIPAssetWarning reports assets with an unparseable ip outside of any
@@ -720,7 +714,7 @@ func (s *CompanyStore) ResolveCompanyWithICP(rootDomain, ipStr, icp string) (*in
 }
 
 type companyScopeQueryer interface {
-	QueryRow(query string, args ...any) *sql.Row
+	QueryRow(query string, args ...any) *Row
 }
 
 func resolveCompanyWithICP(q companyScopeQueryer, rootDomain, ipStr, icp string) (*int64, error) {
@@ -745,7 +739,7 @@ LIMIT 1`, rootDomain).Scan(&cid)
 			err := q.QueryRow(`
 SELECT company_id FROM company_scope
 WHERE kind IN ('ip','cidr')
-  AND net >>= $1::inet
+  AND cidr_contains(net,$1)
 ORDER BY masklen(net) DESC, company_id
 LIMIT 1`, ipStr).Scan(&cid)
 			if err == nil {

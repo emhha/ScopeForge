@@ -116,7 +116,9 @@ func TestInterceptDetails(t *testing.T) {
 		for _, legacy := range []bool{true, false} {
 			id := create(t, &InterceptAudit{InitialAction: "ask", ExecutionStatus: "not_started"})
 			var raw []byte
-			if err := d.QueryRow(`SELECT row_to_json(ip) FROM intercept_pending ip WHERE id=$1`, id).Scan(&raw); err != nil {
+			archivedRows, _, err := queryArchiveRows(d, `SELECT * FROM intercept_pending WHERE id=$1`, id)
+			raw = firstArchiveRow(archivedRows)
+			if err != nil {
 				t.Fatal(err)
 			}
 			var row map[string]any

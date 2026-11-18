@@ -33,7 +33,7 @@ func commandFilter(expID *int64, q string) (string, []any, int) {
 		argN++
 	}
 	if q != "" {
-		where += fmt.Sprintf(` AND (u.tool ILIKE $%d OR u.detail ILIKE $%d)`, argN, argN)
+		where += fmt.Sprintf(` AND (u.tool LIKE $%d OR u.detail LIKE $%d)`, argN, argN)
 		args = append(args, "%"+q+"%")
 		argN++
 	}
@@ -153,59 +153,6 @@ type LLMRecord struct {
 	RawResponse string `json:"raw_response,omitempty"`
 }
 
-const llmRecordsSchema = `
-CREATE TABLE IF NOT EXISTS llm_records (
-    id            BIGSERIAL PRIMARY KEY,
-    ts            TIMESTAMPTZ DEFAULT now(),
-    model         TEXT,
-    profile_name  TEXT,
-    session_id    TEXT,
-    task_id       TEXT,
-    worker        TEXT,
-    latency_ms    INTEGER,
-    input_tokens  INTEGER,
-    output_tokens INTEGER,
-    cache_read    INTEGER,
-    cache_write   INTEGER,
-    status        TEXT,
-    error         TEXT,
-    request_body  TEXT,
-    response_body TEXT,
-    raw_request   TEXT,
-    raw_response  TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_llm_records_ts ON llm_records(ts);
-CREATE INDEX IF NOT EXISTS idx_llm_records_session ON llm_records(session_id);
-`
-
-// llmRecordsMigrate adds new columns to existing tables.
-const llmRecordsMigrate = `
-ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS task_id TEXT;
-ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS worker TEXT;
-ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS profile_name TEXT;
-ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS raw_request TEXT;
-ALTER TABLE llm_records ADD COLUMN IF NOT EXISTS raw_response TEXT;
-`
-
-// EnsureLLMRecordsTable creates the llm_records table if it does not exist.
-func (d *DB) EnsureLLMRecordsTable() error {
-	tx, err := d.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if err := coordinateWithSchemaMigration(tx); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(llmRecordsSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(llmRecordsMigrate); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // InsertLLMRecord stores one LLM call record.
 func (d *DB) InsertLLMRecord(r *LLMRecord) error {
 	_, err := d.Exec(`
@@ -237,7 +184,7 @@ func (d *DB) ListLLMRecords(model, session, task string, page, size int) ([]LLMR
 		argN++
 	}
 	if session != "" {
-		where += fmt.Sprintf(` AND session_id ILIKE $%d`, argN)
+		where += fmt.Sprintf(` AND session_id LIKE $%d`, argN)
 		args = append(args, "%"+session+"%")
 		argN++
 	}

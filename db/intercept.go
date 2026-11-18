@@ -137,7 +137,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 
 // DecideInterceptPending updates a pending record's status (allowed/denied/timeout).
 func (d *DB) DecideInterceptPending(id int64, status string) error {
-	_, err := d.Exec(`UPDATE intercept_pending SET status=$2, decided_at=NOW() WHERE id=$1`, id, status)
+	_, err := d.Exec(`UPDATE intercept_pending SET status=$2, decided_at=utc_now() WHERE id=$1`, id, status)
 	return err
 }
 
@@ -166,7 +166,7 @@ func (d *DB) CreateDecidedIntercept(ruleID, convID int64, taskID, agentName, too
 	var id int64
 	err := d.QueryRow(`
 INSERT INTO intercept_pending(rule_id, conversation_id, task_id, agent_name, tool_name, tool_input, status, reason, decided_at, decision_source, audit)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10) RETURNING id`,
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, utc_now(), $9, $10) RETURNING id`,
 		ruleIDPtr, convIDPtr, taskIDPtr, agentName, toolName, raw, status, reason, interceptSource(ruleID, reason), firstAudit(audits)).Scan(&id)
 	return id, err
 }

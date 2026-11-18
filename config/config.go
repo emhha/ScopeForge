@@ -1,20 +1,20 @@
 // Package config loads runtime configuration from a JSON file, with environment
-// variables taking precedence. Currently it carries the PostgreSQL connection.
+// variables taking precedence. Business data defaults to a local SQLite file.
 package config
 
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
-// Database is the PostgreSQL connection config. Either set DSN directly, or set
-// the component fields and a DSN is assembled from them.
+// Database configures SQLite. Legacy PostgreSQL fields only identify unsupported
+// configurations so startup never silently creates an empty replacement database.
 type Database struct {
+	Path     string `json:"path,omitempty"`
+	Driver   string `json:"driver,omitempty"`
 	DSN      string `json:"dsn"`
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
@@ -126,67 +126,40 @@ func SkillDir() string {
 	return d
 }
 
-// PostgresDSN resolves the connection string with precedence:
-//
-//	env ARTEX_PG_DSN  >  config file (database.dsn, or assembled from fields)
-//
-// There is NO built-in fallback: when neither source supplies a database config,
-// it returns an error naming the config path it inspected, so startup fails loudly
-// instead of silently connecting to a wrong default. source describes where the
-// DSN came from (for startup logging).
-func PostgresDSN() (dsn, source string, err error) {
-	if v := strings.TrimSpace(os.Getenv("ARTEX_PG_DSN")); v != "" {
-		return v, "环境变量 ARTEX_PG_DSN", nil
+// SQLitePath resolves a local database file. Default storage follows the data
+// directory; relative configured paths are relative to the config file.
+func SQLitePath(dataDir string) (path, source string, err error) {
+	if value := strings.TrimSpace(os.Getenv("ARTEX_DB_PATH")); value != "" {
+		return value, "环境变量 ARTEX_DB_PATH", nil
 	}
-	db := Load().Database
-	if d := strings.TrimSpace(db.DSN); d != "" {
-		return d, "配置文件 " + Path() + " (database.dsn)", nil
+	var loaded Config
+	raw, readErr := os.ReadFile(Path())
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return "", "", fmt.Errorf("read database config: %w", readErr)
 	}
-	if db.Host != "" || db.DBName != "" || db.User != "" {
-		return db.buildDSN(), "配置文件 " + Path() + " (database 字段)", nil
-	}
-	return "", "", fmt.Errorf("未找到数据库配置：环境变量 ARTEX_PG_DSN 未设置，且配置文件 %s 未提供 database（dsn 或 host/user/dbname）。请创建该配置文件或设置环境变量后重试", Path())
-}
-
-func (d Database) buildDSN() string {
-	host := d.Host
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	port := d.Port
-	if port == 0 {
-		port = 5432
-	}
-	ssl := d.SSLMode
-	if ssl == "" {
-		ssl = "disable"
-	}
-	u := url.URL{
-		Scheme: "postgres",
-		Host:   host + ":" + strconv.Itoa(port),
-		Path:   "/" + d.DBName,
-	}
-	if d.User != "" {
-		if d.Password != "" {
-			u.User = url.UserPassword(d.User, d.Password)
-		} else {
-			u.User = url.User(d.User)
+	if readErr == nil {
+		if err := json.Unmarshal(raw, &loaded); err != nil {
+			return "", "", fmt.Errorf("invalid config.json: %w", err)
 		}
 	}
-	u.RawQuery = url.Values{"sslmode": {ssl}}.Encode()
-	return u.String()
-}
+	database := loaded.Database
+	if database.Driver != "" && database.Driver != "sqlite" {
+		return "", "", fmt.Errorf("database.driver must be sqlite")
+	}
 
-// String is a redacted view of the resolved DSN (password masked) for logging.
-func Redact(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return dsn
-	}
-	if u.User != nil {
-		if _, hasPw := u.User.Password(); hasPw {
-			u.User = url.UserPassword(u.User.Username(), "****")
+	if database.Path != "" {
+		path = database.Path
+		if !filepath.IsAbs(path) && !strings.HasPrefix(path, "file:") {
+			path = filepath.Join(filepath.Dir(Path()), path)
 		}
+		return path, "配置文件 " + Path() + " (database.path)", nil
 	}
-	return fmt.Sprintf("%s", u.String())
+
+	if database.DSN != "" || database.Host != "" || database.DBName != "" || database.User != "" || os.Getenv("ARTEX_PG_DSN") != "" {
+		return "", "", fmt.Errorf("不支持 PostgreSQL 配置；请使用 SQLite，并通过 database.path 或 ARTEX_DB_PATH 指定数据库文件")
+	}
+	if dataDir == "" {
+		dataDir = filepath.Join(BaseDir(), "data")
+	}
+	return filepath.Join(dataDir, "artex.sqlite"), "默认本地 SQLite", nil
 }

@@ -59,9 +59,9 @@ type ToolSet struct {
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
-	// DB default (true). When true: graphOverviewData drops the coverage block, the
-	// auto-scope hook (insertAssets) is skipped, and add_task_scope/list_untested_assets
-	// are filtered out of the agent's tool list. The scope field stays regardless.
+	// DB default (true). When true, graphOverviewData omits coverage metrics and
+	// list_untested_assets is filtered out. Task scope and its accumulation remain
+	// available regardless of the metrics switch.
 	coverageDisabled bool
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
@@ -520,10 +520,13 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
 	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，
 	// 丢弃 denominator/tested/pct/by_type/note 等覆盖度度量，避免污染上下文、也不诱导
-	// 已隐藏的 add_task_scope/list_untested_assets。
+	// 已隐藏的 list_untested_assets。
 	if t.as != nil && t.ts != nil && t.taskID > 0 {
 		{
 			m := map[string]any{}
+			if scope, err := t.overviewTaskScope(); err == nil && len(scope) > 0 {
+				m["scope"] = scope
+			}
 			if !t.coverageDisabled {
 				if cov, err := t.as.TaskCoverageWithSources(t.taskID); err == nil {
 					m["denominator"] = cov.Denominator
@@ -549,6 +552,60 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	return out
+}
+
+// Task scope is a planning boundary even when coverage metrics are disabled.
+// Company rules supply the domains, networks and search keywords behind a
+// company reference; keep both the original rule kind and its entered value.
+func (t *ToolSet) overviewTaskScope() ([]map[string]any, error) {
+	rows, err := t.as.ListTaskScope(t.taskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		entry := map[string]any{"kind": row.Kind, "source": row.Source}
+		switch {
+		case row.CompanyID != nil:
+			entry["company_id"] = *row.CompanyID
+			entry["company_name"] = row.CompanyName
+			if t.cs != nil {
+				rules, err := t.cs.GetScope(*row.CompanyID)
+				if err != nil {
+					return nil, err
+				}
+				companyScope := make([]map[string]any, 0, len(rules))
+				keywords := []string{}
+				for _, rule := range rules {
+					value := rule.Raw
+					if value == "" {
+						switch {
+						case rule.Domain != "":
+							value = rule.Domain
+						case rule.Net != "":
+							value = rule.Net
+						default:
+							value = rule.Value
+						}
+					}
+					companyScope = append(companyScope, map[string]any{"kind": rule.Kind, "value": value})
+					if rule.Kind == "keyword" {
+						keywords = append(keywords, value)
+					}
+				}
+				entry["company_scope"] = companyScope
+				entry["company_keywords"] = keywords
+			}
+		case row.Domain != "":
+			entry["value"] = row.Domain
+		case row.Net != "":
+			entry["value"] = row.Net
+		case row.Value != "":
+			entry["value"] = row.Value
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }
 
 func inheritedMap(m map[string]any, sourceTaskID int64) map[string]any {

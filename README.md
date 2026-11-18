@@ -75,89 +75,35 @@ make test            # Go 测试、前端类型检查及测试
 make clean           # 清理产物
 ```
 
-可通过 `VERSION=v1.0.0`、`BINARY=dist/artex`、`GO=go`、`NPM=npm` 覆盖构建参数。当前后端仍需要 PostgreSQL 配置；SQLite 与原生 tRPC 迁移进度见 [迁移计划](MIGRATION_PLAN.md)。
+可通过 `VERSION=v1.0.0`、`BINARY=dist/artex`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite；原生 tRPC 迁移进度见 [迁移计划](MIGRATION_PLAN.md)。
 
 ## 安装
 
-> 依赖数据库 **PostgreSQL**；探索需配置 **LLM**（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，也可在 UI 里配）。
+业务数据库使用 SQLite，无需启动外部数据库服务。探索需配置 LLM，可通过环境变量或应用内设置配置。
 
-### 方式一：一键安装脚本（推荐）
-
-```bash
-git clone https://github.com/Autumn-27/ARTEX.git
-cd ARTEX
-./install.sh
+```sh
+cp config.example.json config.json
+make
+./artex
 ```
 
-脚本会：检测 / 自动安装 Docker → 让你选 **① 全部 Docker** 或 **② 本地编译运行**：
+打开 **http://localhost:8787**，首次进入 `/setup` 设置管理员密码。
+数据库默认保存到 `-data` 目录下的 `artex.sqlite`；`ARTEX_DB_PATH` 可以指定文件位置，`database.path` 中的相对路径以配置文件所在目录为基准。
+已有 PostgreSQL 数据不会自动导入；旧数据库配置会明确报错，避免误建空库。
 
-- **① 全部 Docker**：填一个 Postgres 密码（可回车随机）→ 自动写 `.env` → `docker compose up -d`。
-- **② 本地运行**：选数据库（连已有 / 用 Docker 起一个）→ 生成 `config.json` → `go` 编译内嵌单二进制 → 启动。
+需要重置管理员密码时：
 
-装好后打开 **http://localhost:8787**（首次进入 `/setup` 设置管理员密码）。
-
-### 方式二：Docker Compose（手动）
-
-```bash
-git clone https://github.com/Autumn-27/ARTEX.git
-cd ARTEX
-cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 autumn27/artex 镜像 + postgres
-# → http://localhost:8787
+```sh
+printf '%s\n' '新的密码' | ./artex -reset-password
 ```
 
-镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
-
-远程 MCP 可在系统设置中选择 `http`（Streamable HTTP）或 `sse`（旧版 SSE）。
-旧版 SSE 服务通常使用 `GET /sse` 建立事件流，再通过服务返回的
-`/message?sessionId=...` 接收 JSON-RPC 请求；配置时将 URL 填为 `/sse`，请求头按
-`Authorization=Bearer <token>` 填写。
-
-### 方式三：下载预编译二进制（Releases）
-
-到 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：
-
-```bash
-cp config.example.json config.json   # 填好 database 连接
-./start.sh                           # → http://localhost:8787
-```
-
-> 请用 `start.sh` / `start.bat` 启动，而不是直接跑 `./artex`。它是个守护脚本：程序退出后按退出码决定是否重新拉起，**页面上的[一键更新](#方式一页面一键更新推荐)靠它完成换装**。直接运行 `./artex` 时更新完就不会被拉起了。
-> 后台常驻：`nohup ./start.sh >artex.log 2>&1 &`。
-
-### 方式四：从源码编译单二进制
-
-```bash
-# 1) 前端静态导出
-cd web && npm ci && npm run build:static && cd ..
-# 2) 拷进内嵌目录
-cp -r web/out server/webui/dist
-# 3) 编译（-tags embedui 才内嵌前端）
-CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
-./start.sh
-```
-
-### 方式五：构建跨平台 Release 压缩包
-
-`build.sh` 会先构建并嵌入前端，再使用 Go linker 去除调试信息，并将发布文件压缩为 zip。Release 模式默认生成 Linux amd64/arm64、macOS amd64/arm64 和 Windows amd64 的 zip 包：
-
-```bash
-./build.sh --release
-# 产物：dist/artex-0.3.3-*.zip
-```
-
-UPX 自解压二进制可能与部分 Linux 内核、虚拟化环境或安全策略不兼容，因此默认不启用。可用 `ARTEX_TARGETS` 自定义目标；确认目标运行环境兼容时，可显式传入 `--upx` 进一步缩小二进制：
-
-```bash
-ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
-./build.sh --target linux/amd64 --upx
-```
+远程 MCP 支持 Streamable HTTP 与旧版 SSE；服务配置仍通过应用内管理页面维护。
 
 ---
 
 ## 更新升级
 
-> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
+> 升级只换程序、不动数据：`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
 
 ### 方式一：页面一键更新（推荐）
 
@@ -295,7 +241,7 @@ server {
 
 ## 系统技术架构
 
-ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Vite 前端）+ PostgreSQL，agent 能力由 [`norma`](https://github.com/Autumn-27/norma) SDK 提供（`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`）。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
+ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Vite 前端）+ SQLite，agent 能力由 [`norma`](https://github.com/Autumn-27/norma) SDK 提供（`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`）。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
 
 ### 总体分层
 
@@ -315,7 +261,7 @@ flowchart TB
     WK["worker　执行者 ×N"]
     MA["mainagent　人在环路"]
   end
-  subgraph DB["PostgreSQL"]
+  subgraph DB["SQLite"]
     AGRAPH["资产图　assets / companies / task_scope"]
     EGRAPH["探索图　exploration_nodes / anchors / activity"]
   end

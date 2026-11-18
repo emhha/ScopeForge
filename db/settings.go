@@ -21,7 +21,7 @@ func (d *DB) GetSetting(key string) (value string, ok bool, err error) {
 func (d *DB) SetSetting(key, value string) error {
 	_, err := d.Exec(`
 INSERT INTO settings(key, value) VALUES ($1, $2)
-ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key, value)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = utc_now()`, key, value)
 	return err
 }
 

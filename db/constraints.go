@@ -60,7 +60,7 @@ func (s *ExplorationStore) UpdateConstraint(id int64, kind, text string) error {
 		return fmt.Errorf("kind 必须是 allow 或 deny")
 	}
 	res, err := s.db.Exec(`
-UPDATE task_constraints SET kind=$1, text=$2, updated_at=now()
+UPDATE task_constraints SET kind=$1, text=$2, updated_at=utc_now()
 WHERE id=$3 AND exploration_id=$4`, kind, text, id, s.expID)
 	if err != nil {
 		return err

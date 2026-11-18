@@ -17,7 +17,7 @@ func cleanupCompany(d *DB, id int64) {
 func TestCompanyUpsertAndGet(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -64,7 +64,7 @@ func TestCompanyUpsertAndGet(t *testing.T) {
 func TestCreateCompanyWithScopeRejectsNormalizedDuplicate(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -103,11 +103,15 @@ func TestCreateCompanyWithScopeRejectsNormalizedDuplicate(t *testing.T) {
 func TestCreateCompanyWithScopeRollsBackOnScopeWriteFailure(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
 
+	if _, err := d.Exec(`CREATE TRIGGER fail_scope BEFORE INSERT ON company_scope BEGIN SELECT RAISE(ABORT,'injected scope failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DROP TRIGGER IF EXISTS fail_scope`)
 	name := fmt.Sprintf("Atomic Create %d", time.Now().UnixNano())
 	_, _, _, _, _, err = cs.CreateCompanyWithScope(name, "", []ScopeInput{
 		{Kind: "keyword", Value: "invalid\x00postgres-text"},
@@ -128,7 +132,7 @@ func TestCreateCompanyWithScopeRollsBackOnScopeWriteFailure(t *testing.T) {
 func TestCompanyScope(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -166,7 +170,7 @@ func TestCompanyScope(t *testing.T) {
 func TestCompanyScopeInvalid(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -195,7 +199,7 @@ func TestCompanyScopeInvalid(t *testing.T) {
 func TestResolveCompany(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -236,7 +240,7 @@ func TestResolveCompany(t *testing.T) {
 func TestUpdateScope(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -281,7 +285,7 @@ func TestUpdateScope(t *testing.T) {
 func TestUpdateScopeRollsBackOnInsertFailure(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -298,6 +302,10 @@ func TestUpdateScopeRollsBackOnInsertFailure(t *testing.T) {
 		t.Fatalf("seed scope: added=%d invalid=%d errors=%v", added, invalid, addErrors)
 	}
 
+	if _, err := d.Exec(`CREATE TRIGGER fail_scope BEFORE INSERT ON company_scope BEGIN SELECT RAISE(ABORT,'injected scope failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DROP TRIGGER IF EXISTS fail_scope`)
 	added, invalid, updateErrors := cs.UpdateScopeInputs(id, []ScopeInput{
 		{Kind: "keyword", Value: "invalid\x00postgres-text"},
 	}, "replacement")
@@ -316,7 +324,7 @@ func TestUpdateScopeRollsBackOnInsertFailure(t *testing.T) {
 func TestDeleteCompany(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -344,7 +352,7 @@ func TestDeleteCompany(t *testing.T) {
 func TestDeleteCompanyWithAssetsDeletesBoth(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -391,7 +399,7 @@ RETURNING id`, domain, id).Scan(&assetID); err != nil {
 func TestRecomputeAttribution(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()
@@ -433,7 +441,7 @@ func TestRecomputeAttribution(t *testing.T) {
 func TestListCompanies(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v)", err)
+		t.Fatalf("SQLite unavailable (%v)", err)
 	}
 	defer d.Close()
 	cs := d.Companies()

@@ -26,13 +26,9 @@ func hasSkillTool(tools []actool.CoreTool) bool {
 // ToolAugment hook. Skills live on disk under skillDir; visibility is a per-agent
 // (agent × skill_name) row keyed by the skill's directory name.
 func TestAssembleVisibleSkill(t *testing.T) {
-	dsn, _, err := db.DSN()
+	pg, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
 	if err != nil {
-		t.Skipf("no database config (%v) — skipping", err)
-	}
-	pg, err := db.Open(dsn)
-	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer pg.Close()
 

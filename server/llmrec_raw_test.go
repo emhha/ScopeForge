@@ -21,13 +21,10 @@ import (
 func TestRecorderPersistsRawWireBodies(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
 	pg := m.PG()
-	if err := pg.EnsureLLMRecordsTable(); err != nil {
-		t.Fatalf("ensure table: %v", err)
-	}
 
 	sse := strings.Join([]string{
 		`event: message_start`,

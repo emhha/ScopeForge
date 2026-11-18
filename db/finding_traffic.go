@@ -20,19 +20,14 @@ var (
 	ErrEvidenceNotFound = errors.New("流量证据不存在")
 )
 
-// This lock covers the evidence filesystem as well as its SQL references. All
-// processes sharing the database use it, including readers, exports and GC.
-const findingEvidenceLockKey int64 = 7337741004
-
-func (d *DB) WithEvidenceTx(ctx context.Context, fn func(*sql.Tx) error) error {
+// WithEvidenceTx commits evidence metadata using the serialized SQLite writer.
+func (d *DB) WithEvidenceTx(ctx context.Context, fn func(*Tx) error) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, findingEvidenceLockKey); err != nil {
-		return err
-	}
+
 	if err = fn(tx); err != nil {
 		return err
 	}
@@ -138,12 +133,12 @@ func TrafficSnapshotID(snapshot TrafficEvidenceSnapshot) string {
 
 // LockTaskEvidenceTx serializes writes with archive queueing (which locks the
 // same task row). Once queued, its snapshot must not acquire new evidence.
-func LockTaskEvidenceTx(tx *sql.Tx, taskID int64) error {
+func LockTaskEvidenceTx(tx *Tx, taskID int64) error {
 	if taskID == 0 {
 		return nil
 	}
 	var deleted sql.NullTime
-	if err := tx.QueryRow(`SELECT deleted_at FROM tasks WHERE id=$1 FOR UPDATE`, taskID).Scan(&deleted); err != nil {
+	if err := tx.QueryRow(`SELECT deleted_at FROM tasks WHERE id=$1 `, taskID).Scan(&deleted); err != nil {
 		return err
 	}
 	if deleted.Valid {
@@ -160,7 +155,7 @@ func LockTaskEvidenceTx(tx *sql.Tx, taskID int64) error {
 	return nil
 }
 
-func LockFindingEvidenceTx(tx *sql.Tx, findingID int64, version *int64) error {
+func LockFindingEvidenceTx(tx *Tx, findingID int64, version *int64) error {
 	var taskID sql.NullInt64
 	if err := tx.QueryRow(`SELECT task_id FROM findings WHERE id=$1`, findingID).Scan(&taskID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -172,7 +167,7 @@ func LockFindingEvidenceTx(tx *sql.Tx, findingID int64, version *int64) error {
 		return err
 	}
 	var current int64
-	if err := tx.QueryRow(`SELECT evidence_version FROM findings WHERE id=$1 FOR UPDATE`, findingID).Scan(&current); err != nil {
+	if err := tx.QueryRow(`SELECT evidence_version FROM findings WHERE id=$1 `, findingID).Scan(&current); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrFindingNotFound
 		}
@@ -184,7 +179,7 @@ func LockFindingEvidenceTx(tx *sql.Tx, findingID int64, version *int64) error {
 	return nil
 }
 
-func InsertEvidenceSnapshotTx(tx *sql.Tx, s TrafficEvidenceSnapshot) error {
+func InsertEvidenceSnapshotTx(tx *Tx, s TrafficEvidenceSnapshot) error {
 	if s.ID != TrafficSnapshotID(s) {
 		return errors.New("证据快照元数据哈希不匹配")
 	}
@@ -202,7 +197,7 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(id) DO NOTHIN
 	return err
 }
 
-func AddFindingTrafficTx(tx *sql.Tx, findingID int64, prepared []PreparedTrafficEvidence) error {
+func AddFindingTrafficTx(tx *Tx, findingID int64, prepared []PreparedTrafficEvidence) error {
 	var position int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(position)+1,0) FROM finding_traffic_bindings WHERE finding_id=$1`, findingID).Scan(&position); err != nil {
 		return err
@@ -235,12 +230,12 @@ VALUES($1,$2,$3,$4,$5) ON CONFLICT(finding_id,snapshot_id) DO NOTHING`, findingI
 	return nil
 }
 
-func bumpEvidenceVersionTx(tx *sql.Tx, findingID int64) error {
+func bumpEvidenceVersionTx(tx *Tx, findingID int64) error {
 	_, err := tx.Exec(`UPDATE findings SET evidence_version=evidence_version+1 WHERE id=$1`, findingID)
 	return err
 }
 
-func FindingTrafficTx(tx *sql.Tx, findingID int64) (*FindingTraffic, error) {
+func FindingTrafficTx(tx *Tx, findingID int64) (*FindingTraffic, error) {
 	out := &FindingTraffic{FindingID: findingID, Bindings: []FindingTrafficBinding{}}
 	if err := tx.QueryRow(`SELECT evidence_version,report_evidence_version FROM findings WHERE id=$1`, findingID).Scan(&out.Version, &out.ReportVersion); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -248,7 +243,11 @@ func FindingTrafficTx(tx *sql.Tx, findingID int64) (*FindingTraffic, error) {
 		}
 		return nil, err
 	}
-	rows, err := tx.Query(`SELECT b.id,b.finding_id,b.snapshot_id,b.role,b.note,b.position,b.created_at,to_jsonb(s)
+	projection, err := sqliteRowJSON(tx, "traffic_evidence_snapshots", "s")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(`SELECT b.id,b.finding_id,b.snapshot_id,b.role,b.note,b.position,b.created_at,`+projection+`
 FROM finding_traffic_bindings b JOIN traffic_evidence_snapshots s ON s.id=b.snapshot_id WHERE b.finding_id=$1 ORDER BY b.position,b.id`, findingID)
 	if err != nil {
 		return nil, err
@@ -269,7 +268,7 @@ FROM finding_traffic_bindings b JOIN traffic_evidence_snapshots s ON s.id=b.snap
 }
 
 func (d *DB) GetFindingTraffic(ctx context.Context, findingID int64) (out *FindingTraffic, err error) {
-	err = d.WithEvidenceTx(ctx, func(tx *sql.Tx) error { var e error; out, e = FindingTrafficTx(tx, findingID); return e })
+	err = d.WithEvidenceTx(ctx, func(tx *Tx) error { var e error; out, e = FindingTrafficTx(tx, findingID); return e })
 	return
 }
 
@@ -277,7 +276,7 @@ func (d *DB) EditFindingTraffic(ctx context.Context, findingID, bindingID, versi
 	if role != nil && !ValidTrafficRole(*role) {
 		return errors.New("无效的流量用途")
 	}
-	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+	return d.WithEvidenceTx(ctx, func(tx *Tx) error {
 		if err := LockFindingEvidenceTx(tx, findingID, &version); err != nil {
 			return err
 		}
@@ -339,7 +338,7 @@ type RecordedFinding struct {
 
 // ctx 由调用方传入本次事务所用的上下文（而非在内部取 context.Background）：
 // 事务内新加的推送事件写入同样应受调用方的取消与超时约束。
-func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
+func RecordFindingTx(ctx context.Context, tx *Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}
@@ -410,7 +409,7 @@ VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeI
 // RecordFinding is the atomic legacy/no-recorder path used by tools and tests.
 func (s *ExplorationStore) RecordFinding(ctx context.Context, in RecordFindingInput) (out *RecordedFinding, err error) {
 	in.ExplorationID = s.expID
-	err = s.db.WithEvidenceTx(ctx, func(tx *sql.Tx) error { var e error; out, e = RecordFindingTx(ctx, tx, in, nil); return e })
+	err = s.db.WithEvidenceTx(ctx, func(tx *Tx) error { var e error; out, e = RecordFindingTx(ctx, tx, in, nil); return e })
 	return
 }
 
@@ -454,7 +453,7 @@ func (s *ExplorationStore) PopulateFindingTrafficIDs(nodes []*Node) error {
 }
 
 func (d *DB) SetFindingReportVersionByNodeID(ctx context.Context, nodeID int64, report string, version *int64) (n int64, err error) {
-	err = d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+	err = d.WithEvidenceTx(ctx, func(tx *Tx) error {
 		var id int64
 		if err := tx.QueryRow(`SELECT id FROM findings WHERE node_id=$1`, nodeID).Scan(&id); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -465,7 +464,7 @@ func (d *DB) SetFindingReportVersionByNodeID(ctx context.Context, nodeID int64, 
 		if err := LockFindingEvidenceTx(tx, id, version); err != nil {
 			return err
 		}
-		res, err := tx.Exec(`UPDATE findings SET report=$2,report_evidence_version=COALESCE($3::bigint,CASE WHEN evidence_version=0 THEN 0 ELSE -1 END) WHERE id=$1`, id, report, version)
+		res, err := tx.Exec(`UPDATE findings SET report=$2,report_evidence_version=COALESCE($3,CASE WHEN evidence_version=0 THEN 0 ELSE -1 END) WHERE id=$1`, id, report, version)
 		if err != nil {
 			return err
 		}
@@ -473,4 +472,30 @@ func (d *DB) SetFindingReportVersionByNodeID(ctx context.Context, nodeID int64, 
 		return err
 	})
 	return
+}
+
+// WithEvidenceFilesLock protects body installation and GC across processes while
+// allowing the callback to perform separate, short SQLite transactions.
+func (d *DB) WithEvidenceFilesLock(ctx context.Context, fn func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var path string
+	var seq int
+	var name string
+	if err := d.QueryRowContext(ctx, `SELECT seq,name,file FROM pragma_database_list WHERE name='main'`).Scan(&seq, &name, &path); err != nil {
+		return err
+	}
+	if path == "" {
+		return errors.New("evidence file locking requires a file database")
+	}
+	release, err := acquireFileLock(ctx, path+".evidence.lock")
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fn()
 }

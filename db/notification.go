@@ -173,7 +173,7 @@ WHERE id=$1`,
 // 停用一个渠道时，把它尚未发出的投递一并标记为 skipped：否则重新启用后
 // 会突然收到一批「停用期间积压」的旧漏洞，时效已失且容易误判为新增。
 func (d *DB) SetNotificationChannelEnabled(ctx context.Context, id int64, enabled bool) error {
-	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+	return d.WithEvidenceTx(ctx, func(tx *Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE notification_channels SET enabled=$2 WHERE id=$1`, id, enabled)
 		if err != nil {
 			return err
@@ -222,7 +222,7 @@ func (d *DB) DeleteNotificationChannel(ctx context.Context, id int64) error {
 //     表的问题（旧库未迁移、磁盘瞬时故障）不该让高危漏洞存不进库。所以这里隔离
 //     错误、记日志、返回 false，让漏洞写入照常提交——代价是丢掉这一条推送。
 //     返回 bool 而非 error 是刻意的：调用方不该把它当作会影响写入成败的错误。
-func RecordNotificationEventTx(ctx context.Context, tx *sql.Tx, kind string, findingID int64, snap notify.Snapshot) bool {
+func RecordNotificationEventTx(ctx context.Context, tx *Tx, kind string, findingID int64, snap notify.Snapshot) bool {
 	raw, err := json.Marshal(snap)
 	if err != nil {
 		log.Printf("[notify] 序列化推送事件失败 finding=%d: %v", findingID, err)
@@ -287,7 +287,7 @@ func (d *DB) FanOutPendingEvents(ctx context.Context, limit int) (eventCount, de
 		return 0, 0, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, finding_id, snapshot FROM notification_events
-WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
+WHERE NOT fanned_out ORDER BY id  LIMIT $1`, limit)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -361,7 +361,7 @@ WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 
 // listEnabledNotificationChannelsTx 在事务里取启用中的渠道。数量很少，
 // 不做分页也不加缓存——缓存会引入「改了配置何时生效」这个额外的时序问题。
-func listEnabledNotificationChannelsTx(ctx context.Context, tx *sql.Tx) ([]*NotificationChannel, error) {
+func listEnabledNotificationChannelsTx(ctx context.Context, tx *Tx) ([]*NotificationChannel, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, name, kind, config, mode, filter, rate_per_min
 FROM notification_channels WHERE enabled ORDER BY id`)
 	if err != nil {
@@ -462,7 +462,7 @@ func assetDisplayName(typ, domain, ip, url, appName, bundleID string) string {
 //   - 事件登记失败不影响状态更新（见 RecordNotificationEventTx 的保存点说明），
 //     所以 notified=false 时状态已经改成功了，调用方不应因此报错。
 func (d *DB) SetFindingStatusWithNotify(ctx context.Context, id int64, status string) (from string, found bool, notified bool, err error) {
-	err = d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+	err = d.WithEvidenceTx(ctx, func(tx *Tx) error {
 		var txErr error
 		from, found, _, notified, txErr = SetFindingStatusTx(ctx, tx, id, status)
 		return txErr
@@ -480,14 +480,14 @@ func (d *DB) SetFindingStatusWithNotify(ctx context.Context, id int64, status st
 //
 // 返回 from=变更前状态、found=漏洞是否存在、changed=状态是否真的变了、
 // notified=事件是否登记成功（登记失败不影响状态更新，见 RecordNotificationEventTx）。
-func SetFindingStatusTx(ctx context.Context, tx *sql.Tx, id int64, status string) (from string, found bool, changed bool, notified bool, err error) {
+func SetFindingStatusTx(ctx context.Context, tx *Tx, id int64, status string) (from string, found bool, changed bool, notified bool, err error) {
 	var (
 		vulnclass, name, severity, summary string
 		taskID                             sql.NullInt64
 		assetIDs                           []byte
 	)
 	scanErr := tx.QueryRowContext(ctx, `SELECT vulnclass, name, severity, summary, task_id, asset_ids, status
-FROM findings WHERE id=$1 FOR UPDATE`, id).
+FROM findings WHERE id=$1 `, id).
 		Scan(&vulnclass, &name, &severity, &summary, &taskID, &assetIDs, &from)
 	if scanErr == sql.ErrNoRows {
 		return "", false, false, false, nil
@@ -541,8 +541,8 @@ func (d *DB) NotificationStatsSnapshot(ctx context.Context) (*NotificationStats,
     (SELECT count(*) FROM notification_channels WHERE enabled),
     (SELECT count(*) FROM notification_deliveries WHERE state IN ($1,$2)),
     (SELECT count(*) FROM notification_deliveries WHERE state=$3),
-    (SELECT count(*) FROM notification_deliveries WHERE state=$4 AND sent_at >= date_trunc('day', now())),
-    COALESCE((SELECT EXTRACT(EPOCH FROM (now() - min(created_at))) * 1000 FROM notification_deliveries WHERE state=$1), 0)::bigint`,
+    (SELECT count(*) FROM notification_deliveries WHERE state=$4 AND sent_at >= date(utc_now())),
+    COALESCE((SELECT (unixepoch(utc_now()) - unixepoch(min(created_at))) * 1000 FROM notification_deliveries WHERE state=$1), 0)`,
 		NotifyStatePending, NotifyStateSending, NotifyStateFailed, NotifyStateSent).
 		Scan(&s.Channels, &s.ChannelsOn, &s.Pending, &s.Failed, &s.SentToday, &s.BacklogAgeMS); err != nil {
 		return nil, err

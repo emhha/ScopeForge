@@ -123,15 +123,9 @@ func TestTaskArchiveFormatCompatibility(t *testing.T) {
 func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer d.Close()
-	if err := d.EnsureLLMRecordsTable(); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.EnsureLLMUsageTable(); err != nil {
-		t.Fatal(err)
-	}
 	task, err := d.CreateTaskWithOptions("archive database roundtrip", "restore exact graph", TaskCreateOptions{Name: "cold task"})
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +282,7 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodes); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT count(*) FROM assets WHERE id=$1 AND $2=ANY(task_ids)`, assetID, task.ID).Scan(&assets); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM assets WHERE id=$1 AND $2 IN (SELECT value FROM json_each(task_ids))`, assetID, task.ID).Scan(&assets); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.QueryRow(`SELECT count(*) FROM llm_usage WHERE task_id=$1`, fmt.Sprint(task.ID)).Scan(&usage); err != nil {
@@ -335,7 +329,7 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 func TestTaskArchiveBlockersIgnoreQueuedDependents(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer d.Close()
 	source, err := d.CreateTaskWithOptions("archive blocker source", "source", TaskCreateOptions{})
@@ -380,7 +374,7 @@ func TestTaskArchiveBlockersIgnoreQueuedDependents(t *testing.T) {
 func TestRecoverInterruptedArchiveRequiresManualRetry(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
+		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}
 	defer d.Close()
 	task, err := d.CreateTaskWithOptions("interrupted archive", "must not restart automatically", TaskCreateOptions{})

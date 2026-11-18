@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-func TestTaskLLMProfileMutationsLockTaskBeforeProfile(t *testing.T) {
+func TestTaskLLMProfileMutationsWaitForSQLiteWriter(t *testing.T) {
 	dsn := testDSN(t)
 	d, err := Open(dsn)
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
+		t.Fatalf("SQLite unavailable (%v) - skipping", err)
 	}
 	defer d.Close()
 
@@ -49,7 +49,7 @@ func TestTaskLLMProfileMutationsLockTaskBeforeProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer replaceBlocker.Rollback()
-	if _, err := replaceBlocker.Exec(`SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, task.ID); err != nil {
+	if _, err := replaceBlocker.Exec(`SELECT id FROM tasks WHERE id=$1 `, task.ID); err != nil {
 		replaceBlocker.Rollback()
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestTaskLLMProfileMutationsLockTaskBeforeProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer deleteBlocker.Rollback()
-	if _, err := deleteBlocker.Exec(`SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, task.ID); err != nil {
+	if _, err := deleteBlocker.Exec(`SELECT id FROM tasks WHERE id=$1 `, task.ID); err != nil {
 		deleteBlocker.Rollback()
 		t.Fatal(err)
 	}
@@ -104,13 +104,13 @@ func TestTaskLLMProfileMutationsLockTaskBeforeProfile(t *testing.T) {
 	}
 }
 
-func TestDeleteProfileLocksNonTaskReferencesBeforeProfile(t *testing.T) {
+func TestDeleteProfileSerializesNonTaskReferences(t *testing.T) {
 	dsn := testDSN(t)
 
 	t.Run("agent", func(t *testing.T) {
 		d, err := Open(dsn)
 		if err != nil {
-			t.Skipf("postgres unavailable (%v) - skipping", err)
+			t.Fatalf("SQLite unavailable (%v) - skipping", err)
 		}
 		defer d.Close()
 
@@ -141,7 +141,7 @@ func TestDeleteProfileLocksNonTaskReferencesBeforeProfile(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=$1 FOR UPDATE`, agent.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=$1 `, agent.ID); err != nil {
 			t.Fatal(err)
 		}
 		deleteDB, deletePID := openSingleConnectionTestDB(t, dsn)
@@ -167,7 +167,7 @@ func TestDeleteProfileLocksNonTaskReferencesBeforeProfile(t *testing.T) {
 	t.Run("conversation", func(t *testing.T) {
 		d, err := Open(dsn)
 		if err != nil {
-			t.Skipf("postgres unavailable (%v) - skipping", err)
+			t.Fatalf("SQLite unavailable (%v) - skipping", err)
 		}
 		defer d.Close()
 
@@ -193,7 +193,7 @@ func TestDeleteProfileLocksNonTaskReferencesBeforeProfile(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=$1 FOR UPDATE`, conversation.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=$1 `, conversation.ID); err != nil {
 			t.Fatal(err)
 		}
 		deleteDB, deletePID := openSingleConnectionTestDB(t, dsn)
@@ -217,13 +217,13 @@ func TestDeleteProfileLocksNonTaskReferencesBeforeProfile(t *testing.T) {
 	})
 }
 
-func TestNonTaskProfileMutationsLockReferenceBeforeProfile(t *testing.T) {
+func TestNonTaskProfileMutationsWaitForSQLiteWriter(t *testing.T) {
 	dsn := testDSN(t)
 
 	t.Run("agent", func(t *testing.T) {
 		d, err := Open(dsn)
 		if err != nil {
-			t.Skipf("postgres unavailable (%v) - skipping", err)
+			t.Fatalf("SQLite unavailable (%v) - skipping", err)
 		}
 		defer d.Close()
 
@@ -249,7 +249,7 @@ func TestNonTaskProfileMutationsLockReferenceBeforeProfile(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=$1 FOR UPDATE`, agent.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=$1 `, agent.ID); err != nil {
 			t.Fatal(err)
 		}
 		mutationDB, mutationPID := openSingleConnectionTestDB(t, dsn)
@@ -271,7 +271,7 @@ func TestNonTaskProfileMutationsLockReferenceBeforeProfile(t *testing.T) {
 	t.Run("conversation", func(t *testing.T) {
 		d, err := Open(dsn)
 		if err != nil {
-			t.Skipf("postgres unavailable (%v) - skipping", err)
+			t.Fatalf("SQLite unavailable (%v) - skipping", err)
 		}
 		defer d.Close()
 
@@ -297,7 +297,7 @@ func TestNonTaskProfileMutationsLockReferenceBeforeProfile(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=$1 FOR UPDATE`, conversation.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=$1 `, conversation.ID); err != nil {
 			t.Fatal(err)
 		}
 		mutationDB, mutationPID := openSingleConnectionTestDB(t, dsn)
@@ -321,7 +321,7 @@ func TestCreateConversationAndDeleteProfileDoNotDeadlock(t *testing.T) {
 	dsn := testDSN(t)
 	d, err := Open(dsn)
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
+		t.Fatalf("SQLite unavailable (%v) - skipping", err)
 	}
 	defer d.Close()
 
@@ -343,7 +343,7 @@ func TestCreateConversationAndDeleteProfileDoNotDeadlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer profileBlocker.Rollback()
-	if _, err := profileBlocker.Exec(`SELECT id FROM llm_profiles WHERE id=$1 FOR UPDATE`, profileID); err != nil {
+	if _, err := profileBlocker.Exec(`SELECT id FROM llm_profiles WHERE id=$1 `, profileID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -397,11 +397,11 @@ func TestCreateConversationAndDeleteProfileDoNotDeadlock(t *testing.T) {
 	}
 }
 
-func TestDeleteProfileRetriesReferenceCommittedAfterInitialScan(t *testing.T) {
+func TestDeleteProfileObservesReferenceCommittedBeforeWriterAcquisition(t *testing.T) {
 	dsn := testDSN(t)
 	d, err := Open(dsn)
 	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
+		t.Fatalf("SQLite unavailable (%v) - skipping", err)
 	}
 	defer d.Close()
 
@@ -463,56 +463,39 @@ VALUES ($1,$2,0)`, task.ID, profileID); err != nil {
 	}
 }
 
-func openSingleConnectionTestDB(t *testing.T, dsn string) (*DB, int) {
+// A second physical connection exercises SQLite's cross-connection writer lock,
+// rather than only the in-process writer pool. Schema is already initialized.
+func openSingleConnectionTestDB(t *testing.T, path string) (*DB, int) {
 	t.Helper()
-	sqlDB, err := sql.Open("pgx", dsn)
+	writer, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	if _, err := sqlDB.Exec(`SET statement_timeout='10s'`); err != nil {
+	writer.SetMaxOpenConns(1)
+	reader, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_txlock=deferred")
+	if err != nil {
 		t.Fatal(err)
 	}
-	var pid int
-	if err := sqlDB.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
-		t.Fatal(err)
-	}
-	return &DB{sqlDB}, pid
+	reader.SetMaxOpenConns(2)
+	d := &DB{DB: reader, writer: writer}
+	t.Cleanup(func() { d.Close() })
+	return d, 0
 }
-
-func waitForBackendBlock(observer *DB, pid int, done <-chan error) error {
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-done:
-			return fmt.Errorf("mutation returned before reaching the expected reference-row lock: %v", err)
-		default:
-		}
-		var blockers int
-		if err := observer.QueryRow(`SELECT cardinality(pg_blocking_pids($1))`, pid).Scan(&blockers); err != nil {
-			return err
-		}
-		if blockers > 0 {
-			return nil
-		}
-		time.Sleep(10 * time.Millisecond)
+func waitForBackendBlock(_ *DB, _ int, done <-chan error) error {
+	select {
+	case err := <-done:
+		return fmt.Errorf("writer escaped active transaction: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		return nil
 	}
-	return fmt.Errorf("backend %d did not block within 5s", pid)
 }
-
 func assertProfilesUnlocked(t *testing.T, d *DB, profileIDs ...int64) {
 	t.Helper()
-	probe, err := d.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer probe.Rollback()
-	for _, profileID := range profileIDs {
-		var lockedID int64
-		if err := probe.QueryRow(`SELECT id FROM llm_profiles WHERE id=$1 FOR UPDATE NOWAIT`, profileID).Scan(&lockedID); err != nil {
-			t.Fatalf("profile %d was locked before the task row: %v", profileID, err)
+	// WAL readers must remain usable while a different writer owns BEGIN IMMEDIATE.
+	for _, id := range profileIDs {
+		var got int64
+		if err := d.QueryRow(`SELECT id FROM llm_profiles WHERE id=$1`, id).Scan(&got); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

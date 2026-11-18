@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/llm"
+	llm "github.com/Autumn-27/norma/llm"
 )
 
 func sideFixture(t *testing.T) (*DB, sidequestion.Snapshot) {
@@ -25,7 +25,7 @@ func sideFixture(t *testing.T) (*DB, sidequestion.Snapshot) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.DeleteConversation(c.ID) })
-	s := sidequestion.Snapshot{Parent: sidequestion.Parent{ConversationID: c.ID}, RunID: 1, Version: 1, CapturedAt: time.Now().UTC(), Model: sidequestion.Model{Model: "fixture"}, Request: llm.CompletionRequest{Messages: []llm.Message{llm.UserText("main-only")}}}
+	s := sidequestion.Snapshot{Parent: sidequestion.Parent{ConversationID: c.ID}, RunID: 1, Version: 1, CapturedAt: time.Now().UTC(), Model: sidequestion.Model{Model: "fixture"}, Request: llm.CompletionRequest{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock("main-only")}}}}}
 	if err = d.SaveSideSnapshot(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,8 @@ func TestSideArchiveRowsWithoutNewFields(t *testing.T) {
 	rows := map[string]json.RawMessage{}
 	for _, table := range []string{"side_question_sessions", "side_question_requests"} {
 		var raw []byte
-		if err = tx.QueryRow(`SELECT json_agg(t) FROM `+table+` t WHERE session_key=$1`, s.Parent.Key()).Scan(&raw); err != nil {
+		raw, _, err = queryArchiveRows(tx, `SELECT * FROM `+table+` WHERE session_key=$1`, s.Parent.Key())
+		if err != nil {
 			t.Fatal(err)
 		}
 		var items []map[string]json.RawMessage
@@ -325,12 +326,6 @@ func TestSideTaskArchiveVersions(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer d.Close()
-			if err := d.EnsureLLMRecordsTable(); err != nil {
-				t.Fatal(err)
-			}
-			if err := d.EnsureLLMUsageTable(); err != nil {
-				t.Fatal(err)
-			}
 			task, err := d.CreateTask("btw archive", "restore context", nil, 0, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -347,7 +342,7 @@ func TestSideTaskArchiveVersions(t *testing.T) {
 			memories := make(map[string]sidequestion.Memory)
 			contextInfo := sidequestion.ContextInfo{Phase: "answering", RecentExchanges: 20, HistorySummarized: true, SnapshotSummarized: true, EstimatedInputTokens: 12000, InputBudget: 16000, OutputTokens: 2048}
 			for _, intent := range []int64{0, iid} {
-				s := sidequestion.Snapshot{Parent: sidequestion.Parent{TaskID: task.ID, ExplorationID: task.ExplorationID, IntentID: intent}, RunID: 1, Version: 2, CapturedAt: time.Now().UTC(), Request: llm.CompletionRequest{Messages: []llm.Message{llm.UserText("archived main context")}}}
+				s := sidequestion.Snapshot{Parent: sidequestion.Parent{TaskID: task.ID, ExplorationID: task.ExplorationID, IntentID: intent}, RunID: 1, Version: 2, CapturedAt: time.Now().UTC(), Request: llm.CompletionRequest{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock("archived main context")}}}}}
 				if err = d.SaveSideSnapshot(t.Context(), s); err != nil {
 					t.Fatal(err)
 				}
