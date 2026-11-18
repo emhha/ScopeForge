@@ -2,7 +2,7 @@
 
 # ARTEX
 
-AI 自主渗透测试系统（Go 后端 + Next.js 前端）
+AI 自主渗透测试系统（Go 后端 + Vite 前端）
 
 
 🌐 **在线 Demo**： [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/)
@@ -224,7 +224,7 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 ### 反向代理部署（HTTPS / 只开放 443）
 
-前端和 API/SSE 都由同一个后端端口（默认 `:8787`）提供，实时活动流默认走**同源**地址，因此**无需配置 `NEXT_PUBLIC_SSE_BASE`**，公网只开放 443、把 8787 留在内网即可。
+前端和 API/SSE 都由同一个后端端口（默认 `:8787`）提供，实时活动流默认走**同源**地址，因此**无需配置 `VITE_SSE_BASE`**，公网只开放 443、把 8787 留在内网即可。
 
 SSE 是长连接 + 持续推送，反代**必须关闭缓冲**，否则浏览器能连上却收不到事件（表现为活动流一直转圈）。Nginx 示例：
 
@@ -249,7 +249,7 @@ server {
 }
 ```
 
-> 仅当 SSE 需要走与页面不同的来源（如独立子域）时，才在**构建期**设置 `NEXT_PUBLIC_SSE_BASE`（该变量在 `next build` 时固化进静态包，容器运行时再设无效）。
+> 仅当 SSE 需要走与页面不同的来源（如独立子域）时，才在**构建期**设置 `VITE_SSE_BASE`（该变量在 `vite build` 时固化进静态包，容器运行时再设无效）。
 
 ---
 
@@ -269,20 +269,18 @@ server {
 
 ### 本地运行与测试
 
-```bash
-./dev.sh    # 后端(:8787) + 流量代理(:8788) + 前端 next dev(:5173) → http://localhost:5173
-```
+前端需要 Node.js 22.22.0 或更新版本。
 
-- 后端：`go run ./cmd/artex`（不带 `-tags embedui` 则不内嵌前端）
-- 前端：`cd web && npm run dev`（`/api` 反代到后端，带热更新）
-- 测试：`go test ./...`
-- Mock 预览（无后端）：`cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
+- `make build-web` 构建前端，产物位于 `web/out`。
+- `make test` 运行前端类型检查和单元测试。
+- `cd web && npm run dev` 启动 Vite 开发服务器，默认监听 5173。开发和预览服务器将 `/api` 转发到 `AUTOPENTEST_API`，默认为 `http://localhost:8787`。
+- `cd web && VITE_MOCK=1 npm run dev` 启动模拟数据预览。
 
 ---
 
 ## 系统技术架构
 
-ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Next.js 前端）+ PostgreSQL，agent 能力由 [`norma`](https://github.com/Autumn-27/norma) SDK 提供（`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`）。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
+ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Vite 前端）+ PostgreSQL，agent 能力由 [`norma`](https://github.com/Autumn-27/norma) SDK 提供（`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`）。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
 
 ### 总体分层
 

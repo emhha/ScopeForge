@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { useRouter } from "next/navigation";
+import { useNavigate } from "react-router";
 
 import { Search } from "lucide-react";
 
@@ -80,7 +80,7 @@ function groupBy(items: SearchItem[]) {
 export function SearchDialog() {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
-  const router = useRouter();
+  const navigate = useNavigate();
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -104,7 +104,7 @@ export function SearchDialog() {
     if (item.newTab) {
       window.open(item.url, "_blank", "noopener,noreferrer");
     } else {
-      router.push(item.url);
+      navigate(item.url);
     }
   };
 

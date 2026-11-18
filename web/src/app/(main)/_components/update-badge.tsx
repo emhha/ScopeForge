@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import Link from "next/link";
+import { Link } from "react-router";
 
 import { ArrowUpCircleIcon } from "lucide-react";
 
@@ -41,7 +41,7 @@ export function UpdateBadge() {
 
   return (
     <Link
-      href="/system/settings"
+      to="/system/settings"
       title={`发现新版本 ${latest}，点击前往更新`}
       className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 font-medium text-primary-foreground text-xs transition-opacity hover:opacity-90"
     >

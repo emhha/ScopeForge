@@ -1,6 +1,6 @@
 // Mock 路由：把 (method, path) 映射到 lib/mock/data 的静态数据。
 // 未命中的一律返回安全默认（[] / {} / {ok:true}），保证任何页面都不崩。
-// 只在 NEXT_PUBLIC_MOCK=1 时经由 api.ts 的 http() 短路进入这里。
+// 只在 VITE_MOCK=1 时经由 api.ts 的 http() 短路进入这里。
 
 import {
   classifyCompanyScopeLine,

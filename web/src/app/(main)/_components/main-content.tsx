@@ -2,7 +2,7 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 
-import { usePathname } from "next/navigation";
+import { useLocation } from "react-router";
 
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -33,7 +33,7 @@ function isFullBleed(pathname: string) {
 
 export function MainContent({ children }: { children: ReactNode }) {
   const currentUser = useCurrentUser();
-  const pathname = usePathname();
+  const pathname = useLocation().pathname;
   const [version, setVersion] = useState("");
 
   useEffect(() => {

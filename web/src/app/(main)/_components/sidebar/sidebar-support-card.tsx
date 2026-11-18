@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { Link } from "react-router";
 
 import { siX } from "simple-icons";
 
@@ -13,7 +13,7 @@ export function SidebarSupportCard() {
         <CardDescription className="line-clamp-2">
           Open an issue or do reach out to me on&nbsp;
           <Link
-            href="https://x.com/arhamkhnz"
+            to="https://x.com/arhamkhnz"
             target="_blank"
             rel="noreferrer"
             aria-label="Reach out on X"

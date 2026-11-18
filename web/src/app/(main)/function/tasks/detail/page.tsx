@@ -2,8 +2,8 @@
 
 import * as React from "react";
 
-import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { Link } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 
 import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -203,8 +203,8 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
 }
 
 function TaskDetailInner() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const id = searchParams.get("id") ?? "";
   const [task, setTask] = React.useState<Task | null>(null);
   const [paused, setPaused] = React.useState(false);
@@ -293,7 +293,7 @@ function TaskDetailInner() {
     try {
       await api.archiveTask(task.id);
       toast.success("任务已加入归档队列");
-      router.push("/function/tasks");
+      navigate("/function/tasks");
     } catch (error) {
       toast.error(`归档失败：${(error as Error).message}`);
       setArchiving(false);
@@ -306,7 +306,7 @@ function TaskDetailInner() {
         <p className="text-muted-foreground">{loaded ? `任务 ${id} 已被删除、归档或不存在` : "加载中…"}</p>
         {loaded && (
           <Button asChild variant="outline">
-            <Link href="/function/tasks">
+            <Link to="/function/tasks">
               <ArrowLeftIcon /> 返回任务列表
             </Link>
           </Button>
@@ -354,7 +354,7 @@ function TaskDetailInner() {
         <div className="flex items-center gap-2">
           <SidebarTrigger className="-ml-1" />
           <Button asChild variant="ghost" size="icon" className="size-7">
-            <Link href="/function/tasks">
+            <Link to="/function/tasks">
               <ArrowLeftIcon />
             </Link>
           </Button>

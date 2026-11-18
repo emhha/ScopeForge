@@ -2,8 +2,8 @@
 
 import * as React from "react";
 
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { Link } from "react-router";
+import { useSearchParams } from "react-router";
 
 import { ArrowLeftIcon, ArrowUpRightIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -55,7 +55,7 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
 }
 
 function FindingDetailInner() {
-  const searchParams = useSearchParams();
+  const [searchParams] = useSearchParams();
   const id = searchParams.get("id") ?? "";
   const contextTaskId = searchParams.get("context_task") ?? "";
   const [finding, setFinding] = React.useState<Finding | null>(null);
@@ -117,7 +117,7 @@ function FindingDetailInner() {
         <p className="text-muted-foreground">{loaded ? `未找到发现 ${id}` : "加载中…"}</p>
         {loaded && (
           <Button asChild variant="outline">
-            <Link href="/function/findings">
+            <Link to="/function/findings">
               <ArrowLeftIcon /> 返回发现列表
             </Link>
           </Button>
@@ -135,7 +135,7 @@ function FindingDetailInner() {
         <div className="flex flex-wrap items-center gap-2">
           <SidebarTrigger className="-ml-1" />
           <Button asChild variant="ghost" size="icon" className="size-7">
-            <Link href="/function/findings">
+            <Link to="/function/findings">
               <ArrowLeftIcon />
             </Link>
           </Button>
@@ -304,7 +304,7 @@ function FindingDetailInner() {
                 <FieldRow label="所属任务">
                   {finding.task_id ? (
                     <Link
-                      href={`/function/tasks/detail?id=${finding.task_id}`}
+                      to={`/function/tasks/detail?id=${finding.task_id}`}
                       className="inline-flex max-w-[16rem] items-center gap-1 text-primary hover:underline"
                       title={finding.task_description}
                     >

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import Link from "next/link";
+import { Link } from "react-router";
 
 import { RotateCcwIcon } from "lucide-react";
 
@@ -89,7 +89,7 @@ export function FindingRetestPanel({
         </div>
         {running?.conversation_id != null ? (
           <Button asChild variant="outline" size="sm">
-            <Link href={`/chat?c=${running.conversation_id}`} title="查看正在进行的复测会话">
+            <Link to={`/chat?c=${running.conversation_id}`} title="查看正在进行的复测会话">
               <Spinner data-icon="inline-start" aria-hidden="true" />
               复测中
             </Link>
@@ -138,7 +138,7 @@ export function FindingRetestPanel({
                   </span>
                   {item.conversation_id != null ? (
                     <Button asChild variant="ghost" size="sm" className="ml-auto">
-                      <Link href={`/chat?c=${item.conversation_id}`}>查看会话</Link>
+                      <Link to={`/chat?c=${item.conversation_id}`}>查看会话</Link>
                     </Button>
                   ) : (
                     <span className="text-muted-foreground text-xs">会话已删除</span>

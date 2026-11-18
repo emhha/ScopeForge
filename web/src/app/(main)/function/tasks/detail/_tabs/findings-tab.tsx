@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import Link from "next/link";
+import { Link } from "react-router";
 
 import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, ChevronRightIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -112,7 +112,7 @@ function Row({
         </span>
         {f.finding_id && (
           <Link
-            href={
+            to={
               f.inherited
                 ? `/function/findings/detail?id=${f.finding_id}&context_task=${contextTaskId}`
                 : `/function/findings/detail?id=${f.finding_id}`

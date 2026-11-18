@@ -1,0 +1,37 @@
+@font-face {
+  font-family: "Geist Local";
+  src: url("./geist-sans.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono Local";
+  src: url("./geist-mono.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Pixel Square Local";
+  src: url("./geist-pixel-square.woff2") format("woff2");
+  font-display: swap;
+}
+:root {
+  --font-geist: "Geist Local";
+  --font-inter: "Geist Local";
+  --font-noto-sans: "Geist Local";
+  --font-nunito-sans: "Geist Local";
+  --font-figtree: "Geist Local";
+  --font-roboto: "Geist Local";
+  --font-raleway: "Geist Local";
+  --font-dm-sans: "Geist Local";
+  --font-public-sans: "Geist Local";
+  --font-outfit: "Geist Local";
+  --font-geist-mono: "Geist Mono Local";
+  --font-jetbrains-mono: "Geist Mono Local";
+  --font-noto-serif: "Geist Local";
+  --font-roboto-slab: "Geist Local";
+  --font-merriweather: "Geist Local";
+  --font-lora: "Geist Local";
+  --font-playfair-display: "Geist Local";
+  --font-geist-pixel-square: "Geist Pixel Square Local";
+}

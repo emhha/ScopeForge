@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Link } from "react-router";
+import { useLocation } from "react-router";
 
 import { ChevronRight, MailIcon, PlusCircleIcon } from "lucide-react";
 import { api } from "@/lib/api";
@@ -85,7 +85,7 @@ function hasSubItems(item: NavMainItem): item is NavMainParentItem {
 }
 
 export function NavMain({ items }: NavMainProps) {
-  const rawPath = usePathname();
+  const rawPath = useLocation().pathname;
   // 路由段含中文，pathname 可能是百分号编码，解码后再与导航 url 比较，保证高亮命中。
   const path = (() => {
     try {
@@ -190,8 +190,7 @@ function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
     <SidebarMenuItem>
       <SidebarMenuButton asChild aria-disabled={item.disabled} tooltip={item.title} isActive={isActive}>
         <Link
-          prefetch={false}
-          href={item.url}
+          to={item.url}
           target={item.newTab ? "_blank" : undefined}
           rel={item.newTab ? "noreferrer" : undefined}
         >
@@ -239,8 +238,7 @@ function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemPro
               return (
                 <DropdownMenuItem key={subItem.id} asChild disabled={subItem.disabled}>
                   <Link
-                    prefetch={false}
-                    href={subItem.url}
+                    to={subItem.url}
                     target={subItem.newTab ? "_blank" : undefined}
                     rel={subItem.newTab ? "noreferrer" : undefined}
                     aria-current={isSubItemActive(subItem.url) ? "page" : undefined}
@@ -287,8 +285,7 @@ function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: Na
                     isActive={isSubItemActive(subItem.url)}
                   >
                     <Link
-                      prefetch={false}
-                      href={subItem.url}
+                      to={subItem.url}
                       target={subItem.newTab ? "_blank" : undefined}
                       rel={subItem.newTab ? "noreferrer" : undefined}
                     >

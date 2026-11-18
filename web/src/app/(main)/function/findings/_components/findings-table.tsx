@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import Link from "next/link";
+import { Link } from "react-router";
 
 import {
   ArrowUpRightIcon,
@@ -202,7 +202,7 @@ export function FindingsTable({
                   <div className="flex min-w-0 flex-col gap-0.5">
                     {f.finding_id ? (
                       <Link
-                        href={`/function/findings/detail?id=${f.finding_id}`}
+                        to={`/function/findings/detail?id=${f.finding_id}`}
                         onClick={(e) => e.stopPropagation()}
                         className="truncate font-medium hover:text-primary hover:underline"
                         title="查看发现详情"
@@ -257,7 +257,7 @@ export function FindingsTable({
                 <TableCell>
                   {f.task_id ? (
                     <Link
-                      href={`/function/tasks/detail?id=${f.task_id}`}
+                      to={`/function/tasks/detail?id=${f.task_id}`}
                       onClick={(e) => e.stopPropagation()}
                       className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
                       title={f.task_description}
@@ -274,7 +274,7 @@ export function FindingsTable({
                   <div className="flex items-center gap-1">
                     {retest ? (
                       <Button asChild size="sm" variant="ghost">
-                        <Link href={`/chat?c=${retest.conversation_id}`} title="查看正在进行的复测会话">
+                        <Link to={`/chat?c=${retest.conversation_id}`} title="查看正在进行的复测会话">
                           <Spinner data-icon="inline-start" />
                           复测中
                         </Link>

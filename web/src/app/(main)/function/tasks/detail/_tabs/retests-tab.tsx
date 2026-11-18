@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import Link from "next/link";
+import { Link } from "react-router";
 
 import { ArrowUpRightIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
@@ -147,7 +147,7 @@ export function RetestsTab({ taskId }: { taskId: string }) {
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <h2 className="min-w-0 flex-1 break-words font-medium">{findingLabel(selected)}</h2>
                 <Button asChild variant="ghost" size="sm">
-                  <Link href={`/function/findings/detail?id=${selected.finding_id || selected.id}`}>
+                  <Link to={`/function/findings/detail?id=${selected.finding_id || selected.id}`}>
                     漏洞详情 <ArrowUpRightIcon data-icon="inline-end" />
                   </Link>
                 </Button>

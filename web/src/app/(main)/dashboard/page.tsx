@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import Link from "next/link";
+import { Link } from "react-router";
 
 import {
   ActivityIcon,
@@ -858,7 +858,7 @@ export default function DashboardPage() {
                 {activity.filter((a) => a.kind !== "usage").length} 条事件
               </span>
               <Link
-                href="/function/tasks"
+                to="/function/tasks"
                 className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
               >
                 查看任务 <ArrowUpRightIcon className="size-3" />
@@ -916,7 +916,7 @@ export default function DashboardPage() {
               发现
             </div>
             <Link
-              href="/function/findings"
+              to="/function/findings"
               className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
             >
               全部 <ArrowUpRightIcon className="size-3" />
@@ -963,7 +963,7 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-muted-foreground">{tasks.length} 个任务</span>
             <Link
-              href="/function/tasks"
+              to="/function/tasks"
               className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
             >
               全部 <ArrowUpRightIcon className="size-3" />
@@ -996,7 +996,7 @@ export default function DashboardPage() {
                 return (
                   <tr key={t.id} className="border-b last:border-0 transition-colors hover:bg-muted/30">
                     <td className="max-w-xs px-4 py-3">
-                      <Link href={`/function/tasks/detail?id=${t.id}`} className="group flex flex-col">
+                      <Link to={`/function/tasks/detail?id=${t.id}`} className="group flex flex-col">
                         <span className="truncate font-medium group-hover:underline">{t.description}</span>
                         <span className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{t.id}</span>
                       </Link>
@@ -1176,7 +1176,7 @@ export default function DashboardPage() {
                 {pending.slice(0, 3).map((p) => (
                   <Link
                     key={p.id}
-                    href="/system/intercept/approvals"
+                    to="/system/intercept/approvals"
                     className="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 hover:bg-amber-500/10"
                   >
                     <div className="min-w-0">
@@ -1188,7 +1188,7 @@ export default function DashboardPage() {
                 ))}
                 {pendingCount > 3 && (
                   <Link
-                    href="/system/intercept/approvals"
+                    to="/system/intercept/approvals"
                     className="text-center text-[10px] text-muted-foreground hover:text-foreground"
                   >
                     还有 {pendingCount - 3} 条…

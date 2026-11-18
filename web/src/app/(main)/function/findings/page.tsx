@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import Link from "next/link";
+import { Link } from "react-router";
 
 import {
   ArrowUpRightIcon,
@@ -1075,7 +1075,7 @@ export default function FindingsPage() {
                         {group.task_id !== null && (
                           <Button size="icon-sm" variant="ghost" asChild>
                             <Link
-                              href={`/function/tasks/detail?id=${group.task_id}`}
+                              to={`/function/tasks/detail?id=${group.task_id}`}
                               aria-label={`查看任务 #${group.task_id}`}
                             >
                               <ArrowUpRightIcon />
