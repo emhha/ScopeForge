@@ -37,9 +37,10 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { AgentLLMSelect } from "@/components/agent-llm-select";
 import { AgentEditor } from "@/components/agent-editor";
 import { api } from "@/lib/api";
-import type { Agent } from "@/lib/types";
+import type { Agent, LLMProfile } from "@/lib/types";
 
 // AgentGridCard is one clickable tile opening the agent's editor drawer. Custom
 // (non-builtin) agents get a delete button.
@@ -47,10 +48,14 @@ function AgentGridCard({
   agent,
   onOpen,
   onDeleted,
+  profiles,
+  onModelSaved,
 }: {
   agent: Agent;
   onOpen: () => void;
   onDeleted: () => void;
+  profiles: LLMProfile[];
+  onModelSaved: (profileId: number | null) => void;
 }) {
   async function del() {
     try {
@@ -92,6 +97,10 @@ function AgentGridCard({
           <span className="rounded border px-1.5 py-0.5">工具 {agent.tool_count ?? 0}</span>
         </div>
       </button>
+      <div className="mt-auto border-t pt-3">
+        <AgentLLMSelect agentKey={agent.key} agentName={agent.name} profileId={agent.llm_profile_id}
+          profiles={profiles} onSaved={onModelSaved} />
+      </div>
       {!agent.builtin && (
         <AlertDialog>
           <AlertDialogTrigger asChild>
@@ -208,10 +217,16 @@ function CreateAgentDialog({ onCreated }: { onCreated: (key: string) => void }) 
 
 export default function AgentsPage() {
   const [agents, setAgents] = React.useState<Agent[]>([]);
+  const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [editKey, setEditKey] = React.useState<string | null>(null);
 
   const reload = React.useCallback(() => {
-    api.agents().then(setAgents).catch(() => setAgents([]));
+    Promise.all([api.agents(), api.llmProfiles()])
+      .then(([nextAgents, nextProfiles]) => {
+        setAgents(nextAgents);
+        setProfiles(nextProfiles);
+      })
+      .catch((error) => toast.error("加载 Agent 配置失败：" + (error as Error).message));
   }, []);
   React.useEffect(() => {
     reload();
@@ -225,7 +240,7 @@ export default function AgentsPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Agent</h1>
           <p className="text-muted-foreground text-sm">
-            内置 Agent 的提示词/配置，以及自定义会话 Agent 的创建与管理
+            为每个 Agent 独立选择 LLM，并管理提示词、工具和自定义助手
           </p>
         </div>
         <CreateAgentDialog
@@ -239,7 +254,10 @@ export default function AgentsPage() {
       <Card>
         <CardHeader>
           <CardTitle>Agent 清单</CardTitle>
-          <CardDescription>共 {agents.length} 个</CardDescription>
+          <CardDescription>
+            共 {agents.length} 个。可分别为目标拆解选择 DeepSeek、规划选择 GPT；选择后自动保存。
+            未单独指定时跟随任务或会话配置，再使用全局激活配置。
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {agents.length === 0 ? (
@@ -247,7 +265,8 @@ export default function AgentsPage() {
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {agents.map((a) => (
-                <AgentGridCard key={a.key} agent={a} onOpen={() => setEditKey(a.key)} onDeleted={reload} />
+                <AgentGridCard key={a.key} agent={a} profiles={profiles} onOpen={() => setEditKey(a.key)} onDeleted={reload}
+                  onModelSaved={(profileId) => setAgents((current) => current.map((item) => item.key === a.key ? { ...item, llm_profile_id: profileId } : item))} />
               ))}
             </div>
           )}

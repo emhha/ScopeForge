@@ -1,5 +1,5 @@
 // Package traffic implements the request-recording subsystem (docs §10): an
-// embedded go-mitmproxy proxy whose addon writes every target HTTP exchange into
+// embedded netloom MITM proxy that writes target HTTP exchanges into
 // a human-browsable file tree, with a sidecar SQLite index for paged queries.
 // Full capture, plaintext (no redaction), target HTTP only.
 package traffic
@@ -33,7 +33,8 @@ import (
 	"github.com/Autumn-27/artex/toolkit"
 
 	"github.com/Autumn-27/artex/db"
-	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
+	"github.com/emhha/netloom"
+	"github.com/emhha/netloom/mitm"
 	_ "modernc.org/sqlite"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -107,7 +108,7 @@ const (
 	autoVacuumIncremental = 2
 	// reclaimChunkPages bounds how much index space one locked step returns to the
 	// filesystem (pages are 4KiB, so ~32MB). Reclamation holds the write lock, and
-	// record() runs before go-mitmproxy replies to the client, so an unbounded
+	// record() runs before netloom MITM replies to the client, so an unbounded
 	// pass would stall the very requests being recorded.
 	reclaimChunkPages = 8192
 	// reclaimMergePages bounds the full-text merge done alongside each chunk.
@@ -136,12 +137,16 @@ const TrafficSearchDescription = "查询记录代理已抓取的目标流量（�
 
 // Traffic runs the recording proxy and owns the file tree + index.
 type Traffic struct {
-	dir   string
-	addr  string
-	db    *sql.DB
-	wmu   sync.Mutex // serializes record() vs DeleteHost (incl. blob GC)
-	seq   atomic.Int64
-	proxy *mproxy.Proxy
+	dir     string
+	addr    string
+	db      *sql.DB
+	wmu     sync.Mutex // serializes record() vs DeleteHost (incl. blob GC)
+	seq     atomic.Int64
+	proxy   *mitm.Proxy
+	server  *http.Server
+	engine  *netloom.Engine
+	proxyWG sync.WaitGroup
+	proxyMu sync.Mutex
 	// fts reports whether the full-text index is available. False on a driver
 	// build without FTS5: recording and metadata search still work, body search
 	// degrades to unsupported rather than erroring.
@@ -162,14 +167,7 @@ type Traffic struct {
 	// stopping() treats as "not closing".
 	closed    chan struct{}
 	closeOnce sync.Once
-	// pass is the set of hosts whose MITM interception failed for a proxy/protocol
-	// reason; connections to them are tunneled transparently (fail-open) so the
-	// request still reaches the target — unrecorded — instead of being killed.
-	pass sync.Map // hostname(string) -> struct{}
-	// upstream is the global egress proxy every captured request is forwarded
-	// through (nil = dial targets directly). Both the intercepted and the
-	// transparent-passthrough paths honor it (go-mitmproxy's getUpstreamConn),
-	// so no host escapes it. Hot-swappable at runtime via SetUpstreamProxy.
+	// Upstream egress is configured explicitly, never inherited from the environment.
 	upstream atomic.Pointer[url.URL]
 }
 
@@ -202,33 +200,10 @@ func Open(dir, addr string) (*Traffic, error) {
 		return nil, err
 	}
 
-	p, err := mproxy.NewProxy(&mproxy.Options{
-		Addr:        addr,
-		SslInsecure: true,
-		CaRootPath:  filepath.Join(dir, "_ca"),
-	})
-	if err != nil {
+	if err := t.initProxy(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	// Upstream selection. By default (no global egress proxy set) targets are
-	// dialed DIRECTLY: go-mitmproxy's own default upstream uses
-	// http.ProxyFromEnvironment, so an HTTP_PROXY/HTTPS_PROXY in the environment
-	// (a VPN/system proxy) would make it forward target requests through that
-	// external proxy — which can't reach the target → 502. Returning nil forces
-	// a direct dial. When a global egress proxy IS configured (SetUpstreamProxy),
-	// every captured request — intercepted AND transparently tunneled — is
-	// forwarded through it instead, so no host leaks the real source IP.
-	p.SetUpstreamProxy(func(*http.Request) (*url.URL, error) { return t.upstream.Load(), nil })
-	// Fail-open: MITM every host by default, EXCEPT ones a prior request proved we
-	// can't intercept without breaking (see maybePassthrough). Those are tunneled
-	// transparently so the request still reaches the target instead of being killed.
-	p.SetShouldInterceptRule(func(req *http.Request) bool {
-		_, tunnel := t.pass.Load(hostOnly(req.Host))
-		return !tunnel
-	})
-	p.AddAddon(&sink{t: t})
-	t.proxy = p
 	return t, nil
 }
 
@@ -284,6 +259,15 @@ func (t *Traffic) initIndex() error {
 	if _, err := conn.ExecContext(ctx, indexSchema); err != nil {
 		return err
 	}
+	var completeColumns int
+	if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('exchanges') WHERE name='capture_complete'").Scan(&completeColumns); err != nil {
+		return err
+	}
+	if completeColumns == 0 {
+		if _, err := conn.ExecContext(ctx, "ALTER TABLE exchanges ADD COLUMN capture_complete INTEGER"); err != nil {
+			return err
+		}
+	}
 	if _, err := conn.ExecContext(ctx, ftsSchema); err != nil {
 		log.Printf("[traffic] 全文索引不可用，正文搜索将被禁用（元数据搜索不受影响）：%v", err)
 		return nil
@@ -304,6 +288,8 @@ func hostOnly(hostport string) string {
 // ProxyAddr returns the address workers should set as HTTP(S)_PROXY. A bare
 // ":port" means "bind all interfaces" (legacy default), so map it to loopback.
 func (t *Traffic) ProxyAddr() string {
+	t.proxyMu.Lock()
+	defer t.proxyMu.Unlock()
 	if strings.HasPrefix(t.addr, ":") {
 		return "http://127.0.0.1" + t.addr
 	}
@@ -313,7 +299,7 @@ func (t *Traffic) ProxyAddr() string {
 // SetUpstreamProxy points every captured request at a global egress proxy
 // (http/https/socks5, optional user:pass in the URL). An empty raw string clears
 // it, restoring direct dialing. The change is atomic and takes effect on the next
-// connection — no restart, no proxy rebuild. go-mitmproxy dials all three schemes
+// connection — no restart, no proxy rebuild. netloom MITM dials all three schemes
 // itself, so socks5 works uniformly here regardless of the target tool.
 func (t *Traffic) SetUpstreamProxy(raw string) error {
 	if strings.TrimSpace(raw) == "" {
@@ -351,13 +337,13 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 }
 
 // CACertPath returns the PEM CA cert clients must trust to verify HTTPS through
-// the MITM proxy (go-mitmproxy writes it here on first start).
+// the MITM proxy (netloom MITM writes it here on first start).
 func (t *Traffic) CACertPath() string {
-	return filepath.Join(t.dir, "_ca", "mitmproxy-ca-cert.pem")
+	return filepath.Join(t.dir, "_ca", "netloom-ca-cert.pem")
 }
 
 // Start runs the proxy (blocking); run in a goroutine.
-func (t *Traffic) Start() error { return t.proxy.Start() }
+func (t *Traffic) Start() error { return t.serveProxy() }
 
 // Close waits for background tree reclamation to finish before closing the
 // index, so shutdown never leaves a goroutine unlinking files out from under a
@@ -368,6 +354,7 @@ func (t *Traffic) Close() error {
 	if t.closed != nil {
 		t.closeOnce.Do(func() { close(t.closed) })
 	}
+	t.closeProxy()
 	t.reaping.Wait()
 	return t.db.Close()
 }
@@ -384,105 +371,56 @@ func (t *Traffic) stopping() bool {
 }
 func (t *Traffic) DB() *sql.DB { return t.db }
 
-// sink is the go-mitmproxy addon that records completed exchanges.
-type sink struct {
-	mproxy.BaseAddon
-	t *Traffic
-}
-
-func (s *sink) Response(f *mproxy.Flow) {
-	if f.Request == nil || f.Response == nil {
-		return
-	}
-	s.t.record(f)
-}
-
-// RequestError fires when a request through an established MITM tunnel fails. If
-// the failure looks proxy/protocol-caused (h2 quirks, HEAD-with-body, protocol
-// errors) — not a plain target-unreachable error — we flag the host for
-// transparent passthrough so future requests to it succeed instead of dying.
-func (s *sink) RequestError(f *mproxy.Flow, err error) { s.t.maybePassthrough(f, err) }
-
-// maybePassthrough marks a host to be tunneled transparently on the next
-// connection, but only for errors the proxy itself caused — a target that is
-// simply down/filtered would fail without us too, and must stay MITM'd+recorded.
-func (t *Traffic) maybePassthrough(f *mproxy.Flow, err error) {
-	if err == nil || f == nil || f.Request == nil || f.Request.URL == nil || !proxyCausedErr(err) {
-		return
-	}
-	host := f.Request.URL.Hostname()
-	if host == "" {
-		return
-	}
-	if _, loaded := t.pass.LoadOrStore(host, struct{}{}); !loaded {
-		log.Printf("[traffic] 与 %s 的 MITM 出错，改为透传（该 host 后续直连目标、不再记录，但请求照常）：%v", host, err)
-	}
-}
-
-// proxyCausedErr reports whether err indicates the interception layer (not the
-// target) is at fault — HTTP/2 handling, HEAD-with-body, or a protocol violation.
-func proxyCausedErr(err error) bool {
-	s := strings.ToLower(err.Error())
-	for _, p := range []string{"head request", "http2", "http/2", "protocol error", "protocol_error", "malformed"} {
-		if strings.Contains(s, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // record persists one exchange entirely in SQLite: metadata, bodies and the
 // full-text index. Nothing is written to a per-request directory — only bodies
 // above maxInlineBody spill to the content-addressed blob store.
-func (t *Traffic) record(f *mproxy.Flow) {
+func (t *Traffic) recordCapture(c Capture, reqB, respB storedBody, respLen int64) (string, error) {
 	// The write lock covers blob + index writes, so DeleteHost (and its blob GC)
 	// can run under the same lock without racing a concurrent record.
-	t.wmu.Lock()
-	defer t.wmu.Unlock()
-	host := f.Request.URL.Hostname()
-	method := f.Request.Method
-	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
+	u, err := url.Parse(c.URL)
+	if err != nil {
+		return "", err
+	}
+	host := u.Hostname()
+	method := c.Method
+	tmpl := db.TemplatePath(u.EscapedPath())
 	n := t.seq.Add(1)
 	now := time.Now()
 	id := fmt.Sprintf("%d-%04d", now.Unix(), n%10000)
 
-	ct := f.Response.Header.Get("Content-Type")
-	url := f.Request.URL.String()
-	reqHead := fmt.Sprintf("%s %s %s\n%s", method, f.Request.URL.RequestURI(), f.Request.Proto, requestHeaderLines(f.Request))
-	respHead := fmt.Sprintf("HTTP %d\n%s", f.Response.StatusCode, headerLines(f.Response.Header))
-	// Bodies are spilled before the transaction opens: blob writes are filesystem
-	// work and must not sit inside the SQLite write lock.
-	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))
-	respB := t.spill(f.Response.Body, ct)
-
+	ct := c.ResponseHeaders.Get("Content-Type")
+	url := c.URL
+	req := &http.Request{Method: method, URL: u, Host: c.Host, Proto: c.Proto, Header: c.RequestHeaders}
+	reqHead := fmt.Sprintf("%s %s %s\n%s", method, u.RequestURI(), c.Proto, requestHeaderLines(req))
+	respHead := fmt.Sprintf("HTTP %d\n%s", c.StatusCode, headerLines(c.ResponseHeaders))
 	tx, err := t.db.Begin()
 	if err != nil {
 		log.Printf("[traffic] 记录 %s 失败（开启事务）：%v", url, err)
-		return
+		return "", err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once committed
 
 	// path stays empty for db-resident exchanges; a non-empty path marks a legacy
 	// row whose bodies still live in the old on-disk tree (see Get).
-	res, err := tx.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,'')`,
-		id, now.Unix(), host, method, tmpl, url, f.Response.StatusCode, ct,
-		len(f.Request.Body), len(f.Response.Body))
+	res, err := tx.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path,capture_complete)
+VALUES(?,?,?,?,?,?,?,?,?,?,'',?)`,
+		id, now.Unix(), host, method, tmpl, url, c.StatusCode, ct,
+		len(c.RequestBody), respLen, c.Complete)
 	if err != nil {
 		log.Printf("[traffic] 记录 %s 失败（写索引）：%v", url, err)
-		return
+		return "", err
 	}
 	rowid, err := res.LastInsertId()
 	if err != nil {
 		log.Printf("[traffic] 记录 %s 失败（取 rowid）：%v", url, err)
-		return
+		return "", err
 	}
 
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO exchange_bodies(id,req_head,req_body,req_blob,resp_head,resp_body,resp_blob)
 VALUES(?,?,?,?,?,?,?)`,
 		id, reqHead, reqB.inline, nullIfEmpty(reqB.hash), respHead, respB.inline, nullIfEmpty(respB.hash)); err != nil {
 		log.Printf("[traffic] 记录 %s 失败（写正文）：%v", url, err)
-		return
+		return "", err
 	}
 
 	for _, h := range []string{reqB.hash, respB.hash} {
@@ -491,7 +429,7 @@ VALUES(?,?,?,?,?,?,?)`,
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO blob_refs(hash,exchange_id) VALUES(?,?)`, h, id); err != nil {
 			log.Printf("[traffic] 记录 %s 失败（登记 blob 引用）：%v", url, err)
-			return
+			return "", err
 		}
 	}
 
@@ -501,13 +439,15 @@ VALUES(?,?,?,?,?,?,?)`,
 		idx := strings.Join([]string{url, reqHead, reqB.index, respHead, respB.index}, "\n")
 		if _, err := tx.Exec(`INSERT INTO ex_fts(rowid,content) VALUES(?,?)`, rowid, idx); err != nil {
 			log.Printf("[traffic] 记录 %s 失败（写全文索引）：%v", url, err)
-			return
+			return "", err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		log.Printf("[traffic] 记录 %s 失败（提交）：%v", url, err)
+		return "", err
 	}
+	return id, nil
 }
 
 // storedBody is one body after the inline/spill decision: inline is what goes in
@@ -651,12 +591,12 @@ func headerLines(h map[string][]string) string {
 // requestHeaderLines restores the HTTP Host header, which net/http stores on
 // Request.Host rather than in Header. Keeping it in request.http makes the raw
 // capture complete and directly replayable.
-func requestHeaderLines(req *mproxy.Request) string {
+func requestHeaderLines(req *http.Request) string {
 	headers := req.Header.Clone()
 	headers.Del("Host")
 	host := req.URL.Host
-	if raw := req.Raw(); raw != nil && strings.TrimSpace(raw.Host) != "" {
-		host = raw.Host
+	if strings.TrimSpace(req.Host) != "" {
+		host = req.Host
 	}
 	var b strings.Builder
 	if host = strings.TrimSpace(host); host != "" {
@@ -1696,7 +1636,7 @@ func (t *Traffic) indexBytes() int64 {
 //
 // The work is done in the background, in bounded steps that drop the write lock
 // between them, because it is proportional to what was deleted — freeing several
-// gigabytes under one lock would stall record(), which go-mitmproxy calls before
+// gigabytes under one lock would stall record(), which netloom MITM calls before
 // it replies to the client, and so would stall the requests being recorded.
 // Safe to call with wmu held: the background pass simply waits for it.
 //
@@ -2055,7 +1995,15 @@ func (t *Traffic) Tools() []actool.CallableTool {
 		if err != nil {
 			return toolkit.Error(err.Error()), nil
 		}
-		return toolkit.Text("=== REQUEST ===\n" + clip(req, 2500) + "\n\n=== RESPONSE ===\n" + clip(resp, 4000)), nil
+		complete, err := t.CaptureComplete(a.ID)
+		if err != nil {
+			return toolkit.Error(err.Error()), nil
+		}
+		note := ""
+		if complete != nil && !*complete {
+			note = "采集不完整；以下仅为部分流量，不可视为完整响应。\n"
+		}
+		return toolkit.Text(note + "=== REQUEST ===\n" + clip(req, 2500) + "\n\n=== RESPONSE ===\n" + clip(resp, 4000)), nil
 	})
 
 	blob := toolkit.New("traffic_blob", "分段读取超大请求/响应体的原文。traffic_get 里显示为 '…[truncated] @blob sha256:<hash>' 的部分即存放于此，把该 hash 传进来即可取完整内容。单次最多返回 8KB，用 offset 继续往后读（返回结果会给出总长度）。适合翻阅备份文件、源码泄露、大 JSON 导出等超过内联阈值的响应。", map[string]any{

@@ -1,22 +1,40 @@
 .DEFAULT_GOAL := build
 GO ?= go
+GO_RUN = ./scripts/go-netloom.sh $(GO)
 NPM ?= npm
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-BINARY ?= artex
+BINARY ?= dist/artex$(EXE)
 LDFLAGS := -s -w -X main.version=$(VERSION)
-TARGET_OS := $(shell $(GO) env GOOS)
-TARGET_ARCH := $(shell $(GO) env GOARCH)
+TARGET_OS := $(if $(GOOS),$(GOOS),$(shell $(GO) env GOHOSTOS))
+TARGET_ARCH := $(if $(GOARCH),$(GOARCH),$(shell $(GO) env GOHOSTARCH))
+BUILD_TARGETS := linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 EXE := $(if $(filter windows,$(TARGET_OS)),.exe,)
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
 PACKAGE_NAME := artex-$(PACKAGE_VERSION)-$(TARGET_OS)-$(TARGET_ARCH)
 PACKAGE_DIR := dist/$(PACKAGE_NAME)
 
-.PHONY: build build-backend build-web embed-web build-embedded release package run dev-web test test-go test-web clean help
+.PHONY: build all build-all build-backend build-web embed-web build-embedded release package run dev-web test test-go test-web clean help
+# "make build all" is two Make goals; both share one build-all dependency.
+ifneq ($(filter all build-all,$(MAKECMDGOALS)),)
+build: build-all
+else
 build: release
+endif
+
+all: build-all
+
+build-all: embed-web
+	@set -e; \
+	for target in $(BUILD_TARGETS); do \
+		build_os=$${target%/*}; build_arch=$${target#*/}; build_ext=; \
+		if [ "$$build_os" = windows ]; then build_ext=.exe; fi; \
+		$(MAKE) build-embedded GOOS="$$build_os" GOARCH="$$build_arch" \
+			BINARY="dist/artex-$$build_os-$$build_arch$$build_ext"; \
+	done
 
 build-backend:
 	mkdir -p $(dir $(BINARY))
-	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/artex
+	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) CGO_ENABLED=0 $(GO_RUN) build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/artex
 
 web/node_modules/.scopeforge-deps: web/package.json web/package-lock.json
 	cd web && HUSKY=0 $(NPM) ci --no-audit --no-fund
@@ -33,7 +51,7 @@ embed-web: build-web
 build-embedded:
 	test -f server/webui/dist/index.html
 	mkdir -p $(dir $(BINARY))
-	CGO_ENABLED=0 $(GO) build -trimpath -tags embedui -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/artex
+	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) CGO_ENABLED=0 $(GO_RUN) build -trimpath -tags embedui -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/artex
 
 release: embed-web
 	$(MAKE) build-embedded
@@ -50,7 +68,7 @@ package:
 	cd dist && zip -qr '$(PACKAGE_NAME).zip' '$(PACKAGE_NAME)'
 
 run:
-	$(GO) run ./cmd/artex $(ARGS)
+	$(GO_RUN) run ./cmd/artex $(ARGS)
 
 dev-web: web/node_modules/.scopeforge-deps
 	cd web && $(NPM) run dev
@@ -58,7 +76,7 @@ dev-web: web/node_modules/.scopeforge-deps
 test: test-go test-web
 
 test-go:
-	$(GO) test ./...
+	$(GO_RUN) test ./...
 
 test-web: web/node_modules/.scopeforge-deps
 	cd web && $(NPM) run typecheck && node --test src/lib/*.test.mjs
@@ -68,8 +86,9 @@ clean:
 	$(RM) -r dist web/out server/webui/dist web/tsconfig.tsbuildinfo
 
 help:
-	@echo 'make build      构建内嵌前端的完整程序'
-	@echo 'make release    构建内嵌前端的单文件程序'
+	@echo 'make build      构建当前系统程序到 dist/artex（Windows 为 artex.exe）'
+	@echo 'make build all  构建 Linux / Windows / macOS 的 amd64、arm64 到 dist/'
+	@echo 'make release    构建内嵌前端程序到 dist/artex'
 	@echo 'make package    用已构建前端打包 zip（支持 GOOS / GOARCH / VERSION）'
 	@echo 'make run        开发运行后端（ARGS=...）'
 	@echo 'make dev-web    启动前端开发服务'

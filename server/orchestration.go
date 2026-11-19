@@ -41,6 +41,7 @@ func jsonResult(v any) (toolkit.Output, error) {
 func (s *Server) hostTools() ([]actool.CallableTool, map[string][]string) {
 	tools := append(s.m.HostTools(), s.orchestrationTools()...)
 	tools = append(tools, s.findingRetestTools()...)
+	tools = append(tools, s.networkTools()...)
 	tools = append(tools, s.platformTools()...) // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
 	custom, err := s.customTools()
 	if err != nil {
@@ -473,6 +474,12 @@ func (s *Server) seedOrchestrationTools() {
 	for _, t := range s.platformTools() {
 		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
 		_ = s.m.PG().SeedTool(t.Declaration().Name, t.Declaration().Description, schema, autoAgents)
+	}
+	for _, t := range s.networkTools() {
+		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
+		if err := s.m.PG().SeedTool(t.Declaration().Name, t.Declaration().Description, schema, json.RawMessage(`["auto","pentest","worker","mainagent","planner"]`)); err != nil {
+			log.Printf("[network] seed tool: %v", err)
+		}
 	}
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()

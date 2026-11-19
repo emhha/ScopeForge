@@ -67,7 +67,8 @@ AI 自主渗透测试系统（Go 后端 + Vite 前端）
 需要 Go 1.26.3+、Node.js 22.22+、npm 和 GNU Make。
 
 ```sh
-make                 # 构建前端并内嵌到 ./artex
+make build           # 当前系统：./dist/artex（Windows 为 artex.exe）
+make build all       # Linux、Windows、macOS，各构建 amd64 / arm64
 make build-backend   # 只构建后端，适合配合前端开发服务
 make run             # 开发运行后端，可加 ARGS="-addr :8787"
 make dev-web         # 另一个终端运行前端开发服务
@@ -75,7 +76,20 @@ make test            # Go 测试、前端类型检查及测试
 make clean           # 清理产物
 ```
 
-可通过 `VERSION=v1.0.0`、`BINARY=dist/artex`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite，模型会话仅保存在进程内存中；实现与后续扩展方案见 [迁移说明](MIGRATION_PLAN.md)。
+`make` 与 `make build` 等价。`make build all`（也可用 `make all` 或 `make build-all`）只构建一次前端，然后生成：
+
+```text
+dist/artex-linux-amd64
+dist/artex-linux-arm64
+dist/artex-windows-amd64.exe
+dist/artex-windows-arm64.exe
+dist/artex-darwin-amd64
+dist/artex-darwin-arm64
+```
+
+单独交叉编译可用 `make build GOOS=windows GOARCH=amd64`。`darwin` 表示 macOS。
+
+可通过 `VERSION=v1.0.0`、`BINARY=dist/custom-artex`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite，模型会话仅保存在进程内存中；实现与后续扩展方案见 [迁移说明](MIGRATION_PLAN.md)。
 
 ## 安装
 
@@ -84,7 +98,7 @@ make clean           # 清理产物
 ```sh
 cp config.example.json config.json
 make
-./artex
+./dist/artex
 ```
 
 打开 **http://localhost:8787**，首次进入 `/setup` 设置管理员密码。
@@ -94,7 +108,7 @@ make
 需要重置管理员密码时：
 
 ```sh
-printf '%s\n' '新的密码' | ./artex -reset-password
+printf '%s\n' '新的密码' | ./dist/artex -reset-password
 ```
 
 远程 MCP 支持 Streamable HTTP 与旧版 SSE；服务配置仍通过应用内管理页面维护。
@@ -110,12 +124,10 @@ printf '%s\n' '新的密码' | ./artex -reset-password
 ```sh
 git pull
 make
-./artex
+./dist/artex
 ```
 
 也可从 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载对应平台的 zip，停止旧进程后替换二进制，按需合并技能目录，保留本地配置和数据。
-
-系统配置页保留检查更新、下载校验和暂存新二进制的功能。安装会让进程以退出码 75 退出，下一次启动执行换装；请自行配置能够重新拉起程序的服务管理器。直接运行 `./artex` 时需要手动再次启动，换装要求重启时也需再次启动。启动后持续失败的版本可自动回滚到 `artex.old`。更新会中断任务，内存会话会随进程退出而清空。
 
 发布流程使用 `make package VERSION=vX.Y.Z GOOS=linux GOARCH=amd64`，打包前先运行 `make embed-web`。压缩包命名为 `artex-X.Y.Z-linux-amd64.zip`，包含内嵌前端的二进制、配置示例和技能。当前仓库通过 Make 构建与发布，不再提供旧安装、启动或 Docker 构建脚本。
 
@@ -140,6 +152,8 @@ make
 
 **LLM**：`export ANTHROPIC_API_KEY=sk-...`（或 `OPENAI_API_KEY`），也可在 UI 的「LLM 配置」页填写。
 可选：`ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`。
+
+**各 Agent 的 LLM**：先在「LLM 配置」中添加模型配置，再到「Agent」页逐个选择；例如目标拆解选择 DeepSeek，规划者选择 GPT。选择后自动保存，各 Agent 互不覆盖；未指定时跟随任务/会话，再回退全局激活配置。
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 

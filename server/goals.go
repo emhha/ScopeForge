@@ -372,10 +372,8 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 	if t == nil {
 		return nil
 	}
-	// Use the SAME LLM the task runs on (its pinned profile, else the active profile),
-	// NOT agent.FromEnv() — the LLM is configured via the UI (DB profile), not env vars,
-	// so FromEnv returned empty and every task silently fell back to the crude rule
-	// splitter (which shredded URLs / made meaningless 2-way splits).
+	// Goal decomposition resolves its own Agent binding first, independently of
+	// the planner and worker. Unbound roles follow the task chain, then global.
 	var specs []goalSpec
 	var as *db.AssetStore
 	if s.m != nil {

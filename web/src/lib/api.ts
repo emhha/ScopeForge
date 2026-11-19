@@ -11,6 +11,8 @@ import type {
   Activity,
   Agent,
   AgentDetail,
+  MappingSource,
+  MappingSourcePatch,
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
@@ -100,7 +102,6 @@ import type {
   TrafficEvidenceRole,
   TrafficHost,
   TrafficResp,
-  UpdateCheck,
   UsageStats,
   WorkspaceFile,
   WorkspaceListing,
@@ -791,6 +792,8 @@ export const api = {
   trafficDeleteAll: () => del<{ deleted: number; reclaimed: number }>(`/traffic/all`),
 
   // ---- app settings (runtime toggles) ----
+  mappingSources: () => get<{ sources: MappingSource[] }>("/discovery/sources").then((r) => arr(r.sources)),
+  saveMappingSource: (id: MappingSource["id"], patch: MappingSourcePatch) => put<MappingSource>(`/discovery/sources/${id}`, patch),
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // Run a real "test" search with the given (or saved) config to verify it works.
@@ -1283,14 +1286,5 @@ export const api = {
   tokensByModel: (task: string) =>
     get<{ models: ModelTokenStat[] }>(`/llm/records/by-model?task=${encodeURIComponent(task)}`),
 
-  // ---- 一键更新 ----
-  // 检查以后端为准：下载是后端做的，浏览器能连 GitHub 而服务器连不上的情况很常见
-  // （服务器在内网、代理只配在浏览器上），那时点更新必然失败。
-  // 后端对 GitHub 的查询结果有 30 分钟缓存（未认证的 GitHub API 是 60 次/小时/IP，
-  // 顶栏每次整页加载都会查一次，不缓存会很快耗光配额）。force=true 强制回源，
-  // 留给用户显式点「检查更新」时用。
-  checkUpdate: (force = false) => get<UpdateCheck>(`/update/check${force ? "?force=1" : ""}`),
-  // 202 即返回，实际下载在后台跑，进度走 /api/update/stream。
-  applyUpdate: () => post<{ ok: boolean; target: string }>(`/update/apply`),
-  rollbackUpdate: () => post<{ ok: boolean }>(`/update/rollback`),
+
 };

@@ -8,12 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 )
 
 func TestRequestHeaderLinesIncludesHost(t *testing.T) {
-	req := &mproxy.Request{
+	req := &http.Request{
 		URL:    &url.URL{Host: "target.example:8443"},
 		Header: http.Header{"Accept": []string{"application/json"}},
 	}

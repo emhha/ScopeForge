@@ -18,6 +18,7 @@ import type {
   Conversation,
   EvidenceBodyPreview,
   FindingRetest,
+  MappingSource,
   FindingTraffic,
   FindingTrafficBinding,
   IntentAsset,
@@ -48,8 +49,14 @@ const mockLLMRecords = structuredClone(D.llmRecords);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
+const mockAgents = structuredClone(D.agents);
 const mockRetests: FindingRetest[] = [];
 const mockRetestMessages: Record<number, Activity[]> = {};
+
+const mockMappingSources: MappingSource[] = (["fofa", "hunter", "quake"] as const).map((id) => ({
+  id, enabled: false, endpoint: { fofa: "https://fofa.info/api/v1/search/all", hunter: "https://hunter.qianxin.com/openApi/search", quake: "https://quake.360.net/api/v3/search/quake_service" }[id],
+  proxy: "", timeout_seconds: 30, key_set: false, key_from_env: false, email: "",
+}));
 
 // ── 关联流量证据(finding traffic) ─────────────────────────────────────────────
 // 后端把请求/响应快照独立存到 evidence 表,前端详情页用 FindingTrafficPanel 展示。
@@ -818,7 +825,7 @@ function mockProfileResolution(profileID: number | undefined, source: TaskLLMRes
 // Mirrors the backend precedence in server/task_resolution.go:
 // Agent 绑定 → 任务 LLM 配置链 → 全局配置 → 环境配置。
 function mockRoleResolution(task: Task, agentKey: "mainagent" | "planner" | "worker"): TaskLLMResolution {
-  const agent = D.agents.find((item) => item.key === agentKey);
+  const agent = mockAgents.find((item) => item.key === agentKey);
   if (agent?.llm_profile_id) {
     const bound = mockProfileResolution(agent.llm_profile_id, "agent_binding");
     if (bound.available) return bound;
@@ -2266,8 +2273,22 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "llm" && seg[1] === "profiles" && seg.length === 3 && m === "DELETE")
     return { deleted: Number(seg[2]) };
 
+  if (path === "/discovery/sources" && m === "GET") return { sources: structuredClone(mockMappingSources) };
+  if (seg[0] === "discovery" && seg[1] === "sources" && seg.length === 3 && m === "PUT") {
+    const source = mockMappingSources.find((item) => item.id === seg[2]);
+    if (!source) throw new Error("未知测绘数据源");
+    const next = { ...source };
+    for (const field of ["enabled", "endpoint", "proxy", "timeout_seconds", "email"] as const) {
+      if (field in b) Object.assign(next, { [field]: b[field] });
+    }
+    if ("key" in b) next.key_set = Boolean(String(b.key ?? "").trim());
+    if (next.enabled && !next.key_set) throw new Error("启用前请配置 API Key");
+    Object.assign(source, next);
+    return structuredClone(source);
+  }
+
   // ── agents ──
-  if (path === "/agents" && m === "GET") return { agents: D.agents };
+  if (path === "/agents" && m === "GET") return { agents: structuredClone(mockAgents) };
   if (path === "/agents" && m === "POST")
     return {
       id: "9",
@@ -2277,7 +2298,29 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       builtin: false,
       enabled: true,
     };
-  if (seg[0] === "agents" && seg.length === 2 && m === "GET") return D.agentDetail(seg[1]);
+  if (seg[0] === "agents" && seg.length === 2 && m === "GET") {
+    const agent = mockAgents.find((item) => item.key === seg[1]);
+    if (!agent) throw new Error("Agent 不存在");
+    return {
+      ...D.agentDetail(seg[1]), agent: structuredClone(agent),
+      llm_profiles: D.llmProfiles.map((profile) => ({ id: Number(profile.id), name: profile.name, model: profile.model, is_default: profile.is_default })),
+    };
+  }
+  if (seg[0] === "agents" && seg[2] === "config" && m === "PUT") {
+    const agent = mockAgents.find((item) => item.key === seg[1]);
+    if (!agent) throw new Error("Agent 不存在");
+    if ("llm_profile_id" in b) {
+      const profileId = b.llm_profile_id;
+      if (profileId !== null && (typeof profileId !== "number" || !D.llmProfiles.some((profile) => Number(profile.id) === profileId))) {
+        throw new Error("指定的 LLM 配置不存在或无效");
+      }
+      agent.llm_profile_id = profileId as number | null;
+    }
+    for (const field of ["max_turns", "run_seconds", "web_search", "interactive_shell", "trigger_run_mode", "trigger_merge_mode", "trigger_max_parallel"] as const) {
+      if (field in b) Object.assign(agent, { [field]: b[field] });
+    }
+    return { ok: true };
+  }
   if (seg[0] === "agents" && seg[2] === "triggers" && m === "GET") return { triggers: [] };
   if (seg[0] === "agents" && seg[2] === "prompts") return { versions: D.agentDetail(seg[1]).versions };
   if (seg[0] === "agents" && seg[2] === "variables") return { variables: D.agentDetail(seg[1]).variables };

@@ -46,9 +46,13 @@ func (t *Traffic) ReadEvidence(ctx context.Context, ids []string, consume func(E
 func (t *Traffic) readEvidence(id string, consume func(EvidenceExchange) error) error {
 	e := EvidenceExchange{ID: id}
 	var legacy string
-	if err := t.db.QueryRow(`SELECT ts,url,method,status,content_type,req_len,resp_len,path FROM exchanges WHERE id=?`, id).
-		Scan(&e.TS, &e.URL, &e.Method, &e.Status, &e.ContentType, &e.ReqLen, &e.RespLen, &legacy); err != nil {
+	var complete *bool
+	if err := t.db.QueryRow(`SELECT ts,url,method,status,content_type,req_len,resp_len,path,capture_complete FROM exchanges WHERE id=?`, id).
+		Scan(&e.TS, &e.URL, &e.Method, &e.Status, &e.ContentType, &e.ReqLen, &e.RespLen, &legacy, &complete); err != nil {
 		return err
+	}
+	if complete != nil && !*complete {
+		return errors.New("流量采集未完成，不能作为完整证据")
 	}
 	var req, resp []byte
 	var reqBlob, respBlob sql.NullString

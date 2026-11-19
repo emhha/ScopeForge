@@ -645,6 +645,7 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerNetworkRoutes(mux)
 	s.registerSideRoutes(mux)
 
 	// Auth routes — exempt from JWT check (handled in requireAuth)
@@ -3239,7 +3240,12 @@ func (s *Server) getTrafficExchange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"req": req, "resp": resp})
+	complete, err := tr.CaptureComplete(id)
+	if err != nil {
+		writeErr(w, 500, "读取采集状态失败")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"req": req, "resp": resp, "capture_complete": complete})
 }
 
 // getTrafficBlob streams one oversized body by its sha256. Bodies past the inline

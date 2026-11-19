@@ -17,9 +17,11 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/config"
 	pgdb "github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/discovery"
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/netrequest"
 	"github.com/Autumn-27/artex/traffic"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
@@ -218,13 +220,15 @@ type DeleteTaskResult struct {
 // Manager owns the SQLite data source (asset graph + every task's exploration
 // graph + config) and the in-memory set of task handles.
 type Manager struct {
-	sessions    session.Service
-	dir         string
-	pg          *pgdb.DB
-	assets      *pgdb.AssetStore
-	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
-	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
-	interceptor *intercept.Interceptor // user-configured tool-call interception rules
+	sessions     session.Service
+	httpRequests *netrequest.Service
+	mapping      *discovery.Service
+	dir          string
+	pg           *pgdb.DB
+	assets       *pgdb.AssetStore
+	traffic      *traffic.Traffic       // process-wide recording proxy (may be nil)
+	enrich       *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
+	interceptor  *intercept.Interceptor // user-configured tool-call interception rules
 
 	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between SQLite lifecycle writes and
@@ -433,6 +437,16 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
 		}
 	}
+	m.httpRequests, err = netrequest.New(m.GlobalProxy)
+	if err != nil {
+		if m.traffic != nil {
+			_ = m.traffic.Close()
+		}
+		_ = m.sessions.Close()
+		_ = pg.Close()
+		return nil, err
+	}
+	m.mapping = discovery.New(pg, m.GlobalProxy)
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
 	// restart with capture already on keeps Playwright routed through the proxy.
@@ -782,6 +796,15 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 }
 
 func (m *Manager) Close() error {
+	if m.enrich != nil {
+		m.enrich.Close()
+	}
+	if m.httpRequests != nil {
+		_ = m.httpRequests.Close()
+	}
+	if m.mapping != nil {
+		m.mapping.Close()
+	}
 	if m.sessions != nil {
 		_ = m.sessions.Close()
 	}

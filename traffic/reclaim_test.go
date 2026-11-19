@@ -15,7 +15,7 @@ import (
 func bulkRecord(tr *Traffic, host string, n, size int) {
 	body := []byte(strings.Repeat("A", size))
 	for i := 0; i < n; i++ {
-		tr.record(newFlow(host, "GET", fmt.Sprintf("/blob/%d", i), nil, body,
+		tr.Record(newCapture(host, "GET", fmt.Sprintf("/blob/%d", i), nil, body,
 			withRespType("application/octet-stream")))
 	}
 }
@@ -81,7 +81,7 @@ func TestReclaimMergesFTSTombstones(t *testing.T) {
 	for round := 0; round < 4; round++ {
 		host := fmt.Sprintf("fts%d.example.com", round)
 		for i := 0; i < 20; i++ {
-			tr.record(newFlow(host, "GET", fmt.Sprintf("/p/%d", i), nil,
+			tr.Record(newCapture(host, "GET", fmt.Sprintf("/p/%d", i), nil,
 				[]byte(strings.Repeat("secret token 中文正文 padding ", 200))))
 		}
 		if _, err := tr.DeleteHostsExact([]string{host}); err != nil {
@@ -165,8 +165,8 @@ func TestDeleteAllPurgesAndCompacts(t *testing.T) {
 	bulkRecord(tr, "b.example.com", 10, 200*1024)
 	// A text body so the full-text index has real content, and a spilled one so a
 	// blob exists to collect.
-	tr.record(newFlow("c.example.com", "GET", "/page", nil, []byte(strings.Repeat("secret-token ", 500))))
-	tr.record(newFlow("c.example.com", "GET", "/big", nil,
+	tr.Record(newCapture("c.example.com", "GET", "/page", nil, []byte(strings.Repeat("secret-token ", 500))))
+	tr.Record(newCapture("c.example.com", "GET", "/big", nil,
 		[]byte(strings.Repeat("B", maxInlineBody+1024)), withRespType("application/sql")))
 	// An orphaned legacy directory: no index row points at it, so only a
 	// clear-everything should take it.
@@ -211,7 +211,7 @@ func TestDeleteAllPurgesAndCompacts(t *testing.T) {
 		t.Fatalf("孤立的历史 host 目录未被清理：%v", err)
 	}
 	// Recording must keep working against the freshly rewritten file.
-	tr.record(newFlow("d.example.com", "GET", "/after", nil, []byte("清空后仍可录制")))
+	tr.Record(newCapture("d.example.com", "GET", "/after", nil, []byte("清空后仍可录制")))
 	if n, err := tr.Count(); err != nil || n != 1 {
 		t.Fatalf("清空后 Count=(%d,%v)，应为 (1,nil)", n, err)
 	}
