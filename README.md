@@ -75,7 +75,7 @@ make test            # Go 测试、前端类型检查及测试
 make clean           # 清理产物
 ```
 
-可通过 `VERSION=v1.0.0`、`BINARY=dist/artex`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite；原生 tRPC 迁移进度见 [迁移计划](MIGRATION_PLAN.md)。
+可通过 `VERSION=v1.0.0`、`BINARY=dist/artex`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite，模型会话仅保存在进程内存中；实现与后续扩展方案见 [迁移说明](MIGRATION_PLAN.md)。
 
 ## 安装
 
@@ -103,85 +103,47 @@ printf '%s\n' '新的密码' | ./artex -reset-password
 
 ## 更新升级
 
-> 升级只换程序、不动数据：`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
+升级前先停止程序，备份 `config.json`、整个 `data/` 和自定义 `skills/`。SQLite 使用 WAL；停机后复制整个数据目录可以保留一致的数据库状态。启动时会按 `PRAGMA user_version` 执行版本化 schema 迁移。
 
-### 方式一：页面一键更新（推荐）
+从源码升级：
 
-在 **系统配置** 页（侧边栏「系统配置」→ `/system/settings`）的**版本与更新**卡片里，可以直接检查并安装新版本，无需登录服务器。
-
-点「更新」后：下载当前平台的发布包 → 比对 Release 的 `SHA256SUMS` → 用 `-h` 冒烟测试新二进制 → 暂存为 `artex.new` → 程序退出，由 `start.sh` / `start.bat` 重新拉起并完成换装。页面会自动等到新版本上线后刷新。
-
-- **失败不会留下坏程序**：校验或冒烟不通过就丢弃暂存件、继续跑当前版本；换装后的新版若连续 3 次启动失败，会自动回滚到 `artex.old`（失败的那个留作 `artex.failed` 供排查）。
-- **随时可回退**：上一版本保留为 `artex.old`，卡片上有「回滚到上一版本」。注意数据库结构不会回退。
-- **更新会中断正在运行的任务**——更新即重启，请在空闲时进行。
-- **开发构建不给更新**：版本号是 `dev` 或 `git describe` 带后缀时禁用，避免正式版覆盖掉本地调试的二进制。
-- **Docker 下只换程序、不换镜像**：镜像里的 playwright / nmap 等工具链不会跟着升级，且 `docker compose up -d` 重建容器后会退回镜像自带的版本。要连镜像一起升级仍请用 `docker compose pull artex && docker compose up -d artex`。
-- 访问 GitHub 需要代理时，在同一页面配置**全局代理**即可，更新链路会走它。更新只从 GitHub 域名下载并强制 HTTPS。
-
-### 方式二：一键更新脚本
-
-```bash
-cd ARTEX
-./update.sh
-```
-
-脚本先可选 `git pull` 拉取最新代码，再让你选 **① Docker 更新** 或 **② 本地编译更新**（与 `install.sh` 对应）：
-
-- **① Docker**：可指定目标镜像 tag（回车沿用 `.env` 的 `ARTEX_TAG`，缺省 `latest`）→ `docker compose pull` → `docker compose up -d`（换新镜像重启即自动迁移）。
-- **② 本地**：重建前端静态产物 → 重新编译 `./artex`（完成后重启进程生效）。
-
-### 方式三：Docker Compose（手动）
-
-```bash
-cd ARTEX
-git pull                       # 更新 compose / 脚本（可选）
-# 指定版本：在 .env 设 ARTEX_TAG=v0.2.0；不设则用 latest
-docker compose pull artex
-docker compose up -d artex     # 换新镜像重启 → 自动迁移 schema
-docker image prune -f          # 清理旧镜像（可选）
-```
-
-### 方式四：预编译二进制（Releases）
-
-到 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
-
-```bash
-cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
-./start.sh
-```
-
-### 方式五：从源码编译
-
-```bash
+```sh
 git pull
-cd web && npm ci && npm run build:static && cd ..
-cp -r web/out server/webui/dist
-CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
-# 重启 ./start.sh
+make
+./artex
 ```
+
+也可从 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载对应平台的 zip，停止旧进程后替换二进制，按需合并技能目录，保留本地配置和数据。
+
+系统配置页保留检查更新、下载校验和暂存新二进制的功能。安装会让进程以退出码 75 退出，下一次启动执行换装；请自行配置能够重新拉起程序的服务管理器。直接运行 `./artex` 时需要手动再次启动，换装要求重启时也需再次启动。启动后持续失败的版本可自动回滚到 `artex.old`。更新会中断任务，内存会话会随进程退出而清空。
+
+发布流程使用 `make package VERSION=vX.Y.Z GOOS=linux GOARCH=amd64`，打包前先运行 `make embed-web`。压缩包命名为 `artex-X.Y.Z-linux-amd64.zip`，包含内嵌前端的二进制、配置示例和技能。当前仓库通过 Make 构建与发布，不再提供旧安装、启动或 Docker 构建脚本。
 
 ---
 
 ## 配置
 
-**数据库**（`config.json`，或用环境变量 `ARTEX_PG_DSN` 覆盖）：
+**数据库**（`config.json`，或用环境变量 `ARTEX_DB_PATH` 覆盖）：
 
 ```json
 {
   "database": {
-    "host": "127.0.0.1", "port": 5432,
-    "user": "artex", "password": "yourpass",
-    "dbname": "artex", "sslmode": "disable"
+    "driver": "sqlite",
+    "path": "data/artex.sqlite"
   }
 }
 ```
+
+不设置 `path` 时使用 `-data` 目录下的 `artex.sqlite`。数据库启用 WAL、外键和忙等待，使用单写连接协调并发写入。数据库文件应放在本地磁盘。
+
+**会话**：原生 Runner 会话、摘要、待办及旁路问答 checkpoint 使用内存服务，保留期为 24 小时，重启后清空；删除任务或对话时同步清理。任务、聊天展示记录、审批、活动和用量属于业务审计数据，仍保存在 SQLite，不用于还原模型上下文。Memory 和 Knowledge 当前不启用，预留方案见 [迁移说明](MIGRATION_PLAN.md)。
 
 **LLM**：`export ANTHROPIC_API_KEY=sk-...`（或 `OPENAI_API_KEY`），也可在 UI 的「LLM 配置」页填写。
 可选：`ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`。
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
-**常用参数**：`./start.sh -addr :8787 -proxy :8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
+**常用参数**：`./artex -addr :8787 -proxy 127.0.0.1:8788`（`-addr` 前端+API，`-proxy` 流量录制代理；传 `-proxy ""` 禁用代理）。
 
 ### 反向代理部署（HTTPS / 只开放 443）
 
@@ -241,13 +203,13 @@ server {
 
 ## 系统技术架构
 
-ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Vite 前端）+ SQLite，agent 能力由 [`norma`](https://github.com/Autumn-27/norma) SDK 提供（`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`）。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
+ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Vite 前端）+ SQLite，agent 通过 [tRPC-Agent-Go](https://github.com/trpc-group/trpc-agent-go) 原生 `LLMAgent` / `Runner`、`model.Model`、`tool.CallableTool` 和内存 session 服务运行。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
 
 ### 总体分层
 
 ```mermaid
 flowchart TB
-  subgraph FE["前端 Next.js（go:embed 内嵌单二进制）"]
+  subgraph FE["前端 Vite（go:embed 内嵌单二进制）"]
     UI["仪表盘 · 任务 · 资产 · 覆盖图 · 流量 · 工作空间 · 系统配置"]
   end
   subgraph SRV["server（Go net/http）"]
@@ -255,7 +217,7 @@ flowchart TB
     ENG["engine 调度循环"]
     MGR["Manager　任务/引擎/store 生命周期"]
   end
-  subgraph AG["agent（norma SDK）"]
+  subgraph AG["agent（tRPC-Agent-Go）"]
     GO["goals　目标分解 + 提取范围"]
     PL["planner　规划者（唯一意图生成者）"]
     WK["worker　执行者 ×N"]
@@ -269,7 +231,7 @@ flowchart TB
     PROXY["流量记录代理　MITM + CA 留痕"]
     GUARD["guard / intercept　工具审批门"]
     ENR["enrich　DNS / HTTP 异步补全"]
-    EXT["MCP · skills · memory · report"]
+    EXT["MCP · skills · report"]
   end
 
   UI -->|HTTP| API
@@ -292,12 +254,12 @@ flowchart TB
 
 | 层 | 职责 |
 | --- | --- |
-| **前端** | Next.js 静态导出，`go:embed` 内嵌进单二进制；可视化任务/资产/探索链路/覆盖图，人在环路对话 |
+| **前端** | Vite 静态构建，`go:embed` 内嵌进单二进制；可视化任务/资产/探索链路/覆盖图，人在环路对话 |
 | **server** | `net/http` 路由 + JWT 鉴权 + SSE；`Manager` 托管任务、引擎、DB store 的生命周期 |
 | **engine** | 每任务一个 `plannerLoop` + N 个 worker goroutine；意图领取、超时/暂停/drain |
 | **agent** | goals / planner / worker / mainagent，`ToolSet` 把双图暴露成 LLM 工具 |
-| **db** | 双图的 Postgres 落地（pgx）；schema 随 `go:embed` 每次启动幂等建表 |
-| **支撑** | 记录型 MITM 代理、审批门、异步补全、MCP/技能/记忆/报告 |
+| **db** | 双图的 SQLite 持久化；内嵌 schema 按版本迁移，WAL 与单写事务保证并发一致性 |
+| **支撑** | 记录型 MITM 代理、审批门、异步补全、MCP/原生技能/报告；记忆与知识库仅留位 |
 
 ### 双图架构：探索图 + 资产图
 

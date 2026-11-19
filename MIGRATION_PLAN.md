@@ -1,75 +1,74 @@
-# 原生 tRPC / SQLite 迁移计划
+# 原生 tRPC / SQLite 迁移说明
 
-## 基线与 Git
+## 开发流程与 Git 检查点
 
-- 起点：refactor/sqlite-trpc-web；用户已有脚本删除不纳入迁移提交。
-- 工作分支：refactor/native-trpc-sqlite。
-- 原有未提交差异备份：/tmp/scopeforge-before-trpc.patch。
-- 每个可构建阶段独立提交；不提交配置密钥和生成产物。
+1. 在 `refactor/native-trpc-sqlite` 分支实施；保留用户原有脚本删除，不把这些删除纳入迁移提交。原始差异备份在 `/tmp/scopeforge-before-trpc.patch`。
+2. Make 构建入口与迁移计划：`0c04675`、`7ee58d4`。
+3. SQLite 业务数据、配置、归档与并发事务：`cf8dca8`。
+4. 原生 tRPC 运行时与内存 session：`bdce1ee`，包含模型、工具、审批、计费和生命周期测试。
+5. Make 发布打包、文档与实际二进制启动验收：独立提交。
 
-## 开发顺序与验收
+## 已完成的实现
 
-1. Makefile：前端构建、后端构建、内嵌前端发行、开发运行、测试和清理。
-2. SQLite：替换配置、schema、专用 SQL、事务并发和测试数据库；业务数据保留持久化。
-3. tRPC：原生 model.Model / tool.CallableTool / LLMAgent / Runner，删除 norma 及相关实现；保留业务审批、工具、用量和流事件行为。
-4. Session：使用 tRPC inmemory 服务，进程内共享；重启丢弃，不写 SQLite。业务审计与任务数据不作为模型会话恢复来源。
-5. Memory / Knowledge：只预留原生依赖注入点，默认关闭；写明数据边界、隔离、导入、索引及删除方案，等待产品决策。
-6. 验证：临时 SQLite 上运行数据库测试、原生模型与工具集成测试、全量 Go 测试、前端检查和发行构建。
+- [x] Make：默认构建内嵌前端程序；后端、前端、开发、测试、清理入口；复用前端产物交叉编译与 zip 打包。发布工作流使用相同 Make 目标。
+- [x] SQLite：删除 PostgreSQL 驱动、DDL 和专有查询；配置为数据库文件。默认 `-data/artex.sqlite`，`ARTEX_DB_PATH` 优先，配置内相对路径相对配置文件解析。旧 PostgreSQL 配置显式拒绝，已有数据不自动导入。
+- [x] 并发与数据：modernc SQLite，WAL、外键、busy_timeout、FULL 同步；读池和单写连接，写事务 `BEGIN IMMEDIATE`。数组使用 JSON，IP/CIDR 使用 `net/netip`，归档在 Go 中投影和还原。数据库测试必须使用临时 SQLite，初始化失败不跳过。
+- [x] 原生运行：删除 norma 模块和运行时，不提供兼容层或本地替代模块。角色直接使用原生 `model.Model`、`tool.CallableTool`、`LLMAgent` 和 `Runner`；业务配置与审计适配保持在应用边界。删除旧 noa 后端、API 和 UI 设置。
+- [x] 模型与工具：原生 OpenAI Chat、Responses、Anthropic；保留代理、配额识别、输出前重试与供应商切换。输出后不重放。原生 hostexec、file、todo、skills 与 MCP 工具，业务工具实现原生接口。工具回调先补默认参数并校验 schema，再审批，再执行；保留拦截审计和用量统计。
+- [x] Session：Manager 共享 `session/inmemory`，TTL 24 小时；Runner 摘要和待办均在内存。摘要通过原生动态 summarizer 使用当前模型，达到上下文窗口约 2/3 时生成。对话/任务删除或归档时清理内存会话，Manager 关闭时释放。
+- [x] 旁路问答：完整 snapshot、历史和幂等状态仅保存在进程内；保留 generation、序号、并发清空保护和 TTL。schema v2 删除旧旁路 session 表，归档不再导出或恢复 checkpoint。重启不会从 Activity、聊天记录或旧 transcript 还原上下文。
+- [x] Memory / Knowledge：只预留原生类型注入，默认 nil，不创建服务、不注册功能工具、不导入历史数据。
 
-## Memory / Knowledge 待决策
+业务任务、聊天展示记录、活动、审批、用量和按设置启用的 LLM 调用审计仍是 SQLite 中的业务数据；它们不充当模型 session 存储，也不作为恢复输入。
 
-- Memory：Runner.WithMemoryService 管理服务；明确用户和任务隔离后，再决定可见工具、自动提取/预载策略、保留期和删除接口。不能用长期记忆绕过 session 不落库要求。
-- Knowledge：LLMAgent 注入原生 knowledge 服务；导入文档 → 分块 → embedding → 向量索引 → 带来源检索；后续决定 embedding 模型、存储后端、重建流程及授权范围。
-- 默认不连接存储、不注册记忆写入或检索工具、不自动上传已有数据。
+SDK 锁定同一上游修订 `90b8c46f000e`：
 
-## 已确认的代码改动范围
+- `trpc.group/trpc-go/trpc-agent-go v1.13.0-beta.1.0.20261111095122-90b8c46f000e`
+- `model/anthropic v1.12.1-0.20261111095122-90b8c46f000e`
+- `model/openai/sdkv3 v1.13.0-beta.1.0.20261111095122-90b8c46f000e`
 
-### SQLite
+SQLite 实现移植并适配自本机同源项目提交 `3f7e686`；保持当前包布局与业务 API，没有引入其他运行时。所有模型协议的编码、解析和工具循环由上游 SDK 负责。
 
-- `config/config.go`、`config.example.json`、`.env.example`：改为数据库文件路径及 `ARTEX_DB_PATH`，默认随 data 目录存储；删除 PostgreSQL 连接字段。
-- `db/db.go`、`db/schema.sql`：使用已有 modernc SQLite 驱动；建立新 SQLite schema，不把 PostgreSQL 历史 DDL 直接搬入。启用 foreign_keys、busy_timeout、WAL；所有连接都必须应用连接级 PRAGMA。
-- `db/assets.go`、`db/tasks.go` 等：数组改 JSON 数组，通过 `json_each` 查询成员；JSON 合并明确区分对象合并和数组去重。不能把 PostgreSQL 数组字面量直接写入 SQLite。
-- `db/companies.go`、`db/task_scope.go`：IP/CIDR 使用 Go `net/netip` 判断包含与最长前缀，确保 IPv4、IPv6、非法地址处理一致。
-- 锁与队列：删除 advisory lock 和 `FOR UPDATE SKIP LOCKED`；用短事务及 SQLite 单写者机制原子领取，事务前先准备耗时数据，事务内不进行网络调用。验证并发领取只有一位成功、删除和写入不会产生孤儿。
-- `db/task_archives*.go`：移除 `row_to_json`、`json_populate_recordset`、sequence 操作，在 Go 中扫描/还原行并绑定列；保留归档、复原、证据版本语义。
-- 审核所有独立建表入口，尤其 `db/llm_usage.go`、LLM 记录表初始化；不能只替换主 schema。
-- `agent/testmain_test.go`、`server/testmain_test.go`、`db/testmain_test.go`：移除共享 PostgreSQL 和 advisory lock；使用临时目录内 SQLite 文件，数据库初始化失败必须 fail，不能 skip 掩盖迁移错误。
-- 现存 PostgreSQL 数据导入不是自动启动行为；如有存量数据需要保留，另行做显式导出/导入与数量、外键、JSON 验证。
+## Memory 后续具体接入路径（等待产品决策）
 
-### 原生 tRPC
+代码留位为 `agent.RunConfig.Memory memory.Service`；非 nil 时传给原生 `runner.WithMemoryService`。下一阶段应：
 
-- SDK 已核对版本：`trpc.group/trpc-go/trpc-agent-go v1.12.0`。实现时锁定版本并审查 `go mod tidy` 的最终依赖。
-- `agent/provider.go`：直接返回 `model.Model`；OpenAI、Responses 和 Anthropic 的配置与请求验证分别处理。
-- `llmpool/pool.go`、`llmrec/llmrec.go`、`server/task_llm.go`：直接消费 `model.Request` / `model.Response`。流开始前可切换供应商，开始输出后不重放请求；同时处理调用错误及 response.Error。
-- 所有业务工具直接实现 `tool.CallableTool` / `tool.Declaration`，从业务上下文读取执行环境；删除 Norma 的 ToolContext、ContentBlock、Result、permission 和 UnlockSet 依赖。
-- `agent/capture.go` 直接消费 Runner event，保持工具调用 ID、返回值、文本、推理、错误和用量的 Activity 语义，避免增量与最终结果重复计费。
-- `guard/guard.go`：改用原生工具回调；保留人工审批与拦截审计，审批未通过不得执行工具。
-- `agent/chat.go`、`mainagent.go`、`worker.go`、`planner.go`、`goals.go`：改用 LLMAgent / Runner；取消、超时、调用预算和收尾语义显式测试，不照搬旧 terminal reason。
-- `server/assembly.go`、`mcphttp/client.go`：原生工具注册与 MCP 装配；技能发现、加载及访问控制使用原生技能能力，取消旧 SDK 的延迟工具协议。
-- 删除 `agent/noa.go` 与旧压缩相关设置/UI，而不是留空实现；上下文压缩改由 tRPC session summary 机制承担。
-- 验收搜索：Go 源码、模块依赖、配置/UI、README 中均不应保留 Norma/noa 功能入口；不创建同形 API、type alias 或本地替代模块。
+1. 在 Manager 中按配置创建单一 Memory 服务，明确用户、项目、任务的命名空间以及跨任务是否可见；通过各角色构造配置传到 RunConfig，关闭 Manager 时释放。
+2. 选择原生后端及持久化位置，单独管理长期记忆；不把完整会话/checkpoint 改为落库。决定显式记忆工具与自动提取哪些启用，以及写入是否需要用户确认。
+3. 明确注入方式、条数与 token 预算、冲突/去重规则、保留期；按用户操作提供查看、修正和删除。
+4. 添加隔离、删除、跨任务泄漏、服务故障及未启用时无存储副作用的测试，再开放配置/UI。
 
-### Session 边界
+当前不选择存储后端、不自动提取或预载、不安装记忆工具。
 
-- 在 manager 生命周期内创建并共享一个 `session/inmemory` 服务；每次 HTTP 请求不能新建服务，否则连续对话会丢上下文。
-- Runner 会话标识包含用户与任务/意图归属。对同一 session 的并发请求保留串行执行约束，不同 session 可以并行。
-- 删除业务对话或任务时同步删除内存会话；配置合理过期策略并在关闭 manager 时释放服务。
-- 停止创建 `transcript.Store`，不从旧 transcript 或 Activity 重建模型上下文。
-- `db/side_questions.go` 当前将完整模型请求保存在 `side_question_sessions`，必须迁移到进程内的旁路 checkpoint 服务；不能只把主 Runner 改成 inmemory 就认为 session 已不落库。
-- 聊天列表、任务、执行审计与模型 session 是不同的数据用途。当前假设前者仍持久化，完整 checkpoint 与模型会话仅存内存；已向用户询问此边界。
+## Knowledge 后续具体接入路径（等待产品决策）
 
-## 检查点状态
+代码留位为 `agent.RunConfig.Knowledge knowledge.Knowledge`；非 nil 时传给原生 `llmagent.WithKnowledge`。下一阶段应：
 
-- [x] 建立迁移分支并备份用户现有差异。
-- [x] Make 后端构建通过。
-- [x] 前端类型检查与 7 项测试通过。
-- [x] 内嵌前端发行构建验证（`make release`）。
-- [x] SQLite 迁移及临时数据库集成测试；当前全量 Go 测试通过。
-- [ ] 原生 tRPC 迁移及无旧依赖检查。
-- [ ] Session 不落库及生命周期验证。
-- [ ] Memory / Knowledge 原生代码注入留位。
-- [ ] 全量回归验证。
+1. 确定知识来源、文件格式/大小、用户与项目权限、embedding 模型及向量存储；在 Manager 管理服务及后台导入作业，按角色授权注入。
+2. 构建「导入 → 内容提取 → 分块 → embedding → 建索引」管道，用内容哈希避免重复；保留来源、版本、导入状态与错误，支持增量更新和重建。
+3. 使用原生检索能力，查询先过滤授权命名空间，再按相关度和 token 预算返回片段；回复提供来源，约束知识内容不能覆盖系统指令。
+4. 删除源文档时删除分块/向量；明确任务归档、用户删除和 embedding 更换时的清理策略。验证权限隔离、来源引用、重建一致性和故障回退后再开放 UI。
 
-基线检查：`go test ./...` 在本次运行失败，22 个 server 测试直接因未设置 PostgreSQL 配置失败；其余包通过或跳过数据库相关测试。该结果不能作为迁移后验收通过的证据。
+当前不创建向量库、不调用 embedding、不自动上传业务数据、不挂载知识检索工具。
 
-SQLite 实现移植并适配自本机同源项目提交 `3f7e686`，移植过程中保持当前目录布局与现有业务 API；没有引入该项目的其他运行时。
+## 验收方式
+
+- 全量 Go 测试、`go vet ./...`、前端类型检查与 Node 测试。
+- 原生 Runner → 工具 → 审批集成，模型三协议/重试/用量与取消，原生命令执行和服务端搜索声明的本地 HTTP fixture。
+- SQLite 并发领取、归档恢复、外键清理；进程重开不保留 session，以及旧归档不恢复旁路 session。
+- agent/server/llmpool/llmrec/sidequestion/db/mcphttp 的 race 检查。
+- `make release`、`make package` 与实际二进制健康检查、内嵌首页和 SQLite schema 检查；交叉编译检查发布目标。
+- 以上使用本地 fixture 和临时数据；真实供应商联网调用不属于已验证范围。
+
+原始基线因缺少 PostgreSQL 配置而失败的测试不作为迁移验收依据。
+
+## 最终验收结果（2026-11-18）
+
+- `go test ./...`：全部通过。
+- `go vet ./...`：通过。
+- `go test -race ./agent ./server ./llmpool ./llmrec ./sidequestion ./db ./mcphttp`：全部通过。
+- `make test-web`：类型检查与 7 项测试通过。
+- `make release`、`make build-embedded VERSION=dev`、`make package VERSION=dev`：通过。
+- Linux amd64 实际启动：内嵌首页、health、管理员初始化、鉴权 API、重启后登录及正常退出全部通过；SQLite header、schema v2、完整性和无 session 表检查通过。
+- linux/arm64、darwin/amd64、darwin/arm64、windows/amd64：`CGO_ENABLED=0` 内嵌前端交叉编译通过。其他平台未在本机执行运行验证。
+- 代码及模块中无旧 SDK 依赖或运行入口；配置文件不提交，生成物不提交，原有脚本删除保持未暂存。
