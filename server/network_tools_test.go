@@ -14,8 +14,10 @@ import (
 	"testing"
 
 	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
 	"github.com/emhha/scopeforge/internal/modeltest"
 	"github.com/emhha/scopeforge/internal/nettest"
+	"github.com/emhha/scopeforge/llmrec"
 	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
@@ -117,6 +119,20 @@ func TestNetworkToolsAndMappingConfigThroughNativeRunner(t *testing.T) {
 	provider := modeltest.Func(func(_ context.Context, req *model.Request) (<-chan *model.Response, error) {
 		turns++
 		if turns == 1 {
+			guidance := false
+			for _, message := range req.Messages {
+				if message.Role == model.RoleSystem && strings.Contains(message.Content, "目标 HTTP 请求") && strings.Contains(message.Content, "http_request") {
+					guidance = true
+				}
+			}
+			if !guidance {
+				t.Error("native model did not receive conditional HTTP guidance")
+			}
+			for _, item := range req.Tools {
+				if item.Declaration().Name == "WebFetch" {
+					t.Error("duplicate WebFetch bypass advertised alongside http_request")
+				}
+			}
 			args, _ := json.Marshal(map[string]string{"url": target.URL + "/probe"})
 			return modeltest.Responses(&model.Response{Choices: []model.Choice{{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "request-1", Type: "function", Function: model.FunctionDefinitionParam{Name: "http_request", Arguments: args}}}}}}}), nil
 		}
@@ -129,10 +145,24 @@ func TestNetworkToolsAndMappingConfigThroughNativeRunner(t *testing.T) {
 		}
 		return modeltest.Responses(modeltest.Final("done")), nil
 	})
-	chat := agent.NewChatAgent(provider, "fixture", m.dir, m.sessions, 100000)
-	text, err := chat.Chat(t.Context(), "worker", "conv-network-tool", "request fixture", 3, 0, false, nil)
+	var modelAudits []db.Activity
+	recordedProvider := llmrec.Wrap(provider, nil, "fixture-model", "HTTP fixture profile", "", "", func() bool { return false })
+	chat := agent.NewChatAgent(recordedProvider, "fixture", m.dir, m.sessions, 100000)
+	text, err := chat.Chat(t.Context(), "worker", "conv-network-tool", "request fixture", 3, 0, false, func(a db.Activity) {
+		if a.Kind == "model_call" {
+			modelAudits = append(modelAudits, a)
+		}
+	})
 	if err != nil || text != "done" || targetCalls.Load() != 1 {
 		t.Fatalf("native run text=%q err=%v target calls=%d", text, err, targetCalls.Load())
+	}
+	if len(modelAudits) != 2 {
+		t.Fatalf("actual model calls missing from native conversation: %+v", modelAudits)
+	}
+	for _, activity := range modelAudits {
+		if !strings.Contains(string(activity.Metadata), "fixture-model") || strings.Contains(string(activity.Metadata), "目标 HTTP 请求") || !strings.Contains(activity.Detail, "目标 HTTP 请求") {
+			t.Fatalf("model call metadata/detail contract: %+v", activity)
+		}
 	}
 	if count, err := m.traffic.Count(); err != nil || count != 1 {
 		t.Fatalf("recorded=%d err=%v", count, err)

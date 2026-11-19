@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { useLocation, useNavigate } from "react-router";
+import { findLinkedIntent, findLinkedToolCall, parseTaskSessionLink, withoutTaskSessionFocus } from "@/lib/task-session-link";
 
 import {
   ArrowUpIcon,
@@ -60,6 +62,7 @@ import type {
   ChatAttachment,
   IntentAsset,
   InterceptApprovalRow,
+  InterceptExecution,
   Session,
   SessionStatus,
   SessionTokenUsage,
@@ -69,12 +72,13 @@ import type {
   TokenTotal,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { MODEL_SOURCE_LABELS } from "@/features/agent-models/model-policy";
 
 // resolutionLabel names the LLM a session runs on. The badge shows this alone and
 // keeps the model id in its tooltip. Env-backed configs can arrive without a name,
 // so fall back to the model id rather than rendering an empty badge.
 function resolutionLabel(r: TaskLLMResolution): string {
-  return r.name || r.model || "未命名配置";
+  return `${r.name || r.model || "未命名配置"} · ${MODEL_SOURCE_LABELS[r.source]}`;
 }
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
@@ -479,9 +483,71 @@ function WorkerAssetBadge({ assets }: { assets: IntentAsset[] }) {
 }
 
 export function SessionsTab({ taskId }: { taskId: string }) {
+  // A task boundary owns all caches, requests, drafts and transcript focus.
+  return <TaskSessionsTab key={taskId} taskId={taskId} />;
+}
+
+function TaskSessionsTab({ taskId }: { taskId: string }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const approvalFocus = useApprovalFocus({ taskId });
+  const linkRequested = new URLSearchParams(location.search).has("session") ||
+    new URLSearchParams(location.search).has("activity");
+  const [linkRevision, setLinkRevision] = React.useState(0);
+  const [linkResult, setLinkResult] = React.useState<{
+    search: string; session?: Session; source?: InterceptExecution; activitySeq?: number; error?: string;
+  }>();
+  const link = linkResult?.search === location.search ? linkResult : undefined;
+  const preserveReadingRef = React.useRef(false);
+  // Router search is an explicit dependency: navigating within the same task is
+  // not a mount and must invalidate every older async resolution immediately.
+  React.useEffect(() => {
+    let cancelled = false;
+    setLinkResult(undefined);
+    void (async () => {
+      const request = parseTaskSessionLink(location.search, taskId);
+      if (!request) return;
+      let session: Session;
+      if (request.session.startsWith("intent:")) {
+        const node = await findLinkedIntent(request.session.slice(7),
+          (before) => api.intentsPage(taskId, before, 300), () => cancelled);
+        session = intentToSession(node);
+      } else if (request.session.startsWith("main:")) {
+        const seg = Number(request.session.slice(5));
+        const page = await api.mainSessions(taskId);
+        const record = page.sessions.find((item) => item.seq === seg);
+        if (!record) throw new Error("当前任务中未找到对应主 Agent 会话");
+        session = { ...MAIN_SESSION, id: mainSessionId(seg), seg,
+          title: mainSessionTitle(seg), last_activity: record.created_at, live: false };
+      } else {
+        session = { ...PLANNER_SESSION, live: false };
+      }
+      const call = request.seq == null ? undefined : await findLinkedToolCall(request.seq,
+        async (before) => {
+          const page = await api.activityHistory(taskId, request.session, before, PAGE);
+          if (page.items.some((item) => sessionKeyOf(item) !== request.session)) {
+            throw new Error("来源活动与请求会话不一致");
+          }
+          return page;
+        }, () => cancelled);
+      if (!cancelled) setLinkResult({ search: location.search, session, activitySeq: request.seq,
+        source: call == null ? undefined : {
+          task_id: taskId, conversation_id: null, session: request.session, seq: call.seq, items: [call],
+        } });
+    })().catch((error) => {
+      if (!cancelled) setLinkResult({ search: location.search, error: (error as Error).message || "来源会话加载失败" });
+    });
+    return () => { cancelled = true; };
+  }, [location.search, taskId, linkRevision]);
+  const focusSource = linkRequested ? link?.source : approvalFocus.state?.source;
+  const locating = linkRequested || !!approvalFocus.state;
+  const closeLink = React.useCallback(() => {
+    preserveReadingRef.current = true;
+    navigate({ pathname: location.pathname, search: withoutTaskSessionFocus(location.search), hash: location.hash }, { replace: true });
+  }, [navigate, location.pathname, location.search, location.hash]);
   const [selectedSessionId, setActiveId] = React.useState(MAIN_ID);
   const focusSession = React.useMemo<Session | undefined>(() => {
+    if (linkRequested) return link?.session;
     const source = approvalFocus.state?.source;
     if (!source) return undefined;
     if (source.session.startsWith("main:")) {
@@ -502,7 +568,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       };
     }
     return undefined;
-  }, [approvalFocus.state?.source]);
+  }, [approvalFocus.state?.source, linkRequested, link?.session]);
   // Keep a located archived/older session selectable after leaving focus mode.
   const [locatedSession, setLocatedSession] = React.useState<{ taskId: string; session: Session }>();
   React.useEffect(() => {
@@ -1301,7 +1367,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     }
   }, [activeKey]);
 
-  const focusKey = approvalFocus.state?.source?.session;
+  const focusKey = focusSource?.session;
   const loadFocusPage = React.useCallback(
     (before: number) => api.activityHistory(taskId, focusKey ?? "main", before, PAGE),
     [taskId, focusKey],
@@ -1317,15 +1383,15 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     [focusKey, patchStore],
   );
   const focusHistory = useApprovalHistory(
-    approvalFocus.state?.source,
+    focusSource,
     !!focusKey && !!store[focusKey]?.loaded,
     focusKey ? (store[focusKey]?.items ?? []) : [],
     loadFocusPage,
     mergeFocusPage,
   );
   React.useEffect(() => {
-    if (approvalFocus.state) atBottomRef.current = false;
-  }, [approvalFocus.state]);
+    if (locating) atBottomRef.current = false;
+  }, [locating]);
 
   // Main agent is the human↔orchestrator CONSOLE: only the conversation (user msgs +
   // the main agent's own replies/steps). Planner session shows planner steps; a
@@ -1441,29 +1507,33 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     const vp = viewport();
     if (!vp) return;
     const onScroll = () => {
-      if (approvalFocus.state && !focusHistory.ready) return;
+      if (locating && focusSource && !focusHistory.ready) return;
       atBottomRef.current = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 60;
       if (vp.scrollTop <= 80) loadEarlier(activeKeyRef.current, viewport); // near top → older page
     };
     vp.addEventListener("scroll", onScroll, { passive: true });
     return () => vp.removeEventListener("scroll", onScroll);
-  }, [viewport, activeId, loadEarlier, approvalFocus.state, focusHistory.ready]);
+  }, [viewport, activeId, loadEarlier, locating, focusSource, focusHistory.ready]);
   // open/switch a session → jump to the latest (bottom)
   // biome-ignore lint/correctness/useExhaustiveDependencies: activeId intentionally scrolls a newly selected session.
   React.useLayoutEffect(() => {
+    if (preserveReadingRef.current) {
+      preserveReadingRef.current = false;
+      return;
+    }
     const vp = viewport();
-    if (vp && !approvalFocus.state) {
+    if (vp && !locating) {
       vp.scrollTop = vp.scrollHeight;
       atBottomRef.current = true;
     }
-  }, [activeId, viewport, approvalFocus.state]);
+  }, [activeId, viewport, locating]);
   // new activity → stick to bottom only if the user is already pinned there
   // biome-ignore lint/correctness/useExhaustiveDependencies: activity growth intentionally drives live-edge scrolling.
   React.useLayoutEffect(() => {
-    if (approvalFocus.state || !atBottomRef.current) return;
+    if (locating || !atBottomRef.current) return;
     const vp = viewport();
     if (vp) vp.scrollTop = vp.scrollHeight;
-  }, [activity, viewport, approvalFocus.state]);
+  }, [activity, viewport, locating]);
   // Lazy detail loads (AnswerBlock / ToolBlock / Markdown) grow the content AFTER the
   // activity array settles, WITHOUT changing its reference — so the layout effects
   // above never re-fire and a freshly opened session would leave its last message
@@ -1477,13 +1547,13 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     const el = contentRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
-      if (approvalFocus.state || !atBottomRef.current) return;
+      if (locating || !atBottomRef.current) return;
       const vp = viewport();
       if (vp) vp.scrollTop = vp.scrollHeight;
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [activeId, viewport, approvalFocus.state]);
+  }, [activeId, viewport, locating]);
 
   function stop() {
     if (stopping) return;
@@ -1560,6 +1630,18 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const activeResolution = resolutionForSession(active);
   const activeAssets =
     active.role === "worker" && active.intent_id ? intentAssetsByID.get(active.intent_id) : undefined;
+
+  if (linkRequested && !link?.session) {
+    return (
+      <div role={link?.error ? "alert" : "status"} className="flex flex-wrap items-center gap-3 p-4 text-sm">
+        <span className={link?.error ? "text-destructive" : "text-muted-foreground"}>
+          {link?.error ? `无法定位来源会话：${link.error}` : "正在查找来源会话…"}
+        </span>
+        {link?.error && <Button size="sm" variant="outline" onClick={() => setLinkRevision((v) => v + 1)}>重试定位</Button>}
+        <Button size="sm" variant="ghost" onClick={closeLink}>取消定位</Button>
+      </div>
+    );
+  }
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -1691,6 +1773,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                           hasPending={hasPendingForSession(s)}
                           unread={store[keyForSession(s)]?.unread}
                           onClick={() => {
+                            if (linkRequested) closeLink();
                             approvalFocus.close();
                             setActiveId(s.id);
                             setListOpen(false); // 手机端选完即收起，把高度还给会话记录
@@ -1853,7 +1936,26 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 </div>
               );
             })()}
-            <ApprovalExecutionFocus
+            {linkRequested ? (
+              <div role="status" className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-2 text-xs">
+                <span className={focusHistory.error || activeState?.error ? "text-destructive" : "text-muted-foreground"}>
+                  {focusHistory.error || activeState?.error
+                    ? `无法定位来源活动：${focusHistory.error || activeState?.error}`
+                    : link?.source
+                      ? focusHistory.ready
+                        ? `溯源定位 · ${taskId} / ${keyForSession(active)} · 来源活动 #${link.activitySeq}，已展开工具调用 #${link.source.seq}`
+                        : `溯源定位 · 正在加载 ${keyForSession(active)} 中的活动 #${link.source.seq}…`
+                      : `溯源定位 · 已打开任务 ${taskId} 的会话 ${keyForSession(active)}`}
+                </span>
+                <div className="flex gap-2">
+                  {(focusHistory.error || activeState?.error) && <Button size="sm" variant="outline" onClick={() => {
+                    loadSession(activeKey);
+                    setLinkRevision((v) => v + 1);
+                  }}>重试定位</Button>}
+                  <Button size="sm" variant="ghost" onClick={() => { setActiveId(activeId); closeLink(); }}>取消定位</Button>
+                </div>
+              </div>
+            ) : <ApprovalExecutionFocus
               focus={{
                 ...approvalFocus,
                 close: () => {
@@ -1862,7 +1964,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 },
               }}
               history={focusHistory}
-            />
+            />}
             {/* Force Radix's internal viewport wrapper (display:table, sizes to content)
             to block so wide/unbreakable steps (long commands, code, URLs) can't blow
             out the width and defeat the truncation below — the transcript wraps to
@@ -1896,10 +1998,13 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 ) : activity.length ? (
                   <Transcript
                     activity={activity}
+                    scopeKey={`task:${taskId}:${activeKey}`}
+                    onReading={() => { atBottomRef.current = false; }}
+                    onFollow={() => { atBottomRef.current = true; }}
                     live={active.live}
                     taskId={taskId}
                     chat={isMain}
-                    focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined}
+                    focusedSeq={focusHistory.ready ? focusSource?.seq : undefined}
                   />
                 ) : (
                   <div className="pl-9 text-xs text-muted-foreground">

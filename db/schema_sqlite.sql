@@ -1079,3 +1079,12 @@ BEGIN UPDATE task_asset_links SET updated_at=utc_now() WHERE task_id=NEW.task_id
 CREATE TRIGGER IF NOT EXISTS trg_task_llm_profiles_updated AFTER UPDATE ON task_llm_profiles
 WHEN NEW.updated_at=OLD.updated_at
 BEGIN UPDATE task_llm_profiles SET updated_at=utc_now() WHERE task_id=NEW.task_id AND profile_id=NEW.profile_id; END;
+
+-- Host-authored links from actual domain writes to their persisted activity.
+CREATE TABLE IF NOT EXISTS node_sources (
+    node_id INTEGER NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    activity_id INTEGER NOT NULL REFERENCES activity(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN ('created','produced','verified')),
+    PRIMARY KEY (node_id, activity_id, relation)
+);
+CREATE INDEX IF NOT EXISTS node_sources_activity ON node_sources(activity_id);

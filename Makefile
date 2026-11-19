@@ -7,13 +7,14 @@ BINARY ?= dist/scopeforge$(EXE)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 TARGET_OS := $(if $(GOOS),$(GOOS),$(shell $(GO) env GOHOSTOS))
 TARGET_ARCH := $(if $(GOARCH),$(GOARCH),$(shell $(GO) env GOHOSTARCH))
+WEB_TESTS := $(filter-out web/src/lib/finding-lineage-browser.test.mjs,$(wildcard web/src/lib/*.test.mjs web/src/features/conversation/*.test.mjs))
 BUILD_TARGETS := linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 EXE := $(if $(filter windows,$(TARGET_OS)),.exe,)
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
 PACKAGE_NAME := scopeforge-$(PACKAGE_VERSION)-$(TARGET_OS)-$(TARGET_ARCH)
 PACKAGE_DIR := dist/$(PACKAGE_NAME)
 
-.PHONY: build all build-all build-backend build-web embed-web build-embedded release package run dev-web test test-go test-web clean help
+.PHONY: build all build-all build-backend build-web embed-web build-embedded release package run dev-web test test-go test-web test-web-browser clean help
 # "make build all" is two Make goals; both share one build-all dependency.
 ifneq ($(filter all build-all,$(MAKECMDGOALS)),)
 build: build-all
@@ -79,7 +80,10 @@ test-go:
 	$(GO_RUN) test ./...
 
 test-web: web/node_modules/.scopeforge-deps
-	cd web && $(NPM) run typecheck && node --test src/lib/*.test.mjs
+	cd web && $(NPM) run typecheck && node --test $(patsubst web/%,%,$(WEB_TESTS))
+
+test-web-browser: web/node_modules/.scopeforge-deps
+	cd web && node --test src/lib/finding-lineage-browser.test.mjs
 
 clean:
 	$(RM) $(BINARY)

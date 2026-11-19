@@ -1146,7 +1146,7 @@ func (t *ToolSet) addIntent() actool.CallableTool {
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "上游锚点 id（可选，0/1/多个）：本方向由哪些【已确认的事实(fact)/发现(finding)】综合得出。**只能填已存在的 fact/finding 节点 id,不能填意图/目标/提示**——意图必须锚在已确认知识上,发现驱动而非凭空规划。多个事实共同产生一个新意图就传多个;顶层全新侦察方向请留空（会自动挂到任务起点 origin fact）。"},
 			"priority":   intp("优先级 0-10，默认5"),
 		}),
-		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct {
 				Intents    []intentItem `json:"intents"`
 				intentItem              // 单条模式：顶层 summary/asset_ids/parent_ids/priority
@@ -1168,6 +1168,7 @@ func (t *ToolSet) addIntent() actool.CallableTool {
 					continue
 				}
 				ids[i] = id
+				noteNodeSources(ctx, "created", id)
 				createdAny = true
 			}
 
@@ -1341,6 +1342,7 @@ func (t *ToolSet) addFinding() actool.CallableTool {
 			}
 		}
 		raw, _ := json.Marshal(result)
+		noteNodeSources(ctx, "produced", recorded.NodeID)
 		return toolkit.Text(fmt.Sprintf("finding recorded: %d\n%s", recorded.NodeID, raw)), nil
 	})
 }
@@ -1415,7 +1417,7 @@ func (t *ToolSet) recordFact() actool.CallableTool {
 			"confidence": str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
-		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct {
 				Facts    []factItem `json:"facts"`
 				factItem            // 单条模式 + 批量默认 intent_id
@@ -1437,6 +1439,7 @@ func (t *ToolSet) recordFact() actool.CallableTool {
 					continue
 				}
 				ids[i] = id
+				noteNodeSources(ctx, "produced", id)
 			}
 
 			if !batch { // 单条：保持原返回

@@ -26,6 +26,7 @@ import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
 
 import { FindingLineageView } from "./lineage";
+import { useFindingLineage } from "./provenance";
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 const FINDING_STATUSES: FindingStatus[] = [
@@ -61,6 +62,7 @@ function FindingDetailInner() {
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
+  const lineage = useFindingLineage(id);
 
   const load = React.useCallback(() => {
     if (!id) {
@@ -327,7 +329,7 @@ function FindingDetailInner() {
 
         {/* 链路图：从任务初始节点回溯到本漏洞节点的攻击链路 */}
         <TabsContent value="lineage" className="mt-0">
-          <FindingLineageView findingId={finding.id} />
+          <FindingLineageView lineage={lineage} />
         </TabsContent>
       </div>
     </Tabs>

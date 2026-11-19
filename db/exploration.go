@@ -85,6 +85,9 @@ type Node struct {
 
 // Activity is one worker execution step (= old task_activity).
 type Activity struct {
+	// Host-authored graph-write provenance, excluded from model input and API payload.
+	NodeSources []NodeSource `json:"-"`
+
 	ID        int64           `json:"id"`
 	NodeID    *int64          `json:"node_id,omitempty"`
 	Worker    string          `json:"worker,omitempty"`
@@ -1032,7 +1035,7 @@ WITH RECURSIVE anc(id) AS (
     SELECT e.src_id
     FROM exploration_edges e
     JOIN anc ON e.dst_id = anc.id
-    WHERE e.exploration_id = $1
+    WHERE e.exploration_id = $1 AND e.rel <> 'covers'
 )
 SELECT `+nodeCols+`
 FROM exploration_nodes
@@ -1056,11 +1059,12 @@ WITH RECURSIVE anc(id) AS (
     SELECT e.src_id
     FROM exploration_edges e
     JOIN anc ON e.dst_id = anc.id
-    WHERE e.exploration_id = $1
+    WHERE e.exploration_id = $1 AND e.rel <> 'covers'
 )
 SELECT src_id, rel, dst_id
 FROM exploration_edges
 WHERE exploration_id = $1
+  AND rel <> 'covers'
   AND src_id IN (SELECT id FROM anc)
   AND dst_id IN (SELECT id FROM anc)`, s.expID, nodeID)
 	if err != nil {
@@ -1201,13 +1205,42 @@ func (s *ExplorationStore) AppendActivity(a Activity) (int64, error) {
 	if len(metadata) == 0 {
 		metadata = json.RawMessage(`{}`)
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
 	var id int64
-	err := s.db.QueryRow(`
+	err = tx.QueryRow(`
 INSERT INTO activity(exploration_id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, metadata, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg)
 VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15)
 RETURNING id`, s.expID, a.NodeID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool), utf8Clean(a.ToolUseID), a.IsError, utf8Clean(a.Summary), utf8Clean(a.Detail),
 		metadata, a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.MainSeg).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	seenSources := make(map[NodeSource]bool, len(a.NodeSources))
+	for _, source := range a.NodeSources {
+		if seenSources[source] {
+			continue
+		}
+		seenSources[source] = true
+		if a.Kind != "tool_result" {
+			return 0, fmt.Errorf("node source requires a tool result")
+		}
+		res, err := tx.Exec(`INSERT INTO node_sources(node_id, activity_id, relation)
+SELECT id, $1, $2 FROM exploration_nodes WHERE id=$3 AND exploration_id=$4`, id, source.Relation, source.NodeID, s.expID)
+		if err != nil {
+			return 0, err
+		}
+		if count, err := res.RowsAffected(); err != nil || count != 1 {
+			return 0, fmt.Errorf("invalid source node %d", source.NodeID)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // ExplorationDiag probes, at the moment of an activity FK violation (23503), why the

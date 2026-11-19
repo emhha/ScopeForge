@@ -2,7 +2,9 @@ package llmrec
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -59,6 +61,7 @@ func workerFrom(ctx context.Context) string {
 }
 
 type Recorder struct {
+	profileID                                  int64
 	inner                                      llm.Model
 	pg                                         *db.DB
 	model, prof, thinkingType, reasoningEffort string
@@ -66,7 +69,7 @@ type Recorder struct {
 }
 
 func Wrap(inner llm.Model, pg *db.DB, model, prof, thinking, effort string, enabled func() bool) *Recorder {
-	return &Recorder{inner, pg, model, prof, thinking, effort, enabled}
+	return &Recorder{inner: inner, pg: pg, model: model, prof: prof, thinkingType: thinking, reasoningEffort: effort, enabled: enabled}
 }
 func (r *Recorder) Info() llm.Info { return r.inner.Info() }
 func parseSession(s string) (taskID, worker string) {
@@ -100,6 +103,18 @@ func (r *Recorder) GenerateContent(ctx context.Context, req *llm.Request) (<-cha
 	}
 	enabled := r.enabled == nil || r.enabled()
 	start := time.Now()
+	observer, _ := ctx.Value(callObserverKey{}).(func(CallRecord))
+	call := CallRecord{RequestID: rand.Text(), ProfileID: r.profileID, ProfileName: r.prof, Model: r.model, StartedAt: start}
+	if observer != nil {
+		var system []string
+		for _, message := range req.Messages {
+			if message.Role == llm.RoleSystem {
+				system = append(system, message.Content)
+			}
+		}
+		call.SystemPrompt = strings.Join(system, "\n\n")
+	}
+
 	sid := sessionctx.ID(ctx)
 	parsed, worker := parseSession(sid)
 	if w := workerFrom(ctx); w != "" {
@@ -118,12 +133,10 @@ func (r *Recorder) GenerateContent(ctx context.Context, req *llm.Request) (<-cha
 	go func() {
 		defer close(out)
 		var usage llm.Usage
+		usageProvided := false
 		var text, thinking strings.Builder
 		var callErr = startErr
 		defer func() {
-			if r.pg == nil {
-				return
-			}
 			if ctx.Err() != nil {
 				callErr = ctx.Err()
 			}
@@ -135,6 +148,20 @@ func (r *Recorder) GenerateContent(ctx context.Context, req *llm.Request) (<-cha
 			}
 			input, output, read, write := modelutil.Counts(usage)
 			latency := int(time.Since(start).Milliseconds())
+			if observer != nil {
+				call.Role, call.Status, call.DurationMS = worker, status, int64(latency)
+				if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
+					call.Status = "interrupted"
+				}
+				if usageProvided {
+					call.Input, call.Output = &input, &output
+				}
+				observer(call)
+			}
+			if r.pg == nil {
+				return
+			}
+
 			if err := r.pg.InsertLLMUsage(&db.LLMUsage{TaskID: task, ExplorationID: db.ParseExpID(parsed), Worker: worker, Model: r.model, ProfileName: r.prof, LatencyMs: latency, InputTokens: input, OutputTokens: output, CacheRead: read, CacheWrite: write, Status: status}); err != nil {
 				log.Printf("[llmusage] %v", err)
 			}
@@ -163,6 +190,7 @@ func (r *Recorder) GenerateContent(ctx context.Context, req *llm.Request) (<-cha
 				continue
 			}
 			if ev.Usage != nil {
+				usageProvided = true
 				modelutil.MergeUsage(&usage, *ev.Usage)
 			}
 			if ev.Error != nil {

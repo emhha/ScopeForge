@@ -6,13 +6,10 @@ import {
   ChevronDown,
   ChevronRight,
   CrosshairIcon,
-  Flag,
-  MessageSquare,
   PaperclipIcon,
   ShieldAlertIcon,
-  Terminal,
   UserIcon,
-  Wrench,
+  ArrowDownIcon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,25 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ApprovalDetail } from "@/components/approval-records";
 import type { Activity, InterceptPending } from "@/lib/types";
-
-// ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
-const workerColors = [
-  "bg-sky-600",
-  "bg-violet-600",
-  "bg-teal-600",
-  "bg-pink-600",
-  "bg-orange-600",
-];
-function workerColor(name: string): string {
-  if (name === "planner") return "bg-amber-600"; // the intent generator, distinct
-  if (name === "mainagent") return "bg-primary";
-  const m = /#(\d+)/.exec(name);
-  const i = m ? (parseInt(m[1], 10) - 1) % workerColors.length : 0;
-  return workerColors[Math.max(0, i)];
-}
-
-const chip = (worker: string) =>
-  "mt-0.5 shrink-0 rounded px-1 text-[9px] font-medium text-white " + workerColor(worker);
+import { projectStandardChat, projectTrajectory, type ChatNode, type TrajectoryRecord } from "@/features/conversation/projections";
+import { ConversationStep } from "@/features/conversation/trajectory-view";
 
 // useInView latches true when the ref'd element first comes within `rootMargin` of
 // the enclosing scroll viewport. Blocks that always show their full body (user
@@ -73,64 +53,6 @@ function useInView(rootMargin = "400px"): [React.RefObject<HTMLDivElement | null
   return [ref, inView];
 }
 
-// A tool group pairs a tool_use with its matching tool_result (by tool_use_id);
-// a run of consecutive conversational steps (text/thinking/result) from the same
-// agent is one "message".
-type Group =
-  | { type: "user"; key: number; step: Activity; intent?: boolean }
-  | { type: "answer"; key: number; step: Activity }
-  | { type: "round"; key: number; label: string }
-  | { type: "tool"; key: number; worker: string; use?: Activity; result?: Activity }
-  | { type: "msg"; key: number; worker: string; steps: Activity[] }
-  | { type: "intercept"; key: number; step: Activity };
-
-function groupSteps(steps: Activity[], chat: boolean): Group[] {
-  const out: Group[] = [];
-  const byToolId = new Map<string, Extract<Group, { type: "tool" }>>();
-  for (const s of steps) {
-    if (s.kind === "usage") continue; // live token-usage marker — not a rendered step
-    if (s.kind === "round") {
-      out.push({ type: "round", key: s.seq, label: s.summary || "新一轮" }); // planner round boundary
-      continue;
-    }
-    if (s.kind === "intercept_request") {
-      out.push({ type: "intercept", key: s.seq, step: s });
-      continue;
-    }
-    if (s.kind === "user" || s.kind === "intent") {
-      // human turn OR the LLM-generated intent leading a worker session — both are
-      // right-aligned bubbles; `intent` swaps the avatar to a non-human icon.
-      out.push({ type: "user", key: s.seq, step: s, intent: s.kind === "intent" });
-      continue;
-    }
-    // In a chat (main agent) the assistant's text/result IS the answer — render it
-    // full (markdown), never collapsed. thinking still folds into a compact block.
-    if (s.kind === "result" || (chat && s.kind === "text")) {
-      out.push({ type: "answer", key: s.seq, step: s });
-      continue;
-    }
-    if (s.kind === "tool_use") {
-      const g: Extract<Group, { type: "tool" }> = { type: "tool", key: s.seq, worker: s.worker, use: s };
-      if (s.tool_use_id) byToolId.set(s.tool_use_id, g);
-      out.push(g);
-      continue;
-    }
-    if (s.kind === "tool_result") {
-      // bind to its tool_use by id (NOT adjacency — tools can run in parallel)
-      const g = s.tool_use_id ? byToolId.get(s.tool_use_id) : undefined;
-      if (g && !g.result) g.result = s;
-      else out.push({ type: "tool", key: s.seq, worker: s.worker, result: s }); // orphan result
-      continue;
-    }
-    const last = out[out.length - 1];
-    if (last && last.type === "msg" && last.worker === s.worker) last.steps.push(s);
-    else out.push({ type: "msg", key: s.seq, worker: s.worker, steps: [s] });
-  }
-  return out;
-}
-
-const kindLabel = (k: string) => (k === "thinking" ? "推理" : k === "result" ? "总结" : "说明");
-
 function ActivityTime({ ts }: { ts: string }) {
   const date = new Date(ts);
   if (!ts || Number.isNaN(date.getTime())) return null;
@@ -152,45 +74,10 @@ function ActivityTime({ ts }: { ts: string }) {
   );
 }
 
-// toolInputText renders a tool_use input for display. For Bash it pulls the shell
-// command out of the raw input JSON ({"command":…,"description":…}) so the UI shows
-// the command itself instead of JSON; other tools fall back to the raw text.
-function toolInputText(tool: string, raw: string): string {
-  if (tool !== "Bash") return raw;
-  // full input (expanded detail): parse and pull the command out.
-  try {
-    const o = JSON.parse(raw);
-    if (o && typeof o.command === "string") return o.command;
-  } catch {
-    // collapsed-row summaries are truncated to ~200 chars by the backend, so the
-    // JSON tail is cut off and JSON.parse fails — fall through and extract the
-    // "command" field by hand, tolerating the missing closing quote.
-  }
-  const m = raw.match(/"command"\s*:\s*"((?:\\.|[^"\\])*)/);
-  if (m) {
-    try {
-      // re-wrap the captured body and parse to unescape \n, \", \\, etc.
-      return JSON.parse('"' + m[1] + '"');
-    } catch {
-      // truncated mid-escape — unescape the common sequences best-effort.
-      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) =>
-        c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c,
-      );
-    }
-  }
-  return raw;
-}
-
 // InterceptCard renders an inline intercept_request approval card. The pending_id
 // is extracted from the summary (format: "工具 X 请求审批 (#N)") so buttons are
 // available immediately without waiting for the detail load.
-function InterceptCard({
-  step,
-  getDetail,
-}: {
-  step: Activity;
-  getDetail: (seq: number) => Promise<string>;
-}) {
+function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: number) => Promise<string> }) {
   // extract pending_id from summary: "工具 Bash 请求审批 (#42)"
   const pendingId = React.useMemo(() => {
     const m = /\(#(\d+)\)/.exec(step.summary);
@@ -217,25 +104,38 @@ function InterceptCard({
     getDetail(step.seq)
       .then((raw) => {
         if (!live || !raw) return;
-        try { setDetail(JSON.parse(raw)); } catch { /* ignore */ }
+        try {
+          setDetail(JSON.parse(raw));
+        } catch {
+          /* ignore */
+        }
       })
-      .catch(() => {/* ignore */});
-    return () => { live = false; };
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      live = false;
+    };
   }, [step.seq, getDetail]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Retry explicitly reloads the same approval after a failed request.
   React.useEffect(() => {
     if (!pendingId) return;
     let live = true;
-    api.interceptGetOne(pendingId)
+    api
+      .interceptGetOne(pendingId)
       .then((p) => {
         if (!live) return;
         setPending(p);
         setStatusError("");
         if (p.status !== "pending") setDecided(p.status as "allowed" | "denied" | "timeout");
       })
-      .catch((error) => { if (live) setStatusError((error as Error).message || "审批详情加载失败"); });
-    return () => { live = false; };
+      .catch((error) => {
+        if (live) setStatusError((error as Error).message || "审批详情加载失败");
+      });
+    return () => {
+      live = false;
+    };
   }, [pendingId, retry]);
 
   async function decide(decision: "allowed" | "denied") {
@@ -252,11 +152,11 @@ function InterceptCard({
     }
   }
 
-  const inputStr = detail?.input
-    ? JSON.stringify(detail.input).slice(0, 200)
-    : null;
+  const inputStr = detail?.input ? JSON.stringify(detail.input).slice(0, 200) : null;
 
-  const row = pending ? { ...pending, status: decided || pending.status, conv_title: "", conv_agent_key: "", rule_name: "" } : null;
+  const row = pending
+    ? { ...pending, status: decided || pending.status, conv_title: "", conv_agent_key: "", rule_name: "" }
+    : null;
 
   return (
     <div className="my-2 rounded-lg border border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/15 p-3 text-xs">
@@ -269,27 +169,25 @@ function InterceptCard({
               <code className="rounded bg-amber-100 dark:bg-amber-900/50 px-1 font-mono text-amber-800 dark:text-amber-300">
                 {toolName}
               </code>
-              {pendingId && (
-                <span className="text-muted-foreground">#{pendingId}</span>
-              )}
+              {pendingId && <span className="text-muted-foreground">#{pendingId}</span>}
             </div>
-            {inputStr && (
-              <p className="font-mono text-muted-foreground truncate">{inputStr}</p>
-            )}
+            {inputStr && <p className="font-mono text-muted-foreground truncate">{inputStr}</p>}
           </div>
         </div>
 
         {step.inherited ? (
           <Badge variant="outline">历史记录 · 只读</Badge>
         ) : decided ? (
-          <span className={
-            "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
-            (decided === "allowed"
-              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
-              : decided === "timeout"
-                ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-                : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
-          }>
+          <span
+            className={
+              "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
+              (decided === "allowed"
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+                : decided === "timeout"
+                  ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                  : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
+            }
+          >
             {decided === "allowed" ? "已允许" : decided === "timeout" ? "已超时" : "已拒绝"}
           </span>
         ) : (
@@ -338,9 +236,13 @@ function InterceptCard({
             ) : statusError ? (
               <div className="flex flex-wrap items-center gap-2 p-3" role="alert">
                 <span>{statusError}</span>
-                <Button variant="outline" size="sm" onClick={() => setRetry((value) => value + 1)}>重试详情</Button>
+                <Button variant="outline" size="sm" onClick={() => setRetry((value) => value + 1)}>
+                  重试详情
+                </Button>
               </div>
-            ) : <p className="p-3 text-muted-foreground">正在加载审批详情…</p>}
+            ) : (
+              <p className="p-3 text-muted-foreground">正在加载审批详情…</p>
+            )}
           </CollapsibleContent>
         </Collapsible>
       ) : null}
@@ -348,212 +250,6 @@ function InterceptCard({
   );
 }
 
-// ToolBlock renders ONE tool call: the command and its result bound into a single
-// row (collapsed shows the command + a status/result preview; expand shows the
-// full input AND output together). Lazy-loads both details on expand.
-function ToolBlock({
-  group,
-  getDetail,
-  showWorker,
-  focused = false,
-}: {
-  group: Extract<Group, { type: "tool" }>;
-  getDetail: (seq: number) => Promise<string>;
-  showWorker?: boolean;
-  focused?: boolean;
-}) {
-  const [open, setOpen] = React.useState(focused);
-  const targetRef = React.useRef<HTMLElement>(null);
-  const [detail, setDetail] = React.useState<string | null>(null);
-  // what we last loaded, keyed by the underlying step seqs. When the tool result
-  // arrives after we expanded mid-run (command only), this key changes and the
-  // effect below re-fetches — so the output shows up instead of being cached out.
-  const loadedKey = React.useRef<string | null>(null);
-  const { use, result } = group;
-  const toolName = use?.tool || result?.tool || "工具";
-  const ToolIcon = toolName === "Bash" ? Terminal : Wrench;
-  const running = !result;
-  const ok = !!result && !result.is_error;
-  const statusTone = running
-    ? "text-muted-foreground"
-    : ok
-      ? "text-emerald-600 dark:text-emerald-400"
-      : "text-red-600 dark:text-red-400";
-  const rawCmd =
-    use && use.summary.startsWith(toolName) ? use.summary.slice(toolName.length).trimStart() : (use?.summary ?? "");
-  const cmd = toolInputText(toolName, rawCmd);
-  // status only — the full result lives behind the expand (【输出】), not previewed inline
-  const statusText = running ? "执行中…" : ok ? "✓" : "✕ 失败";
-
-  // key over the seqs we'd load; changes when the result (or command) arrives.
-  const detailKey = `${use?.seq ?? ""}:${result?.seq ?? ""}`;
-  React.useEffect(() => {
-    if (!open || loadedKey.current === detailKey) return;
-    let live = true;
-    const segs: { label: string; seq: number }[] = [];
-    if (use) segs.push({ label: "命令", seq: use.seq });
-    if (result) segs.push({ label: "输出" + (result.is_error ? " ✕" : " ✓"), seq: result.seq });
-    void Promise.all(
-      segs.map((x) =>
-        getDetail(x.seq)
-          .then((d) => d || "（空）")
-          .catch(() => "（加载失败）"),
-      ),
-    ).then((parts) => {
-      if (!live) return;
-      setDetail(
-        segs
-          .map((x, i) => `【${x.label}】\n${x.label === "命令" ? toolInputText(toolName, parts[i]) : parts[i]}`)
-          .join("\n\n"),
-      );
-      loadedKey.current = detailKey;
-    });
-    return () => {
-      live = false;
-    };
-  }, [open, detailKey, use, result, getDetail, toolName]);
-
-  const scrolledRef = React.useRef(false);
-  React.useEffect(() => {
-    scrolledRef.current = false;
-    if (focused) setOpen(true);
-  }, [focused]);
-  React.useEffect(() => {
-    if (!focused || !open || detail === null || scrolledRef.current) return;
-    const el = targetRef.current;
-    const viewport = el?.closest('[data-slot="scroll-area-viewport"]');
-    if (!el || !viewport) return;
-    scrolledRef.current = true;
-    const center = () => {
-      const rect = el.getBoundingClientRect();
-      const bounds = viewport.getBoundingClientRect();
-      viewport.scrollTop += rect.top + rect.height / 2 - bounds.top - bounds.height / 2;
-    };
-    // User bubbles load their full text lazily. Allow their initial layout to
-    // settle, but stop anchoring immediately if the user interacts or after 2s.
-    const observer = new ResizeObserver(center);
-    observer.observe(el.parentElement ?? el);
-    observer.observe(viewport);
-    const stop = () => observer.disconnect();
-    viewport.addEventListener("wheel", stop, { passive: true, once: true });
-    viewport.addEventListener("touchstart", stop, { passive: true, once: true });
-    viewport.addEventListener("pointerdown", stop, { once: true });
-    const frame = requestAnimationFrame(center);
-    const timer = setTimeout(stop, 2000);
-    return () => {
-      cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      stop();
-      viewport.removeEventListener("wheel", stop);
-      viewport.removeEventListener("touchstart", stop);
-      viewport.removeEventListener("pointerdown", stop);
-    };
-  }, [focused, open, detail]);
-
-  function toggle() {
-    setOpen((o) => !o);
-  }
-
-  return (
-    <section
-      ref={targetRef}
-      aria-label={focused ? `定位的工具调用 #${use?.seq}` : undefined}
-      className={focused ? "rounded-lg border-2 border-primary bg-primary/5 p-3 text-xs" : "text-xs"}
-    >
-      <button type="button" onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
-        <span className="mt-0.5 text-muted-foreground">
-          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        </span>
-        <ToolIcon className={"mt-0.5 size-3.5 shrink-0 " + (running ? "text-sky-600 dark:text-sky-400" : statusTone)} />
-        {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
-        <span className="shrink-0 font-medium text-sky-600 dark:text-sky-400">{toolName}</span>
-        {cmd && <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{cmd}</span>}
-        <span className={"ml-auto shrink-0 font-medium " + statusTone}>{statusText}</span>
-      </button>
-      {open && (
-        <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
-        </pre>
-      )}
-    </section>
-  );
-}
-
-// MessageBlock renders a coalesced agent message (merged streaming text/thinking/
-// result fragments into one block) so the conversation reads as messages, not rows.
-function MessageBlock({
-  group,
-  getDetail,
-  showWorker,
-}: {
-  group: Extract<Group, { type: "msg" }>;
-  getDetail: (seq: number) => Promise<string>;
-  showWorker?: boolean;
-}) {
-  const [open, setOpen] = React.useState(false);
-  const [detail, setDetail] = React.useState<string | null>(null);
-  // like ToolBlock: keyed by the group's step seqs so streamed steps arriving
-  // after an early expand re-fetch instead of being cached out.
-  const loadedKey = React.useRef<string | null>(null);
-  const speak = group.steps.filter((s) => s.kind !== "thinking");
-  const hasThinking = group.steps.some((s) => s.kind === "thinking");
-  const isError = group.steps.some((s) => s.is_error);
-  const body = (speak.length ? speak : group.steps).map((s) => s.summary).join("  ") || "…";
-  const Icon = isError ? Flag : MessageSquare;
-  const tone = isError ? "text-red-600 dark:text-red-400" : "text-foreground";
-
-  const detailKey = group.steps.map((s) => s.seq).join(",");
-  React.useEffect(() => {
-    if (!open || loadedKey.current === detailKey) return;
-    let live = true;
-    void Promise.all(
-      group.steps.map((s) =>
-        getDetail(s.seq)
-          .then((d) => d || s.summary)
-          .catch(() => s.summary),
-      ),
-    ).then((parts) => {
-      if (!live) return;
-      setDetail(group.steps.map((s, i) => `【${kindLabel(s.kind)}】\n${parts[i]}`).join("\n\n"));
-      loadedKey.current = detailKey;
-    });
-    return () => {
-      live = false;
-    };
-  }, [open, detailKey, group.steps, getDetail]);
-
-  function toggle() {
-    setOpen((o) => !o);
-  }
-
-  return (
-    <div className="text-xs">
-      <button type="button" onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
-        <span className="mt-0.5 text-muted-foreground">
-          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        </span>
-        <Icon className={"mt-0.5 size-3.5 shrink-0 " + tone} />
-        {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
-        <span className={"min-w-0 flex-1 truncate " + tone}>
-          {body}
-          {hasThinking && <span className="ml-1 text-[10px] text-muted-foreground">· 含推理</span>}
-        </span>
-      </button>
-      {open && (
-        <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-// UserRow renders a right-aligned chat bubble: either a human turn (the message you
-// sent the main agent) or, in a worker session, the LLM-generated intent that leads
-// it (intent=true) — same bubble, but a target icon instead of the human avatar.
-// summary is a truncated first line, so the full message is pulled from the detail
-// and shown in full (bubble is whitespace-pre-wrap, so long/multi-line text wraps).
-// fmtBytes renders a human file size for attachment chips.
 function fmtBytes(n: number): string {
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
   if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
@@ -579,7 +275,15 @@ function parseUserBody(body: string): { text: string; attachments: MsgAttachment
   return { text: body, attachments: [] };
 }
 
-function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean; getDetail: (seq: number) => Promise<string> }) {
+function UserRow({
+  step,
+  intent,
+  getDetail,
+}: {
+  step: Activity;
+  intent?: boolean;
+  getDetail: (seq: number) => Promise<string>;
+}) {
   const Icon = intent ? CrosshairIcon : UserIcon;
   const [ref, inView] = useInView();
   // Optimistic echoes carry their detail inline; persisted rows lazy-load it on scroll.
@@ -672,102 +376,276 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
   );
 }
 
-// ExecView renders an agent execution replay (planner / worker / main agent) in
-// the compact, grouped, expand-to-detail format — thinking, tool calls/results,
-// and (for the main agent) the human turns. Worker lane chips show only when the
-// view actually mixes agents.
-function ExecView({
-  activity,
-  taskId,
-  chat,
-  fetchDetail,
-  focusedSeq,
-}: {
-  activity: Activity[];
-  taskId?: string;
-  chat?: boolean;
-  fetchDetail?: (seq: number) => Promise<string>;
+function ProcessSummary({ node, records, memory, focusedSeq, getDetail, onReading }: {
+  node: Extract<ChatNode, { kind: "process" }>;
+  records: TrajectoryRecord[];
+  memory: ViewMemory;
   focusedSeq?: number;
+  getDetail: (seq: number) => Promise<string>;
+  onReading: () => void;
 }) {
-  const showWorker = new Set(activity.map((a) => a.worker)).size > 1;
-  // default detail fetcher: the task-scoped activity endpoint. The chat page passes
-  // its own (conversation-scoped) fetcher instead.
-  const getDetail = React.useCallback(
-    (seq: number) => (fetchDetail ? fetchDetail(seq) : api.activityDetail(seq, taskId).then((r) => r.detail ?? "")),
-    [fetchDetail, taskId],
-  );
+  const events = new Set(node.events);
+  const steps = records.filter((record) => events.has(record.event));
+  const focused = focusedSeq != null && steps.some((record) => record.event.seq === focusedSeq || record.result?.seq === focusedSeq);
+  const memoryKey = `process:${node.id}`;
+  const [open, setOpen] = React.useState(memory.expanded[memoryKey] ?? false);
+  React.useEffect(() => {
+    if (focused) setOpen(true);
+  }, [focused]);
+  const tools = steps.filter((record) => record.event.kind === "tool_use" || record.event.kind === "tool_result").length;
+  const thinking = node.events.filter((event) => event.kind === "thinking").length;
+  const errors = steps.filter((record) => record.status === "error").length;
+  if (steps.length === 0) return null;
   return (
-    <div className="flex flex-col">
-      {groupSteps(activity, !!chat).map((g) =>
-        g.type === "round" ? (
-          <div key={"r" + g.key} className="my-2 flex items-center gap-2 text-[10px] font-medium text-muted-foreground">
-            <span className="h-px flex-1 bg-border" />
-            {g.label}
-            <span className="h-px flex-1 bg-border" />
-          </div>
-        ) : g.type === "user" ? (
-          <UserRow key={"u" + g.key} step={g.step} intent={g.intent} getDetail={getDetail} />
-        ) : g.type === "answer" ? (
-          <AnswerBlock key={"a" + g.key} step={g.step} getDetail={getDetail} />
-        ) : g.type === "tool" ? (
-          <ToolBlock
-            key={"t" + g.key}
-            group={g}
-            getDetail={getDetail}
-            showWorker={showWorker}
-            focused={focusedSeq != null && g.use?.seq === focusedSeq}
-          />
-        ) : g.type === "intercept" ? (
-          <InterceptCard key={"ic" + g.key} step={g.step} getDetail={getDetail} />
-        ) : (
-          <MessageBlock key={"m" + g.key} group={g} getDetail={getDetail} showWorker={showWorker} />
-        ),
-      )}
-    </div>
+    <Collapsible open={open} onOpenChange={(value) => {
+      setOpen(value);
+      memory.expanded[memoryKey] = value;
+      onReading();
+    }} className="my-2 min-w-0">
+      <CollapsibleTrigger className="flex w-full min-w-0 items-center gap-2 py-1.5 text-left text-xs text-muted-foreground hover:text-foreground">
+        {open ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
+        <span>{node.settled ? "已完成的执行过程" : "执行过程"}</span>
+        {tools > 0 && <span>· {tools} 次工具调用</span>}
+        {thinking > 0 && <span>· {thinking} 段思考</span>}
+        {errors > 0 && <span className="text-destructive">· {errors} 个错误</span>}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {open && <div className="ml-1.5 min-w-0 border-l pl-3">
+          {steps.map((record) => (
+            <div key={record.id} data-activity-seq={record.event.seq} data-result-seq={record.result?.seq}>
+              <ConversationStep
+                record={record}
+                getDetail={getDetail}
+                focused={focusedSeq != null && (record.event.seq === focusedSeq || record.result?.seq === focusedSeq)}
+                initiallyOpen={memory.expanded[record.id] ?? false}
+                onOpenChange={(value) => {
+                  memory.expanded[record.id] = value;
+                  onReading();
+                }}
+              />
+            </div>
+          ))}
+        </div>}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
-// Transcript renders a session's activity as a compact grouped execution replay:
-// human turns, thinking, tool calls (command+result paired), and messages — for
-// the main agent (interactive) and worker/planner (read-only) alike.
-export function Transcript({
-  activity,
-  live,
-  taskId,
-  chat,
-  fetchDetail,
-  focusedSeq,
-}: {
+type ViewMemory = {
+  position?: number;
+  following?: boolean;
+  expanded: Record<string, boolean>;
+};
+// Retain only presentation state, never conversation bodies, for recent sessions.
+const viewMemories = new Map<string, ViewMemory>();
+function viewMemory(scope: string): ViewMemory {
+  const memory = viewMemories.get(scope) ?? { expanded: {} };
+  viewMemories.delete(scope);
+  viewMemories.set(scope, memory);
+  if (viewMemories.size > 50) viewMemories.delete(viewMemories.keys().next().value!);
+  return memory;
+}
+
+interface TranscriptProps {
   activity: Activity[];
   live?: boolean;
   taskId?: string;
   chat?: boolean;
   fetchDetail?: (seq: number) => Promise<string>;
   focusedSeq?: number;
-}) {
-  const transcriptRef = React.useRef<HTMLDivElement>(null);
-  const [focusPadding, setFocusPadding] = React.useState(0);
-  React.useLayoutEffect(() => {
-    if (focusedSeq == null) { setFocusPadding(0); return; }
-    const viewport = transcriptRef.current?.closest('[data-slot="scroll-area-viewport"]');
+  scopeKey?: string;
+  onReading?: () => void;
+  onFollow?: () => void;
+}
+
+export function Transcript(props: TranscriptProps) {
+  const scope = props.scopeKey ?? `task:${props.taskId ?? "local"}`;
+  return <TranscriptBody key={scope} {...props} scope={scope} />;
+}
+
+function TranscriptBody({
+  activity,
+  live,
+  taskId,
+  fetchDetail,
+  focusedSeq,
+  scope,
+  onReading,
+  onFollow,
+}: TranscriptProps & { scope: string }) {
+  const callbacks = React.useRef({ onReading, onFollow });
+  callbacks.current = { onReading, onFollow };
+  const root = React.useRef<HTMLDivElement>(null);
+  const memory = React.useMemo(() => viewMemory(scope), [scope]);
+  const [following, setFollowing] = React.useState(memory.following ?? true);
+  const followingRef = React.useRef(following);
+  const [unread, setUnread] = React.useState(0);
+  const lastSeq = React.useRef(activity.at(-1)?.seq ?? 0);
+  const detailCache = React.useRef(new Map<number, Promise<string>>());
+  const inlineDetails = React.useRef(new Map<number, string>());
+  inlineDetails.current = new Map(
+    activity.filter((a) => a.detail != null || a.seq < 0).map((a) => [a.seq, a.detail ?? a.summary]),
+  );
+  const getDetail = React.useCallback(
+    (seq: number) => {
+      const inline = inlineDetails.current.get(seq);
+      if (inline != null) return Promise.resolve(inline);
+      let promise = detailCache.current.get(seq);
+      if (!promise) {
+        promise = (fetchDetail ? fetchDetail(seq) : api.activityDetail(seq, taskId).then((r) => r.detail ?? "")).catch(
+          (error) => {
+            detailCache.current.delete(seq);
+            throw error;
+          },
+        );
+        detailCache.current.set(seq, promise);
+        if (detailCache.current.size > 500) detailCache.current.delete(detailCache.current.keys().next().value!);
+      }
+      return promise;
+    },
+    [fetchDetail, taskId],
+  );
+  const getViewport = React.useCallback(
+    () => root.current?.closest<HTMLElement>('[data-slot="scroll-area-viewport"]') ?? null,
+    [],
+  );
+  const pause = React.useCallback(() => {
+    followingRef.current = false;
+    setFollowing(false);
+    callbacks.current.onReading?.();
+  }, []);
+  const follow = React.useCallback(() => {
+    followingRef.current = true;
+    setFollowing(true);
+    setUnread(0);
+    callbacks.current.onFollow?.();
+    const viewport = getViewport();
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [getViewport]);
+  const savePosition = React.useCallback(() => {
+    const viewport = getViewport();
+    if (viewport) memory.position = viewport.scrollTop;
+    memory.following = followingRef.current;
+  }, [getViewport, memory]);
+  const focusAvailable = focusedSeq != null && activity.some((event) => event.seq === focusedSeq);
+  React.useEffect(() => {
+    if (!focusAvailable || focusedSeq == null) return;
+    pause();
+    const frame = requestAnimationFrame(() => {
+      const elements = root.current?.querySelectorAll<HTMLElement>("[data-activity-seq]");
+      const target = Array.from(elements ?? []).find((element) =>
+        element.dataset.activitySeq === String(focusedSeq) || element.dataset.resultSeq === String(focusedSeq),
+      );
+      target?.scrollIntoView({ block: "center" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusedSeq, focusAvailable, pause]);
+  React.useEffect(() => {
+    const viewport = getViewport();
     if (!viewport) return;
-    const measure = () => setFocusPadding(viewport.clientHeight / 2);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(viewport);
+    const onScroll = () => {
+      const atBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 60;
+      followingRef.current = atBottom;
+      setFollowing(atBottom);
+      memory.following = atBottom;
+      memory.position = viewport.scrollTop;
+      if (atBottom) setUnread(0);
+    };
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      savePosition();
+      viewport.removeEventListener("scroll", onScroll);
+    };
+  }, [getViewport, memory, savePosition]);
+  React.useEffect(() => {
+    const content = root.current;
+    const viewport = getViewport();
+    if (!content || !viewport) return;
+    const observer = new ResizeObserver(() => {
+      if (followingRef.current) viewport.scrollTop = viewport.scrollHeight;
+    });
+    observer.observe(content);
     return () => observer.disconnect();
-  }, [focusedSeq]);
+  }, [getViewport]);
+  React.useEffect(() => {
+    if (focusedSeq != null) return;
+    const position = memory.position;
+    const shouldFollow = memory.following ?? true;
+    const frame = requestAnimationFrame(() => {
+      const viewport = getViewport();
+      if (!viewport) return;
+      if (shouldFollow) follow();
+      else {
+        pause();
+        viewport.scrollTop = position ?? 0;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [memory, getViewport, focusedSeq, follow, pause]);
+  React.useEffect(() => {
+    const newest = activity.at(-1)?.seq ?? 0;
+    if (newest > lastSeq.current && !followingRef.current) {
+      const count = activity.filter((a) => a.seq > lastSeq.current).length;
+      setUnread((n) => n + count);
+    }
+    lastSeq.current = Math.max(newest, lastSeq.current);
+  }, [activity]);
+  const records = React.useMemo(() => projectTrajectory(scope, activity), [scope, activity]);
+  const nodes = React.useMemo(() => projectStandardChat(scope, activity), [scope, activity]);
   return (
-    <div ref={transcriptRef} className="flex flex-col gap-1" style={focusPadding ? { paddingBlock: focusPadding } : undefined}>
-      <ExecView activity={activity} taskId={taskId} chat={chat} fetchDetail={fetchDetail} focusedSeq={focusedSeq} />
-      {live && (
-        <div className="flex items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
-          <span className="flex gap-1">
-            <span className="size-1.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]" />
-            <span className="size-1.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]" />
-            <span className="size-1.5 animate-bounce rounded-full bg-blue-500" />
-          </span>
-          实时流式中…
+    <div ref={root} className="relative min-w-0" data-conversation-view="chat">
+      <div className="min-w-0" data-testid="standard-chat-view">
+        {nodes.map((node) => {
+          if (node.kind === "process") return (
+            <ProcessSummary key={node.id} node={node} records={records} memory={memory}
+              focusedSeq={focusedSeq} getDetail={getDetail} onReading={pause} />
+          );
+          const event = node.event;
+          const record = records.find((entry) => entry.event === event);
+          if (!record) return null;
+          return (
+            <div key={record.id} data-activity-seq={event.seq} data-result-seq={record.result?.seq}>
+              {event.kind === "user" || event.kind === "intent" ? (
+                <UserRow step={event} intent={event.kind === "intent"} getDetail={getDetail} />
+              ) : event.kind === "text" || event.kind === "result" ? (
+                <AnswerBlock step={event} getDetail={getDetail} />
+              ) : event.kind === "intercept_request" ? (
+                <InterceptCard step={event} getDetail={getDetail} />
+              ) : (
+                <ConversationStep
+                  record={record}
+                  getDetail={getDetail}
+                  focused={focusedSeq != null && (event.seq === focusedSeq || record.result?.seq === focusedSeq)}
+                  initiallyOpen={memory.expanded[record.id] ?? false}
+                  onOpenChange={(open) => {
+                    pause();
+                    memory.expanded[record.id] = open;
+                  }}
+                />
+              )}
+            </div>
+          );
+        })}
+        {live && (
+          <div role="status" className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+            <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" />
+            正在处理…
+          </div>
+        )}
+      </div>
+      {!following && (
+        <div className="pointer-events-none sticky bottom-2 z-20 flex justify-center">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="pointer-events-auto h-7 gap-1 shadow-sm"
+            onClick={() => {
+              follow();
+            }}
+          >
+            <ArrowDownIcon className="size-3" />
+            {unread ? `${unread} 条新记录 · ` : ""}回到最新
+          </Button>
         </div>
       )}
     </div>

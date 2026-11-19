@@ -424,6 +424,30 @@ export interface TaskNode {
   delete_reason?: string; // 意图假删除(state='deleted')时的删除原因
 }
 
+// Persisted execution provenance. Session keys match task activity history, not reusable worker names.
+export interface FindingContribution {
+  node_id: string;
+  relation: "created" | "executed" | "produced" | "verified";
+  summary: string;
+  seq?: number;
+  tool_use_id?: string;
+  precision: "event" | "session" | "legacy";
+}
+
+export interface FindingSourceSession {
+  task_id: string;
+  session: string;
+  title: string;
+  role: string;
+  contributions: FindingContribution[];
+}
+
+export interface FindingLineage {
+  nodes: TaskNode[];
+  edges: Edge[];
+  sessions: FindingSourceSession[];
+}
+
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),
 // 这样每条播报都能说清「从哪来、产出了什么」,而不用把整张图拉下来。
 export interface ExplorationNodePage {
@@ -616,6 +640,7 @@ export const FINDING_UNASSIGNED_ASSET = "__none__";
 
 // ---- Activity / sessions ----
 export type ActivityKind =
+  | "model_call"
   | "tool_use"
   | "tool_result"
   | "text"
@@ -650,6 +675,18 @@ export interface Activity {
   detail?: string;
   metadata?: {
     llm_transition?: LLMTransition;
+    llm_call?: {
+      request_id: string;
+      profile_id?: number;
+      profile_name: string;
+      model: string;
+      role?: string;
+      started_at: string;
+      duration_ms: number;
+      status: string;
+      input_tokens?: number;
+      output_tokens?: number;
+    };
   };
   source_task_id?: string;
   inherited?: boolean;
@@ -676,11 +713,12 @@ export interface LLMTransition {
 }
 
 export interface TaskLLMResolution {
+  fallback_allowed?: boolean;
   profile_id?: number;
   name: string;
   format: string;
   model: string;
-  source: "task_chain" | "agent_binding" | "global_profile" | "environment" | "global";
+  source: "task_chain" | "agent_binding" | "conversation" | "global_profile" | "environment" | "global";
   available: boolean;
   reason?: string;
 }

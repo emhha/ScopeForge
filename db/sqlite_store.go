@@ -213,7 +213,7 @@ func openSQLite(path string) (*DB, error) {
 	return d, nil
 }
 
-const sqliteSchemaVersion = 2
+const sqliteSchemaVersion = 3
 const sqliteApplicationID = 0x41525458 // Stable SQLite format identifier; retained for existing databases.
 func initializeSQLite(writer *sql.DB) error {
 	tx, err := writer.Begin()
@@ -256,6 +256,20 @@ func initializeSQLite(writer *sql.DB) error {
 	}
 	if version < 2 {
 		if _, err = tx.Exec(`DROP TABLE IF EXISTS side_question_requests; DROP TABLE IF EXISTS side_question_sessions; PRAGMA user_version=2`); err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		if _, err = tx.Exec(`-- Host-authored links from actual domain writes to their persisted activity.
+CREATE TABLE IF NOT EXISTS node_sources (
+    node_id INTEGER NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    activity_id INTEGER NOT NULL REFERENCES activity(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN ('created','produced','verified')),
+    PRIMARY KEY (node_id, activity_id, relation)
+);
+CREATE INDEX IF NOT EXISTS node_sources_activity ON node_sources(activity_id);
+
+PRAGMA user_version=3`); err != nil {
 			return err
 		}
 	}

@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/emhha/scopeforge/db"
 	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/llmrec"
 	"github.com/emhha/scopeforge/modelutil"
 	"github.com/emhha/scopeforge/runstate"
 	"github.com/emhha/scopeforge/sessionctx"
@@ -23,6 +26,8 @@ func captureRun(ctx context.Context, cfg RunConfig, input string, emit func(db.A
 }
 func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.Activity)) (text string, reason runstate.Reason, runErr error) {
 	ctx = sessionctx.WithID(ctx, t.key.SessionID)
+	sources := &nodeSources{calls: map[string][]db.NodeSource{}}
+	ctx = context.WithValue(ctx, nodeSourcesKey{}, sources)
 	ctx, audit := intercept.WithTrace(ctx, input, approvalHistory(t.History(ctx)))
 	defer audit.Finish()
 	trace := &runTrace{startedAt: time.Now()}
@@ -33,6 +38,25 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 			emit(a)
 		}
 	}
+	var modelCallsMu sync.Mutex
+	var modelCalls []db.Activity
+	ctx = llmrec.WithCallObserver(ctx, func(call llmrec.CallRecord) {
+		metadata, _ := json.Marshal(map[string]any{"llm_call": call})
+		detail, _ := json.Marshal(map[string]any{"system_prompt": call.SystemPrompt})
+		a := db.Activity{Kind: "model_call", IsError: call.Status == "error", Summary: call.ProfileName + " · " + call.Model, Metadata: metadata, Detail: string(detail)}
+		modelCallsMu.Lock()
+		modelCalls = append(modelCalls, a)
+		modelCallsMu.Unlock()
+	})
+	flushModelCalls := func() {
+		modelCallsMu.Lock()
+		pending := modelCalls
+		modelCalls = nil
+		modelCallsMu.Unlock()
+		for _, a := range pending {
+			rec(a)
+		}
+	}
 	run := func(callCtx context.Context, prompt string, settling bool) error {
 		events, err := t.Run(callCtx, prompt, settling)
 		if err != nil {
@@ -40,6 +64,7 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 		}
 		var visible, thinking strings.Builder
 		for ev := range events {
+			flushModelCalls()
 			if ev == nil || ev.Response == nil {
 				continue
 			}
@@ -68,7 +93,7 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 					failed := toolkit.FailedJSON(m.Content)
 					trace.done(m.ToolID)
 					audit.Complete(m.ToolID, m.Content, failed)
-					rec(db.Activity{Kind: "tool_result", Tool: names[m.ToolID], ToolUseID: m.ToolID, IsError: failed, Summary: firstLine(m.Content, 200), Detail: m.Content})
+					rec(db.Activity{Kind: "tool_result", NodeSources: sources.take(m.ToolID), Tool: names[m.ToolID], ToolUseID: m.ToolID, IsError: failed, Summary: firstLine(m.Content, 200), Detail: m.Content})
 					continue
 				}
 				if m.Role != model.RoleAssistant {
@@ -93,6 +118,7 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 				}
 				visible.Reset()
 				for _, call := range m.ToolCalls {
+					sources.take(call.ID) // A provider may reuse call IDs in a later turn.
 					names[call.ID] = call.Function.Name
 					trace.start(call.ID, call.Function.Name, string(call.Function.Arguments))
 					audit.Start(call.ID, call.Function.Name, call.Function.Arguments)
@@ -101,6 +127,7 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 			}
 		}
 		t.models.Wait()
+		flushModelCalls()
 		if visible.Len() > 0 {
 			text = visible.String()
 		}

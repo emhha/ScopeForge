@@ -575,7 +575,7 @@ func (s *Server) providerForProfile(id int64) (llm.Model, agent.Config, bool) {
 	}
 	// Wrap with recorder, tagged with this profile's name.
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled).WithProfileID(p.ID)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
 	s.provCacheMu.Lock()
@@ -2230,7 +2230,7 @@ func (s *Server) findingLineage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "finding not found")
 		return
 	}
-	empty := map[string]any{"nodes": []any{}, "edges": []any{}}
+	empty := map[string]any{"nodes": []any{}, "edges": []any{}, "sessions": []any{}}
 	if f.NodeID == nil || f.TaskID == nil {
 		writeJSON(w, 200, empty)
 		return
@@ -2245,7 +2245,12 @@ func (s *Server) findingLineage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
+	sessions, err := t.Store.FindingLineageSessions(*f.NodeID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges), "sessions": sessions})
 }
 
 // patchFinding partially updates a finding: any subset of {status, severity}.
