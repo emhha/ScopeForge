@@ -155,7 +155,7 @@ func (t *turn) Run(ctx context.Context, input string, settling bool) (<-chan *ev
 			tools = append(tools, callable)
 		}
 		tools = append(tools, todo.New())
-		if cfg.EnableWebFetch {
+		if cfg.EnableWebFetch && !hasTool(cfg.Tools, "http_request") {
 			tools = append(tools, fetchTool(cfg.WebFetchProxy, cfg.WebFetchCACert))
 		}
 		if cfg.EnableWebSearch {

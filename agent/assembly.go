@@ -14,6 +14,7 @@ import (
 
 // AugmentInfo carries native skill/toolset options and product audit callbacks.
 type AugmentInfo struct {
+	HTTPGuidance     string
 	FindingGuidance  string
 	AgentOptions     []llmagent.Option
 	Callbacks        *actool.Callbacks
@@ -52,6 +53,7 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CallableTo
 		out = ToolResolve(ctx, agentKey, out)
 	}
 	out, def.FindingGuidance = findingWorkflowTools(agentKey, out)
+	def.HTTPGuidance = targetHTTPGuidance(out)
 	for i, t := range out {
 		out[i] = guardPanic(t)
 	}
@@ -71,4 +73,25 @@ func (g *guardedTool) Call(ctx context.Context, in []byte) (res any, err error) 
 		}
 	}()
 	return g.CallableTool.Call(ctx, in)
+}
+
+// Describe only the final permitted tools, including disabled/binding overrides.
+func hasTool(tools []actool.CallableTool, name string) bool {
+	for _, item := range tools {
+		if item.Declaration().Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func targetHTTPGuidance(tools []actool.CallableTool) string {
+	if !hasTool(tools, "http_request") {
+		return ""
+	}
+	text := "\n\n**目标 HTTP 请求**：向目标发送 HTTP/HTTPS 请求时优先使用 http_request，由 netloom 处理请求、TLS、重定向及流量采集。不要通过 Bash 的 curl/wget、WebFetch 或临时 HTTP 脚本绕过该入口。浏览器交互和需要专用协议的工具仍使用相应工具。根据 status_code、headers、body、body_encoding 判断下一步；HTTP 4xx/5xx 也是有效响应。body_preview_truncated 只表示展示截断，complete=false 表示本地采集不完整，不能据此推断服务端响应不完整。流量捕获启用时每跳返回 exchange_ids；捕获关闭时仍可请求，但不产生流量记录。"
+	if hasTool(tools, "traffic_get") {
+		text += "预览不足时用 traffic_get(id=exchange_id) 读取已采集内容；已有内容足够时无需再查，也不要仅为补证据重复请求。"
+	}
+	return text
 }

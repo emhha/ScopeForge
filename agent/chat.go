@@ -116,7 +116,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
 
-	system := []string{chatSystem(agentKey, c.workDir, sessionWorkDir) + def.FindingGuidance}
+	system := []string{chatSystem(agentKey, c.workDir, sessionWorkDir) + def.HTTPGuidance + def.FindingGuidance}
 	opts := RunConfig{
 		Model:        c.prov,
 		Instructions: system,
