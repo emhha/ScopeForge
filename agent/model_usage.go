@@ -15,6 +15,9 @@ type usageModel struct {
 }
 
 func (m *usageModel) Info() model.Info { return m.inner.Info() }
+func (m *usageModel) ProjectProviderData(data *model.ProviderData) (model.Message, error) {
+	return modelutil.ProjectProviderData(m.inner, data)
+}
 func (m *usageModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
 	m.turn.models.Add(1)
 	source, err := m.inner.GenerateContent(ctx, req)

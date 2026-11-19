@@ -91,6 +91,9 @@ func parseSession(s string) (taskID, worker string) {
 	return taskID, worker
 }
 
+func (r *Recorder) ProjectProviderData(data *llm.ProviderData) (llm.Message, error) {
+	return modelutil.ProjectProviderData(r.inner, data)
+}
 func (r *Recorder) GenerateContent(ctx context.Context, req *llm.Request) (<-chan *llm.Response, error) {
 	if req == nil {
 		return nil, fmt.Errorf("nil request")

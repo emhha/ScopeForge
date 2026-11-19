@@ -268,6 +268,9 @@ func (m *configuredModel) Info() llm.Info {
 	i.ContextWindow = m.config.CompactionWindow()
 	return i
 }
+func (m *configuredModel) ProjectProviderData(data *llm.ProviderData) (llm.Message, error) {
+	return modelutil.ProjectProviderData(m.inner, data)
+}
 func (m *configuredModel) GenerateContent(ctx context.Context, req *llm.Request) (<-chan *llm.Response, error) {
 	if req == nil {
 		return nil, fmt.Errorf("nil request")

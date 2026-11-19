@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
+	"github.com/Autumn-27/artex/modelutil"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
@@ -220,7 +221,22 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 }
 
 func (r *taskLLMRuntime) Info() llm.Info {
-	return llm.Info{Name: "task-router", ContextWindow: r.CompactionWindow()}
+	selection, err := r.current()
+	if err != nil {
+		return llm.Info{Name: "task-router", ContextWindow: r.CompactionWindow()}
+	}
+	// Native provider records are bound to the actual protocol and configured model.
+	// A display label such as task-router is not a model identity.
+	info := selection.provider.Info()
+	info.ContextWindow = r.CompactionWindow()
+	return info
+}
+func (r *taskLLMRuntime) ProjectProviderData(data *llm.ProviderData) (llm.Message, error) {
+	selection, err := r.current()
+	if err != nil {
+		return llm.Message{}, err
+	}
+	return modelutil.ProjectProviderData(selection.provider, data)
 }
 func (r *taskLLMRuntime) GenerateContent(ctx context.Context, req *llm.Request) (<-chan *llm.Response, error) {
 	return generateTaskLLM(llmrec.WithTaskID(ctx, r.taskID), r.taskID, req, r.streamHooks())

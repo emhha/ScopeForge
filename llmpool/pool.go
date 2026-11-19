@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/Autumn-27/artex/modelutil"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
@@ -71,6 +72,17 @@ func (p *Pool) Head() *Member { return p.members[0] }
 
 // GenerateContent routes native model calls. Once output is visible, an error is terminal.
 func (p *Pool) Info() llm.Info { return p.Head().Prov.Info() }
+func (p *Pool) ProjectProviderData(data *llm.ProviderData) (llm.Message, error) {
+	if data != nil {
+		for _, member := range p.members {
+			info := member.Prov.Info()
+			if info.Name == data.Model && info.ProviderDataProtocol == data.Protocol {
+				return modelutil.ProjectProviderData(member.Prov, data)
+			}
+		}
+	}
+	return llm.Message{}, fmt.Errorf("provider data does not belong to an LLM pool candidate")
+}
 func (p *Pool) GenerateContent(ctx context.Context, req *llm.Request) (<-chan *llm.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
