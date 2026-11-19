@@ -107,7 +107,12 @@ except Exception:
 finally:
     driver.quit()
 `;
-  const resultBrowser = spawnSync("python3", ["-c", python, htmlPath], { encoding: "utf8", timeout: 60000 });
+  // Selenium's loopback control connection must not inherit an outbound proxy.
+  const noProxy = [process.env.NO_PROXY, process.env.no_proxy, "localhost", "127.0.0.1"].filter(Boolean).join(",");
+  const resultBrowser = spawnSync("python3", ["-c", python, htmlPath], {
+    encoding: "utf8", timeout: 60000,
+    env: { ...process.env, NO_PROXY: noProxy, no_proxy: noProxy },
+  });
   assert.equal(
     resultBrowser.status,
     0,
