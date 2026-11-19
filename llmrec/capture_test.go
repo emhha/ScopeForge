@@ -66,8 +66,7 @@ func TestCaptureSingleAttemptKeepsBytesVerbatim(t *testing.T) {
 	}
 }
 
-// norma's doStream discards the bodies of retried attempts (retry.go closes them
-// unread), so the capture is the only place a 429 body survives.
+// Retried HTTP responses retain their raw bodies for provider diagnostics.
 func TestCaptureRetriedAttemptsAreAllKept(t *testing.T) {
 	_, c := NewCapture(context.Background())
 

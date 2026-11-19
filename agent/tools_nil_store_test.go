@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/artex/toolkit"
 )
 
 // The server-level ToolSet behind buildDomainReg carries a nil ExplorationStore,
@@ -25,11 +25,11 @@ func TestDomainToolsSurviveNilStores(t *testing.T) {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						t.Fatalf("%s panicked with nil stores on %s: %v", tool.Name(), in, r)
+						t.Fatalf("%s panicked with nil stores on %s: %v", tool.Declaration().Name, in, r)
 					}
 				}()
-				if _, err := tool.Call(context.Background(), json.RawMessage(in), nil); err != nil {
-					t.Fatalf("%s returned a transport error: %v", tool.Name(), err)
+				if _, err := tool.Call(context.Background(), json.RawMessage(in)); err != nil {
+					t.Fatalf("%s returned a transport error: %v", tool.Declaration().Name, err)
 				}
 			}()
 		}
@@ -40,29 +40,21 @@ func TestDomainToolsSurviveNilStores(t *testing.T) {
 // usable refusal rather than dying.
 func TestExplorationToolRefusesWithoutTask(t *testing.T) {
 	ts := NewToolSet(nil, "")
-	res, err := ts.NodeDetailTool().Call(context.Background(), json.RawMessage(`{"id":379}`), nil)
+	res, err := ts.NodeDetailTool().Call(context.Background(), json.RawMessage(`{"id":379}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !res.IsError || !strings.Contains(res.Flatten(), "任务上下文") {
-		t.Fatalf("want an explanatory tool error, got IsError=%v %q", res.IsError, res.Flatten())
+	if !toolkit.Failed(res) || !strings.Contains(toolkit.TextOf(res), "任务上下文") {
+		t.Fatalf("want an explanatory tool error, got IsError=%v %q", toolkit.Failed(res), toolkit.TextOf(res))
 	}
 }
 
 // A panicking tool must degrade to a tool error: the run continues and the process
 // survives, instead of the supervisor restarting into the same crash on replay.
 func TestGuardPanicConvertsPanicToToolError(t *testing.T) {
-	boom := actool.Build(actool.Spec{
-		Name: "boom",
-		Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
-			panic("nil map write")
-		},
-	})
-	res, err := guardPanic(boom).Call(context.Background(), json.RawMessage(`{}`), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.IsError || !strings.Contains(res.Flatten(), "nil map write") {
-		t.Fatalf("want the panic reported as a tool error, got IsError=%v %q", res.IsError, res.Flatten())
+	boom := toolkit.New("boom", "", nil, func(context.Context, json.RawMessage) (toolkit.Output, error) { panic("nil map write") })
+	_, err := guardPanic(boom).Call(t.Context(), []byte(`{}`))
+	if err == nil || !strings.Contains(err.Error(), "nil map write") {
+		t.Fatalf("panic was not reported: %v", err)
 	}
 }

@@ -11,11 +11,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Autumn-27/artex/toolkit"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/runstate"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 func isFKViolation(err error) bool { return db.IsForeignKeyViolation(err) }
@@ -65,8 +68,8 @@ var errWorkControlConflict = errors.New("work control conflict")
 // retryableWorkerModelError excludes errors already handled by the task router.
 // In particular, a quota error after partial streaming advances the task cursor
 // for the next LLM call but must not replay this whole intent on the backup.
-func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
-	return reason == harness.ReasonModelError && !isTaskLLMRuntimeError(err)
+func retryableWorkerModelError(reason runstate.Reason, err error) bool {
+	return reason == runstate.ReasonModelError && !isTaskLLMRuntimeError(err)
 }
 
 // Engine drives the event-driven exploration loop with real LLM agents
@@ -515,7 +518,7 @@ func (e *Engine) drainSteer(intentID int64) (string, bool) {
 // of running the tool. No queued message → the guard behaves exactly as before.
 // 它同时负责「空转回合」的续跑，见 Stop。
 type steerHooks struct {
-	inner harness.HookRunner
+	inner *actool.Callbacks
 	drain func() (string, bool)
 	// nudges 是本条意图已注入的空转续跑次数，上限 limit。指针:harness 持有的是
 	// steerHooks 的值拷贝，计数必须共享同一份。
@@ -528,12 +531,10 @@ type steerHooks struct {
 }
 
 // 空转回合(只有思考、既无正文也无工具调用)续跑次数的默认值，与 SDK 空响应重试的
-// 内置默认(norma/llm/openai.go 的 emptyResponseRetries)保持一致——两层共用同一个
 // 旋钮，不配置时的行为也该对齐。解析见 Engine.emptyTurnNudgeLimit。
 //
 // 注意这个数是「一条意图的总量」，不是「连续几次」:harness 自身的 stopHookActive
 // 已经限死了连续空转只推一次——推完那一轮若还是空转，Stop 钩子不会再被调到，run 直接
-// 收场;只有真正发生过一次工具回合，配额才刷新(norma/harness/query.go:534)。所以这个
 // 闸挡的是「工具 → 空转 → 推 → 工具 → 空转」这种病态循环，别让它把意图预算耗光。
 const defaultEmptyTurnNudges = 2
 
@@ -541,7 +542,6 @@ const defaultEmptyTurnNudges = 2
 //
 // 这种回合在 harness 眼里是一次自然结束(stop_reason=end_turn 且无 tool_use)，五层
 // LLM 重试一层都不适用——它不是错误，是模型「想完了但没动手」。SDK 的空响应重试也
-// 够不着:它以「有没有 yield 过事件」判空，而思考增量本身就是事件(norma/llm/openai.go
 // 的 SEThinkingDelta)，所以 thinking-only 不算空。何况那层是原样重发整个 prompt，
 // 对这种由上下文形状决定的空转，重发只会让模型再想一遍。这里换成追加一条指令，让它
 // 带着已经产出的思考继续，输入变了才有理由给出不同的行为。
@@ -556,53 +556,31 @@ func isThinkingOnlyTurn(messages []llm.Message) bool {
 		if m.Role != llm.RoleAssistant {
 			continue
 		}
-		return strings.TrimSpace(m.Text()) == "" && len(m.ToolUses()) == 0
+		return strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0
 	}
 	return false
 }
 
-func (h steerHooks) PreToolUse(ctx context.Context, name string, input []byte) (bool, string, []byte) {
-	if msg, ok := h.drain(); ok {
-		return true, "【规划者实时纠偏】" + msg +
-			"\n（这是规划者对本意图的即时指令；本次工具调用未执行，请据此调整下一步。若与你当前打算冲突，以此为准。）", nil
-	}
-	if h.inner != nil {
-		return h.inner.PreToolUse(ctx, name, input)
-	}
-	return false, "", nil
-}
-
-func (h steerHooks) PostToolUse(ctx context.Context, name string, input, result []byte, isErr bool) {
-	if h.inner != nil {
-		h.inner.PostToolUse(ctx, name, input, result, isErr)
-	}
-}
-
-// Stop 在 guard 原有语义之上补一层「空转回合」续跑:模型只输出了思考、既没给正文
-// 也没调工具时，harness 会把它当成自然结束并以空 summary 收场(query.go 的
-// ReasonCompleted + asst.Text())，一条本来还没做完的意图就这样断在半路。此时注入
-// 一条续跑指令，让模型带着已有思考接着走。
-func (h steerHooks) Stop(ctx context.Context, messages []llm.Message) (bool, []string, string) {
-	var (
-		prevent  bool
-		blocking []string
-		msg      string
-	)
-	if h.inner != nil {
-		prevent, blocking, msg = h.inner.Stop(ctx, messages)
-	}
-	// inner 已经决定硬停、或已经要注入自己的续跑消息 → 尊重它，不再叠加。
-	// limit<=0 = 用户把「空响应重试次数」配成了 -1，即显式关掉这层。
-	if prevent || len(blocking) > 0 || h.nudges == nil || h.limit <= 0 || !isThinkingOnlyTurn(messages) {
-		return prevent, blocking, msg
-	}
-	n := h.nudges.Add(1)
-	if n > int64(h.limit) {
-		log.Printf("[work %s] 空转回合(仅思考、无正文无工具)已达续跑上限 %d，放行收场", h.label, h.limit)
-		return prevent, blocking, msg
-	}
-	log.Printf("[work %s] 空转回合(仅思考、无正文无工具)，注入续跑指令 (%d/%d)", h.label, n, h.limit)
-	return false, []string{emptyTurnNudge}, ""
+func (h steerHooks) callbacks() *actool.Callbacks {
+	callbacks := actool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(ctx context.Context, args *actool.BeforeToolArgs) (*actool.BeforeToolResult, error) {
+		if h.drain != nil {
+			if msg, ok := h.drain(); ok {
+				return &actool.BeforeToolResult{CustomResult: toolkit.Error("【规划者实时纠偏】" + msg + "；本次工具调用未执行，请调整下一步。")}, nil
+			}
+		}
+		if h.inner != nil {
+			return h.inner.RunBeforeTool(ctx, args)
+		}
+		return nil, nil
+	})
+	callbacks.RegisterAfterTool(func(ctx context.Context, args *actool.AfterToolArgs) (*actool.AfterToolResult, error) {
+		if h.inner != nil {
+			return h.inner.RunAfterTool(ctx, args)
+		}
+		return nil, nil
+	})
+	return callbacks
 }
 
 // KillWork cancels the in-flight work running intentID (planner's kill_work tool).
@@ -1006,13 +984,13 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	e.BeginLLMCall(t.ID)
-	var reason harness.TerminalReason
+	var reason runstate.Reason
 	var wrote agent.WriteCounts
 	var err error
 	if hasChatMessage {
-		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks.callbacks(), emit, e.m.enrich, t.NotifyFinding, requestID, message)
 	} else {
-		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks.callbacks(), emit, e.m.enrich, t.NotifyFinding)
 	}
 	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
@@ -1029,9 +1007,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		e.BeginLLMCall(t.ID)
 		if hasChatMessage {
-			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks.callbacks(), emit, e.m.enrich, t.NotifyFinding, requestID, message)
 		} else {
-			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks.callbacks(), emit, e.m.enrich, t.NotifyFinding)
 		}
 		e.EndLLMCall(t.ID)
 	}
@@ -1127,10 +1105,10 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	switch {
 	case err != nil:
 		state = "blocked"
-	case reason == harness.ReasonMaxTurns:
+	case reason == runstate.ReasonMaxTurns:
 		state = "exhausted"
 		log.Printf("[worker %s] intent %d 撞步数上限(exhausted)，本次写回 %s", name, intent.ID, wrote)
-	case reason == harness.ReasonTimeout:
+	case reason == runstate.ReasonTimeout:
 		state = "exhausted"
 		log.Printf("[worker %s] intent %d 运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
 	}

@@ -5,18 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
 	"log"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 type taskAgentBundle struct {
@@ -70,12 +68,14 @@ func (e *taskLLMError) Unwrap() error { return e.cause }
 
 func isTaskLLMRuntimeError(err error) bool {
 	var target *taskLLMError
-	return errors.As(err, &target)
+	var response *llm.ResponseError
+	return errors.As(err, &target) || (errors.As(err, &response) && response.Type == "task_llm_runtime")
 }
 
 func isTaskLLMChainExhausted(err error) bool {
 	var target *taskLLMError
-	return errors.As(err, &target) && target.chainExhausted
+	var response *llm.ResponseError
+	return (errors.As(err, &target) && target.chainExhausted) || (errors.As(err, &response) && response.Code != nil && *response.Code == "chain_exhausted")
 }
 
 // isQuotaExhaustedError is intentionally strict. A generic 429, auth error,
@@ -89,7 +89,7 @@ type taskLLMSelection struct {
 	task      *Task
 	profileID int64
 	revision  int64
-	provider  llm.Provider
+	provider  llm.Model
 	// retry 是这次选中的配置解析出来的重试参数(profile 覆盖 → 全局策略 → 内置默认)。
 	// 同 provider 安全窗口重试按它走,所以换了 profile 就换一套重试节奏。
 	retry agent.RetryConfig
@@ -219,186 +219,135 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 	}
 }
 
-func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	ctx = llmrec.WithTaskID(ctx, r.taskID)
-	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks())
+func (r *taskLLMRuntime) Info() llm.Info {
+	return llm.Info{Name: "task-router", ContextWindow: r.CompactionWindow()}
 }
-
-// Complete is the non-streaming counterpart of Stream. A non-streaming call is
-// atomic — it never delivers partial output — so every failure is safe to retry
-// on the same provider or fail over to the next profile without risking
-// duplicated model output or tool execution (the "committed" bookkeeping the
-// streaming path needs is unnecessary here).
-func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	ctx = llmrec.WithTaskID(ctx, r.taskID)
-	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
+func (r *taskLLMRuntime) GenerateContent(ctx context.Context, req *llm.Request) (<-chan *llm.Response, error) {
+	return generateTaskLLM(llmrec.WithTaskID(ctx, r.taskID), r.taskID, req, r.streamHooks())
 }
-
-func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
-	for {
-		selection, err := hooks.current()
-		if err != nil {
-			return llm.Message{}, "", llm.Usage{}, err
-		}
-		var (
-			msg     llm.Message
-			sr      string
-			usage   llm.Usage
-			callErr error
-		)
-		// 同 provider 安全窗口重试:非流式调用要么整体成功、要么整体失败,没有
-		// 中途已交付输出的问题,所以任何瞬时失败都可原样重试。
-		retries, backoffOf := sameProviderRetryPolicy(selection.retry)
-		for attempt := 0; ; attempt++ {
-			msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
-			if callErr != nil && ctx.Err() == nil &&
-				attempt < retries && isRetryableStreamError(callErr) {
-				backoff := backoffOf(attempt)
-				log.Printf("[task-llm] task %s 非流式调用失败,%v 后同 provider 重试 (%d/%d): %v",
-					taskID, backoff, attempt+1, retries, callErr)
-				if sleepCtx(ctx, backoff) {
-					break // 退避期间 ctx 取消 → 停止重试
-				}
-				continue
-			}
-			break
-		}
-		if callErr == nil {
-			return msg, sr, usage, nil
-		}
-		// profileID=0: 显式链已被清空;非额度错误:透传。二者都不改任务 failover 状态。
-		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
-			return llm.Message{}, "", llm.Usage{}, callErr
-		}
-		transition, markErr := hooks.exhaust(selection, callErr)
-		if markErr != nil {
-			return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr)
-		}
-		if transition.Advanced && !transition.Stale && hooks.transition != nil {
-			hooks.transition(selection, transition, callErr)
-		}
-		if !transition.Stale && transition.NextProfileID == nil {
-			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
-		}
-		// 没有任何输出交付给调用方,换下一个 profile 重放同一逻辑请求是安全的。
+func generateTaskLLM(ctx context.Context, taskID string, req *llm.Request, hooks taskLLMStreamHooks) (<-chan *llm.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("nil model request")
 	}
-}
-
-func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) {
+	out := make(chan *llm.Response)
+	go func() {
+		defer close(out)
+		send := func(ev *llm.Response) bool {
+			select {
+			case out <- ev:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		fail := func(err error, routed, exhausted bool) {
+			kind := llm.ErrorTypeAPIError
+			var code *string
+			if routed {
+				kind = "task_llm_runtime"
+			}
+			if exhausted {
+				value := "chain_exhausted"
+				code = &value
+			}
+			send(&llm.Response{Error: &llm.ResponseError{Type: kind, Message: err.Error(), Code: code}, Done: true})
+		}
 		for {
 			selection, err := hooks.current()
 			if err != nil {
-				yield(llm.StreamEvent{}, err)
+				fail(err, true, isTaskLLMChainExhausted(err))
 				return
 			}
 			committed := false
-			var pending []llm.StreamEvent
-			var streamErr error
-			retries, backoffOf := sameProviderRetryPolicy(selection.retry)
-			// 同 provider 安全窗口重试:committed 之前(还没向调用方交付任何输出)
-			// 的瞬时失败可以原样重放,不会重复模型输出或工具执行。committed 之后、
-			// ctx 取消、或确定性/额度错误则跳出,交给下方原有的透传/故障转移逻辑。
+			var pending []*llm.Response
+			var callErr error
+			retries, backoff := sameProviderRetryPolicy(selection.retry)
 			for attempt := 0; ; attempt++ {
 				committed = false
 				pending = nil
-				streamErr = nil
-				for event, err := range selection.provider.Stream(ctx, req) {
-					if err != nil {
-						streamErr = err
-						break
-					}
-					if !committed && !streamEventCommitsOutput(event) {
-						pending = append(pending, event)
-						continue
-					}
-					if !committed {
-						for _, buffered := range pending {
-							if !yield(buffered, nil) {
-								return
-							}
+				callErr = nil
+				callCtx, cancel := context.WithCancel(ctx)
+				source, err := selection.provider.GenerateContent(callCtx, req)
+				callErr = err
+				if source != nil {
+					for ev := range source {
+						if ev == nil {
+							continue
 						}
-						pending = nil
-						committed = true
+						if ev.Error != nil {
+							callErr = ev.Error
+							cancel()
+							continue
+						}
+						if callErr != nil {
+							continue
+						}
+						if !committed && !llmpool.ResponseCommitsOutput(ev) {
+							pending = append(pending, ev)
+							continue
+						}
+						if !committed {
+							for _, buffered := range pending {
+								if !send(buffered) {
+									cancel()
+								}
+							}
+							pending = nil
+							committed = true
+						}
+						if !send(ev) {
+							cancel()
+						}
 					}
-					if !yield(event, nil) {
-						return
-					}
+				} else if callErr == nil {
+					callErr = fmt.Errorf("model returned nil channel")
 				}
-				if streamErr != nil && !committed && ctx.Err() == nil &&
-					attempt < retries && isRetryableStreamError(streamErr) {
-					backoff := backoffOf(attempt)
-					log.Printf("[task-llm] task %s 提交前流失败,%v 后同 provider 重试 (%d/%d): %v",
-						taskID, backoff, attempt+1, retries, streamErr)
-					if sleepCtx(ctx, backoff) {
-						break // 退避期间 ctx 取消 → 停止重试
+				cancel()
+				if ctx.Err() != nil {
+					return
+				}
+				if callErr != nil && !committed && attempt < retries && isRetryableStreamError(callErr) {
+					if sleepCtx(ctx, backoff(attempt)) {
+						return
 					}
 					continue
 				}
 				break
 			}
-			if streamErr == nil {
+			if callErr == nil {
 				for _, buffered := range pending {
-					if !yield(buffered, nil) {
+					if !send(buffered) {
 						return
 					}
 				}
 				return
 			}
-			// profileID=0 means the explicit chain was cleared while this stable task
-			// bundle was still in use. Agent/global fallback errors follow the legacy
-			// behavior and never mutate task failover state.
-			if selection.profileID == 0 || !isQuotaExhaustedError(streamErr) {
+			if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
 				for _, buffered := range pending {
-					if !yield(buffered, nil) {
+					if !send(buffered) {
 						return
 					}
 				}
-				yield(llm.StreamEvent{}, streamErr)
+				fail(callErr, committed, false)
 				return
 			}
-			transition, markErr := hooks.exhaust(selection, streamErr)
+			transition, markErr := hooks.exhaust(selection, callErr)
 			if markErr != nil {
-				cause := fmt.Errorf("mark profile quota exhausted after %v: %w", streamErr, markErr)
-				if committed {
-					// Output may already have driven tool execution. Report the persistence
-					// failure, but classify it as router-handled so the worker does not
-					// replay the entire intent and duplicate those side effects.
-					yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: cause})
-				} else {
-					yield(llm.StreamEvent{}, cause)
-				}
+				fail(fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr), committed, false)
 				return
 			}
 			if transition.Advanced && !transition.Stale && hooks.transition != nil {
-				hooks.transition(selection, transition, streamErr)
+				hooks.transition(selection, transition, callErr)
 			}
 			if committed || (!transition.Stale && transition.NextProfileID == nil) {
-				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
+				fail(callErr, true, transition.ChainExhausted)
 				return
 			}
-			// No event reached the caller, so replaying the same logical request on
-			// the next profile cannot duplicate model output or tool execution.
 		}
-	}
+	}()
+	return out, nil
 }
 
-func streamEventCommitsOutput(event llm.StreamEvent) bool {
-	switch event.Type {
-	case llm.SETextDelta, llm.SEThinkingDelta, llm.SEToolInputJSON:
-		return event.Text != ""
-	case llm.SEToolUseStart, llm.SEMessageDelta, llm.SEMessageStop:
-		return true
-	default:
-		return false
-	}
-}
-
-// 提交前安全窗口内、对同一 provider 的【默认】重试次数。SDK 的 doStream 只重试建连
-// 阶段(拿到 200 之前);流一旦开始,中途断流 / overloaded / 流内 429 等瞬时故障会直接
-// 冒泡成 model_error,零重试。只要一个 token 都还没交给调用方(!committed),重放
-// 完全相同的请求就不会重复模型输出或工具副作用,因此这里补一层同 provider 退避重试,
-// 把这类抖动挡在意图整体重跑之前。可被 LLM 配置的重试覆盖/全局重试策略改写。
 const sameProviderStreamRetries = 2
 
 // sameProviderRetryBackoff 是第 attempt 次重试前的【默认】退避(0.5s、1s…,上限 4s),
@@ -426,7 +375,7 @@ func sameProviderRetryPolicy(r agent.RetryConfig) (retries int, backoff func(int
 // isRetryableStreamError 判断「提交前的流失败」是否值得在同一 provider 上重放。
 // 瞬时的传输中断 / 供应商过载 / 限流会自行恢复,可安全重试;而以下三类不重试:
 //   - 额度耗尽:交给 profile 故障转移处理,别在这里白烧重试
-//   - 上下文过长:相同请求重放也没用,交给 harness 的 reactive 压缩兜底
+//   - 上下文过长:相同请求重放也没用,不重放同一个超长请求
 //   - 4xx 确定性拒绝(400/401/403/404/422):到哪个 provider 都一样会失败
 func isRetryableStreamError(err error) bool {
 	if err == nil {
@@ -441,10 +390,8 @@ func isRetryableStreamError(err error) bool {
 		strings.Contains(s, "status 413") {
 		return false
 	}
-	for _, code := range []string{"status 400", "status 401", "status 403", "status 404", "status 422"} {
-		if strings.Contains(s, code) {
-			return false
-		}
+	if code := llmpool.HTTPStatus(err); code >= 400 && code < 500 && code != 408 && code != 429 {
+		return false
 	}
 	// 其余(传输 reset/EOF/timeout、408/429/5xx、流内 error 事件如 anthropic
 	// overloaded_error 等)一律视为瞬时,允许重试。
@@ -491,7 +438,7 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 // when the role has no binding or the bound profile no longer builds, so callers
 // fall through to the task chain. A bound profile stays exclusive unless
 // llm_pool_bind_fallback is on, which is what poolForBinding encodes.
-func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Config, bool) {
+func (s *Server) agentBindingProvider(agentKey string) (llm.Model, agent.Config, bool) {
 	id := s.effectiveProfileForAgent(agentKey, nil)
 	if id == nil {
 		return nil, agent.Config{}, false
@@ -506,7 +453,7 @@ func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Conf
 // globalProvider returns the process-wide provider (persisted active profile or
 // environment config) — the last resort once a role has neither a binding nor a
 // task chain.
-func (s *Server) globalProvider() (llm.Provider, agent.Config, bool) {
+func (s *Server) globalProvider() (llm.Model, agent.Config, bool) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 	if !s.llmOn || s.llmProv == nil {
@@ -559,14 +506,13 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	plannerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "planner"}
 	workerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker"}
 	mainRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "mainagent"}
-	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
+	tx := s.m.sessions
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
 	wk.SetFindingRecorder(s.evidenceStore())
 	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
 	wk.SetNonStreaming(workerRuntime.nonStreaming) // 按任务当前激活 profile 的流式开关(每轮读)
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
-	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	wk.SetWebSearch(s.webSearchFor("worker"))
@@ -576,7 +522,6 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
-	pl.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
 	pl.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
@@ -591,7 +536,6 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)
-	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	main.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork) // steer_work：人对运行中 work 实时纠偏

@@ -6,39 +6,37 @@ import (
 	"path/filepath"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/session"
+
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // ChatAgent is the generic, task-independent conversational runner behind the chat
 // page. It generalizes MainAgent.Chat: any agent (built-in OR a custom one, by
-// key) can be chatted with, multi-turn history resumed from the transcript. It is
+// key) can be chatted with, multi-turn history kept in the in-memory session. It is
 // a PURE ASSISTANT — base tools are the SDK DefaultTools (Bash/Read/Write/Edit/
 // LS/Glob/Grep) plus whatever skills/MCP the key is made visible; NO pentest
 // graph/task context is injected (that stays exclusive to MainAgent).
 type ChatAgent struct {
-	prov           llm.Provider
+	prov           llm.Model
 	model          string
 	workDir        string
-	tx             *transcript.Store
+	sessions       session.Service
 	window         int
 	proxyAddr      string
 	proxyCACert    string
 	webSearch      WebSearchOpts
 	guard          *guard.Guard // optional; nil disables intercept hooks for chat
 	nonStreamingFn func() bool  // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn   func() bool  // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn    func() int   // resolver: per-reply output cap (nil/0 = send no cap)
 }
 
-func NewChatAgent(prov llm.Provider, model, workDir string, tx *transcript.Store, window int) *ChatAgent {
-	return &ChatAgent{prov: prov, model: model, workDir: workDir, tx: tx, window: window}
+func NewChatAgent(prov llm.Model, model, workDir string, sessions session.Service, window int) *ChatAgent {
+	return &ChatAgent{prov: prov, model: model, workDir: workDir, sessions: sessions, window: window}
 }
 
 // SetNonStreaming wires a resolver deciding whether chat runs use the
@@ -46,11 +44,6 @@ func NewChatAgent(prov llm.Provider, model, workDir string, tx *transcript.Store
 func (c *ChatAgent) SetNonStreaming(fn func() bool) { c.nonStreamingFn = fn }
 
 func (c *ChatAgent) nonStreaming() bool { return c.nonStreamingFn != nil && c.nonStreamingFn() }
-
-// SetNoaEnabled wires a resolver deciding whether chat runs use the experimental
-// noa context-compression mechanism. nil/unset = off (built-in compaction). Read
-// per run so the settings toggle takes effect without rebuilding the agent.
-func (c *ChatAgent) SetNoaEnabled(fn func() bool) { c.noaEnabledFn = fn }
 
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
@@ -118,23 +111,24 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// Pure assistant: DefaultTools as the base; AugmentTools layers in the key's
 	// visible skills/MCP and lets the DB tools table filter/override. DefaultTools
 	// have no tools-table rows, so they always pass through.
-	base := actool.DefaultTools()
+	var base []actool.CallableTool
 	ctx = WithRunInfo(ctx, RunInfo{SessionID: sessionID})
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
 
-	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)
-	opts := agentcore.Options{
-		Provider:        c.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
-		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   c.proxyAddr,
-		WebFetchCACert:  c.proxyCACert,
+	system := []string{chatSystem(agentKey, c.workDir, sessionWorkDir) + def.FindingGuidance}
+	opts := RunConfig{
+		Model:        c.prov,
+		Instructions: system,
+
+		Tools:            tools,
+		AgentOptions:     def.AgentOptions,
+		AugmentCallbacks: def.Callbacks,
+		InteractiveShell: def.InteractiveShell,
+
+		EnableWebFetch: true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxy:  c.proxyAddr,
+		WebFetchCACert: c.proxyCACert,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:       ws.Enabled,
@@ -149,8 +143,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		WorkingDir:            sessionWorkDir,
 		MaxTurns:              maxTurns,
 		MaxDuration:           maxDuration,
-		Compaction:            compactionConfig(c.window),
-		Todos:                 actool.NewTodoStore(),
+
 		// large tool output spills to cmd-output/ under the session dir.
 		// 截断上限用 SDK 默认(tool.Capture 的 30000 字符)。
 		ToolOutputDir: filepath.Join(sessionWorkDir, "cmd-output"),
@@ -163,23 +156,14 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	if c.guard != nil {
 		opts.Hooks = c.guard.Hooks()
 	}
-	if c.tx != nil { // persist raw human↔AI conversation; one accumulating file per thread
-		opts.Transcript = c.tx
+	if c.sessions != nil { // Continue the shared in-memory session.
+		opts.Sessions = c.sessions
 		opts.SessionID = sessionID
 	}
-	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+sessionID, noaWarn("chat-"+sessionID))
 	ctx = attachSideCapture(ctx, &opts)
-	s := agentcore.NewSession(opts)
+	s := newTurn(opts)
 	defer s.Close()
-	// reload prior conversation so the agent has context across turns (each Chat is
-	// a fresh session). First turn: no file yet → Resume loads nothing and proceeds.
-	if c.tx != nil {
-		_ = s.Resume(sessionID)
-	}
-	// re-unlock skill-gated MCPs from prior Skill() calls in the reloaded history so
-	// revealed tools stay callable across the fresh session.
-	seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
+	// Runner reads the shared in-memory history and native skill activation state.
 	text, _, err := captureRunSession(ctx, s, message, func(r db.Activity) {
 		if emit != nil {
 			r.Worker = agentKey

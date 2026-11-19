@@ -9,19 +9,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/toolkit"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
+
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-// End-to-end through a real norma provider: the Capture rides the context into
-// norma, survives its internal request building, and comes back holding the
 // exact bytes buildBody() put on the wire. This is the load-bearing assumption
-// of the whole feature — norma must propagate the caller's context down to
 // http.NewRequestWithContext.
-func TestCapturePropagatesThroughNormaProvider(t *testing.T) {
+func TestCapturePropagatesThroughNativeModel(t *testing.T) {
 	sse := strings.Join([]string{
 		`event: message_start`,
 		`data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":11,"output_tokens":1}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 		``,
 		`event: content_block_delta`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
@@ -50,35 +53,40 @@ func TestCapturePropagatesThroughNormaProvider(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{
-		Format:  llm.FormatAnthropic,
+		Format:  "anthropic",
 		BaseURL: srv.URL,
 		APIKey:  "test-key",
 		Model:   "claude-test",
 	}
-	prov, err := cfg.NewProvider()
+	prov, err := cfg.NewModel()
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
 
 	ctx, capt := llmrec.NewCapture(context.Background())
-	req := llm.CompletionRequest{
-		System:   []string{"you are a scanner"},
-		Messages: []llm.Message{{Role: "user", Content: []llm.ContentBlock{{Type: "text", Text: "go"}}}},
-		Tools: []llm.ToolSchema{{
-			Name:        "bash",
-			Description: "run a shell command",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}},
-		}},
-		MaxTokens: 1024,
+	req := llm.Request{
+
+		Messages: append([]llm.Message{{Role: llm.RoleSystem,
+			Content: "you are a scanner",
+		},
+		}, []llm.Message{{Role: "user", Content: "go"}}...), GenerationConfig: llm.GenerationConfig{MaxTokens: llm.IntPtr(1024)},
 	}
 
+	req.Stream = true
+	req.Tools = map[string]actool.Tool{"bash": toolkit.New("bash", "run a shell command", map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}}, nil)}
+	source, err := prov.GenerateContent(ctx, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var text strings.Builder
-	for ev, err := range prov.Stream(ctx, req) {
-		if err != nil {
-			t.Fatalf("stream: %v", err)
+	for ev := range source {
+		if ev.Error != nil {
+			t.Fatal(ev.Error)
 		}
-		if ev.Type == llm.SETextDelta {
-			text.WriteString(ev.Text)
+		if ev.IsPartial {
+			for _, c := range ev.Choices {
+				text.WriteString(c.Delta.Content)
+			}
 		}
 	}
 	if text.String() != "hello" {
@@ -88,7 +96,6 @@ func TestCapturePropagatesThroughNormaProvider(t *testing.T) {
 		t.Fatalf("path=%q", gotPath)
 	}
 
-	// The raw request must be what norma actually sent, not the recorder's
 	// re-serialization — which is exactly why it carries fields the normalized
 	// view drops.
 	raw := capt.RawRequest()

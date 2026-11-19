@@ -160,7 +160,7 @@ func TestStageTaskFilesRollbackReportsRestoreFailure(t *testing.T) {
 	if err := os.WriteFile(workspace, []byte("conflict"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cause := errors.New("forced PostgreSQL delete failure")
+	cause := errors.New("forced SQLite delete failure")
 	err = rollbackTaskDelete(cause, nil, stage)
 	if err == nil || !errors.Is(err, cause) || !strings.Contains(err.Error(), "destination already exists") {
 		t.Fatalf("rollback err=%v, want original and restore errors", err)

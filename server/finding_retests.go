@@ -12,10 +12,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 func (s *Server) listActiveFindingRetests(w http.ResponseWriter, r *http.Request) {
@@ -141,27 +143,27 @@ func (s *Server) startFindingRetest(w http.ResponseWriter, r *http.Request) {
 
 // Both tools derive the finding from server-owned conversation context. Tool
 // arguments cannot redirect a result into a different finding or conversation.
-func (s *Server) findingRetestTools() []actool.CoreTool {
-	return []actool.CoreTool{
+func (s *Server) findingRetestTools() []actool.CallableTool {
+	return []actool.CallableTool{
 		roTool("get_finding_retest_context", "读取当前复测会话关联的漏洞证据快照、复测状态、补充说明与当前任务约束。无参数，只能读取本会话。",
-			objSchema(map[string]any{}), func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
+			objSchema(map[string]any{}), func(ctx context.Context, _ json.RawMessage) (toolkit.Output, error) {
 				r, err := s.m.pg.FindingRetestForConversation(ctx, intercept.ConvIDFromContext(ctx))
 				if err != nil {
-					return actool.Errorf(err.Error()), nil
+					return toolkit.Error(err.Error()), nil
 				}
 				if r == nil {
-					return actool.Errorf("当前会话未关联复测记录，请从漏洞详情发起复测"), nil
+					return toolkit.Error("当前会话未关联复测记录，请从漏洞详情发起复测"), nil
 				}
 				var constraints []db.Constraint
 				f, err := s.m.pg.GetFinding(r.FindingID)
 				if err != nil {
-					return actool.Errorf(err.Error()), nil
+					return toolkit.Error(err.Error()), nil
 				}
 				if f != nil && f.TaskID != nil {
 					if task, ok := s.m.Task(strconv.FormatInt(*f.TaskID, 10)); ok {
 						constraints, err = task.Store.ListConstraints()
 						if err != nil {
-							return actool.Errorf(err.Error()), nil
+							return toolkit.Error(err.Error()), nil
 						}
 					}
 				}
@@ -172,17 +174,17 @@ func (s *Server) findingRetestTools() []actool.CoreTool {
 				"verdict":  map[string]any{"type": "string", "enum": []string{"reproduced", "fixed", "inconclusive"}},
 				"summary":  strParam("本次复测结论摘要"),
 				"evidence": strParam("Markdown：本次实际步骤、观察、对照、结论依据；无法确认则列出已检查内容和阻塞原因"),
-			}, "verdict", "summary", "evidence"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+			}, "verdict", "summary", "evidence"), func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 				var a struct {
 					Verdict  string `json:"verdict"`
 					Summary  string `json:"summary"`
 					Evidence string `json:"evidence"`
 				}
 				if err := json.Unmarshal(in, &a); err != nil {
-					return actool.Errorf(err.Error()), nil
+					return toolkit.Error(err.Error()), nil
 				}
 				if err := s.m.pg.RecordFindingRetestResult(ctx, intercept.ConvIDFromContext(ctx), a.Verdict, a.Summary, a.Evidence); err != nil {
-					return actool.Errorf(err.Error()), nil
+					return toolkit.Error(err.Error()), nil
 				}
 				return jsonResult(map[string]any{"saved": true, "verdict": a.Verdict})
 			}),
@@ -193,9 +195,9 @@ func (s *Server) findingRetestTools() []actool.CoreTool {
 // Once seeded, user edits/deletion survive restarts; a pre-existing key is kept.
 func (s *Server) seedFindingRetester() error {
 	for _, t := range s.findingRetestTools() {
-		schema, _ := json.Marshal(t.InputSchema())
+		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
 		bindings, _ := json.Marshal([]string{db.FindingRetestAgentKey})
-		if err := s.m.pg.SeedTool(t.Name(), t.Description(), schema, bindings); err != nil {
+		if err := s.m.pg.SeedTool(t.Declaration().Name, t.Declaration().Description, schema, bindings); err != nil {
 			return err
 		}
 	}

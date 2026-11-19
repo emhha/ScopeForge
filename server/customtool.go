@@ -17,9 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // 本文件实现自定义工具执行器(docs/自定义工具设计.md)。system=false 的 tools 行按
@@ -159,15 +161,15 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
-	tc := &actool.ToolContext{WorkingDir: s.m.dir} // run in the project dir, like a real call
-	var res actool.Result
+	ctx = toolkit.WithWorkspace(ctx, toolkit.Workspace{Directory: s.m.dir}) // run in the project dir, like a real call
+	var res toolkit.Output
 	switch req.Kind {
 	case "command":
-		res, _ = s.runCommandTool(ctx, req.Exec, params, tc)
+		res, _ = s.runCommandTool(ctx, req.Exec, params)
 	case "script":
-		res, _ = s.runScriptTool(ctx, "test", req.Exec, params, tc)
+		res, _ = s.runScriptTool(ctx, "test", req.Exec, params)
 	case "http":
-		res, _ = s.runHTTPTool(ctx, req.Exec, params, tc)
+		res, _ = s.runHTTPTool(ctx, req.Exec, params)
 	case "shell":
 		writeErr(w, 400, "shell 类型工具是 bash 环境声明，无可执行内容")
 		return
@@ -175,7 +177,7 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "未知工具类型: "+req.Kind)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"output": res.Flatten(), "is_error": res.IsError})
+	writeJSON(w, 200, map[string]any{"output": toolkit.TextOf(res), "is_error": toolkit.Failed(res)})
 }
 
 // ---------- Python 解释器(检测 + 入库 + 覆盖) ----------
@@ -245,12 +247,12 @@ func timeoutOr(ms, def int) time.Duration {
 // customTools builds CoreTools for every user-defined (system=false) tool row.
 // shell-kind tools are environment hints only — they surface in the Bash tool
 // description via ToolResolve and do NOT create callable tool entries here.
-func (s *Server) customTools() ([]actool.CoreTool, error) {
+func (s *Server) customTools() ([]actool.CallableTool, error) {
 	rows, err := s.m.pg.ListCustomTools()
 	if err != nil {
 		return nil, err
 	}
-	out := make([]actool.CoreTool, 0, len(rows))
+	out := make([]actool.CallableTool, 0, len(rows))
 	for _, t := range rows {
 		if t.Kind == "shell" {
 			continue // shell hints are handled by ToolResolve → Bash description
@@ -262,10 +264,10 @@ func (s *Server) customTools() ([]actool.CoreTool, error) {
 
 // buildCustomTool turns one custom-tool row into a CoreTool. Empty schema → a thin
 // {args:string} (薄壳工具), so command/http templates can use {args}.
-func (s *Server) buildCustomTool(t *db.Tool) actool.CoreTool {
+func (s *Server) buildCustomTool(t *db.Tool) actool.CallableTool {
 	schema := ensureSchema(t.Schema)
 	key, kind, execRaw := t.Key, t.Kind, t.Exec
-	run := func(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+	run := func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 		var params map[string]any
 		if len(in) > 0 {
 			_ = json.Unmarshal(in, &params)
@@ -275,22 +277,16 @@ func (s *Server) buildCustomTool(t *db.Tool) actool.CoreTool {
 		}
 		switch kind {
 		case "command":
-			return s.runCommandTool(ctx, execRaw, params, tc)
+			return s.runCommandTool(ctx, execRaw, params)
 		case "script":
-			return s.runScriptTool(ctx, key, execRaw, params, tc)
+			return s.runScriptTool(ctx, key, execRaw, params)
 		case "http":
-			return s.runHTTPTool(ctx, execRaw, params, tc)
+			return s.runHTTPTool(ctx, execRaw, params)
 		default:
-			return actool.Errorf("未知自定义工具类型: " + kind), nil
+			return toolkit.Error("未知自定义工具类型: " + kind), nil
 		}
 	}
-	return actool.Build(actool.Spec{
-		Name: key, Description: t.Description, Schema: schema,
-		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
-			return permission.Allowed()
-		},
-		Run: run,
-	})
+	return toolkit.New(key, t.Description, schema, run)
 }
 
 // hasSchemaProps reports whether raw is a JSON-Schema object with ≥1 property.
@@ -328,11 +324,11 @@ func ensureSchema(raw json.RawMessage) map[string]any {
 
 // ---------- command:渲染命令 → 复用 Bash 底层 run ----------
 
-func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
+func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, params map[string]any) (toolkit.Output, error) {
 	var spec commandExec
 	_ = json.Unmarshal(execRaw, &spec)
 	if strings.TrimSpace(spec.Command) == "" {
-		return actool.Errorf("command 为空"), nil
+		return toolkit.Error("command 为空"), nil
 	}
 	cmd := renderTemplate(spec.Command, params, shellQuote)
 	// 复用 Bash 也在用的底层 run(经 Bash CoreTool.Call):自动继承安全 floor/超时/
@@ -343,34 +339,35 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 		ctx, cancel = context.WithTimeout(ctx, timeoutOr(spec.TimeoutMs, 120000))
 		defer cancel()
 	}
-	return actool.NewBash().Call(ctx, bashIn, tc)
+	result, err := agent.ExecuteCommand(ctx, bashIn)
+	return toolkit.Output{Text: toolkit.TextOf(result), IsError: toolkit.Failed(result)}, err
 }
 
 // ---------- script(仅 Python):临时文件 + stdin JSON + env ----------
 
-func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
+func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.RawMessage, params map[string]any) (toolkit.Output, error) {
 	var spec scriptExec
 	_ = json.Unmarshal(execRaw, &spec)
 	if strings.TrimSpace(spec.Code) == "" {
-		return actool.Errorf("script code 为空"), nil
+		return toolkit.Error("script code 为空"), nil
 	}
 	interp := s.pythonInterpreter()
 	if interp == "" {
-		return actool.Errorf("未配置且未检测到 python 解释器(在系统配置里设置)"), nil
+		return toolkit.Error("未配置且未检测到 python 解释器(在系统配置里设置)"), nil
 	}
 	workDir := s.m.dir
 	var sessionEnv []string
-	if tc != nil {
-		if tc.WorkingDir != "" {
-			workDir = tc.WorkingDir
+	if tc := toolkit.WorkspaceFrom(ctx); tc.Directory != "" {
+		if tc.Directory != "" {
+			workDir = tc.Directory
 		}
 		sessionEnv = tc.Env
 	}
 	body, err := execPython(ctx, interp, key, spec.Code, params, workDir, sessionEnv, timeoutOr(spec.TimeoutMs, 120000))
 	if err != nil {
-		return actool.Errorf(err.Error()), nil
+		return toolkit.Error(err.Error()), nil
 	}
-	return actool.Text(actool.Capture(tc, body)), nil
+	return toolkit.Text(toolkit.Capture(ctx, body)), nil
 }
 
 // execPython writes the code to a temp .py under workDir/.tools, runs it via interp
@@ -417,7 +414,7 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 
 // ---------- http:原生请求 + 代理 ----------
 
-func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
+func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, params map[string]any) (toolkit.Output, error) {
 	var spec httpExec
 	_ = json.Unmarshal(execRaw, &spec)
 	method := strings.ToUpper(strings.TrimSpace(spec.Method))
@@ -426,7 +423,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	rawURL := renderTemplate(spec.URL, params, identity)
 	if strings.TrimSpace(rawURL) == "" {
-		return actool.Errorf("http url 为空"), nil
+		return toolkit.Error("http url 为空"), nil
 	}
 	var bodyReader io.Reader
 	if spec.Body != "" {
@@ -436,7 +433,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	defer cancel()
 	req, err := http.NewRequestWithContext(runCtx, method, rawURL, bodyReader)
 	if err != nil {
-		return actool.Errorf(err.Error()), nil
+		return toolkit.Error(err.Error()), nil
 	}
 	for k, v := range spec.Headers {
 		req.Header.Set(k, renderTemplate(v, params, identity))
@@ -447,13 +444,13 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return actool.Errorf("请求失败: " + err.Error()), nil
+		return toolkit.Error("请求失败: " + err.Error()), nil
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	out := map[string]any{"status": resp.StatusCode, "body": string(respBody)}
 	b, _ := json.Marshal(out)
-	return actool.Text(actool.Capture(tc, string(b))), nil
+	return toolkit.Text(toolkit.Capture(ctx, string(b))), nil
 }
 
 // httpProxyTransport builds a Transport for the http tool's proxy config, or nil

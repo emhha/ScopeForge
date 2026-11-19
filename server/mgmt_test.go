@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestMgmtAPI exercises the PostgreSQL-backed management API through the real mux.
+// TestMgmtAPI exercises the SQLite-backed management API through the real mux.
 func TestMgmtAPI(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {

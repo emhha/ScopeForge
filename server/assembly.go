@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"io"
 	"log"
-	"path/filepath"
 	"strings"
+
+	"github.com/Autumn-27/artex/toolkit"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/skillcatalog"
 	"github.com/Autumn-27/artex/traffic"
-	"github.com/Autumn-27/norma/skill"
-	actool "github.com/Autumn-27/norma/tool"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // wireAgentAugment connects the PG agent_visibility table into the agent runtime:
@@ -22,162 +24,91 @@ import (
 // hostTools, if set, returns runtime host tools (currently the traffic tools when
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
-func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) {
-	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
-		a, err := pg.GetAgentByKey(agentKey)
-		if err != nil || a == nil {
-			return nil, agent.DeferredInfo{}, nil
+func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CallableTool, map[string][]string)) {
+	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CallableTool, agent.AugmentInfo, func()) {
+		role, err := pg.GetAgentByKey(agentKey)
+		if err != nil || role == nil {
+			return nil, agent.AugmentInfo{}, nil
 		}
-		var extra []actool.CoreTool
-
-		// --- skills: load visible skills into reg (used for the Skill meta-tool
-		// and to know which MCP servers are skill-gated). ---
-		var reg *skill.Registry
-		if names, _ := pg.AgentSkillNames(a.ID); len(names) > 0 {
-			nameSet := make(map[string]bool, len(names))
-			for _, n := range names {
-				nameSet[n] = true
-			}
-			if allReg, err := skill.LoadDir(skillDir); err == nil && allReg != nil {
-				reg = skill.NewRegistry()
-				for _, s := range allReg.List() {
-					// match by directory name (Base of Dir), not by skill display Name
-					if s.Dir != "" && nameSet[filepath.Base(s.Dir)] {
-						reg.Add(s)
-					}
-				}
-				if len(reg.List()) == 0 {
-					reg = nil
-				}
-			}
-		}
-		// A server named by any visible skill's `mcps:` is skill-gated: its tools
-		// are deferred + locked (not in the global block) until that skill loads.
-		gated := map[string]bool{}
-		if reg != nil {
-			for _, s := range reg.List() {
-				for _, srv := range s.MCPs {
-					gated[srv] = true
-				}
-			}
-		}
-
-		// --- mcp: connect enabled servers that are directly visible to this agent
-		// OR skill-gated (named in a visible skill's mcps field). Directly-visible
-		// and NOT gated → global (unlocked from session start). Skill-gated →
-		// deferred until that skill is invoked (regardless of direct visibility).
+		var extra []actool.CallableTool
 		var closers []io.Closer
-		serverTools := map[string][]string{} // server name → its tool names
-		var allNames, globalNames []string
-		globalSet := map[string]bool{}
-		{
-			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
-			want := idSet(mcpIDs)
-			all, _ := pg.ListMCP()
-			for _, m := range all {
-				if !m.Enabled {
-					continue
-				}
-				directVisible := want[m.ID]
-				skillGated := gated[m.Name]
-				if !directVisible && !skillGated {
-					continue // neither directly visible nor referenced by a visible skill
-				}
-				cl, err := connectMCP(ctx, m)
-				if err != nil {
-					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
-					continue
-				}
-				closers = append(closers, cl)
-				ts, err := cl.Tools(ctx)
-				if err != nil {
-					log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
-					continue
-				}
-				for _, t := range ts {
-					extra = append(extra, t)
-					allNames = append(allNames, t.Name())
-					serverTools[m.Name] = append(serverTools[m.Name], t.Name())
-					if directVisible && !skillGated {
-						// directly visible and not gated → available from session start
-						globalNames = append(globalNames, t.Name())
-						globalSet[t.Name()] = true
-					}
-					// skill-gated tools stay out of globalNames; unlocked via unlockSkill()
+		var opts []llmagent.Option
+		visible, _ := pg.AgentSkillNames(role.ID)
+		allowed := map[string]bool{}
+		for _, n := range visible {
+			allowed[n] = true
+		}
+		catalog, err := skillcatalog.Load(skillDir)
+		if err != nil {
+			log.Printf("[skills] %v", err)
+		}
+		gated := map[string][]string{}
+		if catalog != nil {
+			catalog = catalog.Filter(allowed)
+			if len(catalog.List()) > 0 {
+				opts = append(opts, llmagent.WithSkills(catalog.Repository()), llmagent.WithSkillToolProfile(llmagent.SkillToolProfileKnowledgeOnly))
+			}
+			for _, entry := range catalog.List() {
+				for _, server := range entry.MCPs {
+					gated[server] = append(gated[server], entry.Name)
 				}
 			}
 		}
-
-		// Shared call-gate: global MCP tools are unlocked from the start; skill-gated
-		// ones are unlocked when their skill loads (or replayed from history — C2).
-		unlock := actool.NewUnlockSet(globalNames...)
-		unlockSkill := func(skillName string) {
-			if reg == nil {
-				return
+		ids, _ := pg.AgentVisible(role.ID, "mcp")
+		direct := idSet(ids)
+		servers, _ := pg.ListMCP()
+		for _, m := range servers {
+			if !m.Enabled || (!direct[m.ID] && len(gated[m.Name]) == 0) {
+				continue
 			}
-			if s, ok := reg.Get(skillName); ok {
-				for _, srv := range s.MCPs {
-					unlock.Add(serverTools[srv]...)
+			client, err := connectMCP(ctx, m)
+			if err != nil {
+				log.Printf("[mcp] %s: %v", m.Name, err)
+				continue
+			}
+			closers = append(closers, client)
+			tools, err := client.Tools(ctx)
+			if err != nil {
+				log.Printf("[mcp] %s: %v", m.Name, err)
+				continue
+			}
+			if len(gated[m.Name]) == 0 {
+				extra = append(extra, tools...)
+			} else {
+				set := &nativeToolSet{name: m.Name}
+				for _, t := range tools {
+					set.tools = append(set.tools, t)
+				}
+				opts = append(opts, llmagent.WithToolSets([]actool.ToolSet{set}))
+				for _, skillName := range gated[m.Name] {
+					opts = append(opts, llmagent.WithToolActivationOnSkillLoad(skillName, []string{m.Name}))
 				}
 			}
 		}
-
-		// Skill meta-tool: on load, unlock the skill's MCPs and reveal their names
-		// (the ones not already in the global block).
-		if reg != nil {
-			reg.OnInvoke = func(s skill.Skill) string {
-				unlockSkill(s.Name)
-				var reveal []string
-				for _, srv := range s.MCPs {
-					for _, n := range serverTools[srv] {
-						if !globalSet[n] {
-							reveal = append(reveal, n)
-						}
-					}
-				}
-				return actool.RenderDeferredToolsBlock(reveal)
-			}
-			// Attribution for the usage ledger: ToolAugment only gets (ctx, agentKey),
-			// so the run's task/session ids ride in on the ctx (agent.RunInfo). Read it
-			// once here — this closure is rebuilt per run, so the captured value always
-			// belongs to this run.
-			extra = append(extra, meterSkillTool(reg.Tool(), pg, reg, a.Key, agent.RunInfoFrom(ctx)))
-		}
-
-		// host tools (traffic / orchestration / custom) — added to every agent's base;
-		// ToolResolve then keeps them only for agents the tool is bound to. Custom
-		// tools flagged deferred contribute their names to the deferred wiring so
-		// their schema is withheld (SearchExtraTools/ExecuteExtraTool), same as MCP.
 		if hostTools != nil {
-			ht, deferredBinds := hostTools()
-			extra = append(extra, ht...)
-			for name, boundAgents := range deferredBinds {
-				if !contains(boundAgents, a.Key) {
-					continue // only defer names this agent is actually bound to
-				}
-				allNames = append(allNames, name)       // schema withheld from the prompt
-				globalNames = append(globalNames, name) // advertised in the deferred block
-				globalSet[name] = true
-				if unlock != nil {
-					unlock.Add(name) // global deferred → callable from the start
-				}
-			}
+			tools, _ := hostTools()
+			extra = append(extra, tools...)
 		}
-
-		cleanup := func() {
+		callbacks := actool.NewCallbacks().RegisterAfterTool(func(ctx context.Context, args *actool.AfterToolArgs) (*actool.AfterToolResult, error) {
+			recordNativeSkill(ctx, pg, agentKey, &actool.BeforeToolArgs{ToolName: args.ToolName, Arguments: args.Arguments}, args.Error == nil)
+			return nil, nil
+		})
+		return extra, agent.AugmentInfo{AgentOptions: opts, Callbacks: callbacks, InteractiveShell: role.InteractiveShell}, func() {
 			for _, c := range closers {
 				_ = c.Close()
 			}
 		}
-		def := agent.DeferredInfo{
-			Deferred:    allNames,
-			GlobalNames: globalNames,
-			Unlock:      unlock,
-			UnlockSkill: unlockSkill,
-		}
-		return extra, def, cleanup
 	}
 }
+
+type nativeToolSet struct {
+	name  string
+	tools []actool.Tool
+}
+
+func (s *nativeToolSet) Name() string                        { return s.name }
+func (s *nativeToolSet) Tools(context.Context) []actool.Tool { return s.tools }
+func (s *nativeToolSet) Close() error                        { return nil }
 
 func idSet(ids []int64) map[int64]bool {
 	m := make(map[int64]bool, len(ids))
@@ -209,7 +140,7 @@ func seedPrompts(pg *db.DB) {
 // tool-assembly time each built-in tool is filtered by its agent binding / enabled
 // flag and, if kept, wrapped so the model sees the DB-overridden description/schema
 // and缺省入参 get injected. MCP/skill/host tools have no row and pass through.
-func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
+func wireTools(pg *db.DB, domainReg map[string]actool.CallableTool) {
 	agent.FindingTrafficBindingEnabled = func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
 	// Seed the built-in domain tools (first-insert only; DO NOTHING preserves edits).
 	// No startup prune: rows we didn't seed are left alone so future user-defined
@@ -227,16 +158,16 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	// capture is on), so an off-capture binding simply never surfaces the tool.
 	trafficAgents, _ := json.Marshal([]string{"worker"})
 	for _, t := range traffic.SeedToolMetas() {
-		schema, _ := json.Marshal(t.InputSchema())
-		if err := pg.SeedTool(t.Name(), t.Description(), schema, trafficAgents); err != nil {
-			log.Printf("[tools] seed %s 失败: %v", t.Name(), err)
+		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
+		if err := pg.SeedTool(t.Declaration().Name, t.Declaration().Description, schema, trafficAgents); err != nil {
+			log.Printf("[tools] seed %s 失败: %v", t.Declaration().Name, err)
 		}
 	}
 	// bashInteractiveShellNote is appended to Bash's description ONLY for agents whose
 	// interactive_shell is on, so Bash points at shell_open for interactive programs
 	// without ever referencing a tool that isn't injected (§14.1/§14.2).
 	const bashInteractiveShellNote = "\n\n需要【交互输入】的程序（msfconsole / ssh 交互登录 / mysql、psql、python 等 REPL / 密码或 yes/no 提示 / nc 反弹 shell）不要用 Bash（它没有 stdin、会卡住），改用 shell_open 开交互会话（用完 shell_close）。一次性、非交互命令仍用 Bash。"
-	agent.ToolResolve = func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool {
+	agent.ToolResolve = func(ctx context.Context, agentKey string, tools []actool.CallableTool) []actool.CallableTool {
 		rows, err := pg.ListTools()
 		if err != nil {
 			log.Printf("[tools] 读取工具表失败，按代码默认放行: %v", err)
@@ -247,7 +178,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			byKey[t.Key] = t
 		}
 		runInfo := agent.RunInfoFrom(ctx)
-		resolve := func(t actool.CoreTool, row *db.Tool) actool.CoreTool {
+		resolve := func(t actool.CallableTool, row *db.Tool) actool.CallableTool {
 			var schema map[string]any
 			if len(row.Schema) > 0 {
 				_ = json.Unmarshal(row.Schema, &schema)
@@ -256,7 +187,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		}
 		out := tools[:0:0]
 		for _, t := range tools {
-			row, known := byKey[t.Name()]
+			row, known := byKey[t.Declaration().Name]
 			if !known { // MCP/skill/host tool: no row → untouched
 				out = append(out, t)
 				continue
@@ -274,7 +205,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		if len(domainReg) > 0 {
 			inList := make(map[string]bool, len(tools))
 			for _, t := range tools {
-				inList[t.Name()] = true
+				inList[t.Declaration().Name] = true
 			}
 			for _, row := range rows {
 				if row.Kind == "shell" || !row.Enabled || !contains(row.Agents, agentKey) || inList[row.Key] {
@@ -299,8 +230,8 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		if len(shellHints) > 0 {
 			note := "\n\n以下工具已安装在此 bash 环境中，可直接通过 Bash 调用：\n" + strings.Join(shellHints, "\n")
 			for i, t := range out {
-				if t.Name() == "Bash" {
-					out[i] = agent.DecorateTool(t, t.Description()+note, t.InputSchema())
+				if t.Declaration().Name == "Bash" {
+					out[i] = agent.DecorateTool(t, t.Declaration().Description+note, toolkit.SchemaMap(t.Declaration().InputSchema))
 					break
 				}
 			}
@@ -309,17 +240,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// web_search), NOT by tools-table binding. When on, inject the 5 shell_* tools
 		// and COUPLE the Bash description addendum so it points at shell_open — and never
 		// dangles when off. See docs/交互式shell设计.md §14.2.
-		if !actool.InteractiveShellDisabled() {
-			if a, err := pg.GetAgentByKey(agentKey); err == nil && a != nil && a.InteractiveShell {
-				out = append(out, actool.ShellSessionTools()...)
-				for i, t := range out {
-					if t.Name() == "Bash" {
-						out[i] = agent.DecorateTool(t, t.Description()+bashInteractiveShellNote, t.InputSchema())
-						break
-					}
-				}
-			}
-		}
+
 		return out
 	}
 }
@@ -343,15 +264,15 @@ func contains(ss []string, v string) bool {
 // (they only need the AssetStore); the exploration-graph tools refuse with a
 // clear message via ToolSet.needExploration. Binding one of them to a task-less
 // agent in the tools table is therefore a useless tool, not a crash.
-func buildDomainReg(as *db.AssetStore) map[string]actool.CoreTool {
+func buildDomainReg(as *db.AssetStore) map[string]actool.CallableTool {
 	if as == nil {
 		return nil
 	}
 	serverTS := agent.NewToolSet(nil, "")
 	serverTS.SetAssetStore(as, as.Companies())
-	reg := make(map[string]actool.CoreTool)
+	reg := make(map[string]actool.CallableTool)
 	for _, t := range serverTS.AllDomainTools() {
-		reg[t.Name()] = t
+		reg[t.Declaration().Name] = t
 	}
 	return reg
 }

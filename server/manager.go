@@ -21,7 +21,8 @@ import (
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/traffic"
-	actool "github.com/Autumn-27/norma/tool"
+	"trpc.group/trpc-go/trpc-agent-go/session"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -217,6 +218,7 @@ type DeleteTaskResult struct {
 // Manager owns the SQLite data source (asset graph + every task's exploration
 // graph + config) and the in-memory set of task handles.
 type Manager struct {
+	sessions    session.Service
 	dir         string
 	pg          *pgdb.DB
 	assets      *pgdb.AssetStore
@@ -272,10 +274,7 @@ const (
 	// 任务并发上限:开关 + 上限数。默认关闭;开启后默认上限 5(见 defaultConcurrencyLimit)。
 	settingConcurrencyOn    = "task_concurrency_enabled"
 	settingConcurrencyLimit = "task_concurrency_limit"
-	// 实验功能:noa 模型驱动上下文压缩(norma v0.4.0)。默认关闭——开启后平台接入的四类
-	// agent(planner/worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction。
 	// 每 run 读一次,切换只影响之后启动的 run。
-	settingNoaCompaction = "noa_compaction"
 	// defaultWebSearchBackend is used when web search is on but no backend was picked.
 	defaultWebSearchBackend = "ddgs"
 	// deepSeekWebSearchBackend borrows the active LLM profile instead of its own
@@ -368,7 +367,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		pg.Close()
 		return nil, fmt.Errorf("recover finding retests: %w", err)
 	}
-	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	m := &Manager{sessions: agent.NewSessionService(), dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -485,19 +484,6 @@ func (m *Manager) SetLLMRecordEnabled(on bool) error {
 	m.llmRecOn = on
 	m.mu.Unlock()
 	return nil
-}
-
-// NoaCompactionEnabled reports whether the experimental noa context-compression
-// mechanism is on (默认关；settings.noa_compaction). Read per agent run via the
-// injected resolver, so a toggle takes effect on the next run without rebuild.
-func (m *Manager) NoaCompactionEnabled() bool {
-	return m.pg.GetBool(settingNoaCompaction, false)
-}
-
-// SetNoaCompaction persists the noa toggle. Effective on the next agent run —
-// the resolver reads it per run, so no rebuild is needed.
-func (m *Manager) SetNoaCompaction(on bool) error {
-	return m.pg.SetBool(settingNoaCompaction, on)
 }
 
 // LLMPoolEnabled reports whether LLM failover ("轮询") is on (默认关；
@@ -721,7 +707,7 @@ func encodeJSON(v any) json.RawMessage {
 // ToolAugment); the tools table then filters them per-agent binding. Currently the
 // traffic tools, gated by the global capture switch: empty when capture is off, so
 // no agent gets traffic_search/traffic_get regardless of binding.
-func (m *Manager) HostTools() []actool.CoreTool {
+func (m *Manager) HostTools() []actool.CallableTool {
 	if m.traffic == nil || !m.TrafficEnabled() {
 		return nil
 	}
@@ -796,6 +782,9 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 }
 
 func (m *Manager) Close() error {
+	if m.sessions != nil {
+		_ = m.sessions.Close()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.traffic != nil {
@@ -1480,6 +1469,7 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	if err != nil {
 		return result, rollbackTaskDelete(err, trafficStage, fileStage)
 	}
+	m.forgetTaskSessions(n, registered.ExplorationID)
 	result.AssetsDeleted = dbResult.AssetsDeleted
 	result.AssetsDetached = dbResult.AssetsDetached
 	result.FindingsDeleted = dbResult.FindingsDeleted

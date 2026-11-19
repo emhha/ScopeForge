@@ -308,7 +308,7 @@ func (s *ExplorationStore) DeleteGoal(id int64) error {
 // ResetRunningIntents returns any intent left in 'running' back to 'open' so it
 // is re-claimed. Called on startup: a 'running' intent with no live worker (a
 // backend restart or crashed worker goroutine left it stuck) would otherwise spin
-// forever in the UI. Workers resume from their transcript, so reopening is safe.
+// forever in the UI. Workers retain graph writes and may continue a live in-memory session.
 func (s *ExplorationStore) ResetRunningIntents() (int64, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
 WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
@@ -321,7 +321,7 @@ WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 
 // ReopenIntent flips ONE not-successfully-finished intent (blocked/exhausted/stopped)
 // back to 'open' so a worker re-claims it (graph writes it already produced stay).
-// The worker resumes from its prior LLM transcript instead of restarting from scratch.
+// The worker can reuse a live session; after restart it begins with graph context.
 // done/open/running are left untouched. Returns whether a row changed. Used by "重跑".
 func (s *ExplorationStore) ReopenIntent(id int64) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes
@@ -337,7 +337,7 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent'
 
 // ReopenBlockedIntents flips EVERY 'blocked' intent in this exploration back to 'open'
 // (batch rerun after e.g. an LLM/network outage that blocked many at once). Returns the
-// number reopened. Workers resume from their transcripts; kept graph writes remain.
+// number reopened. Kept graph writes remain; model context only survives within the running process.
 func (s *ExplorationStore) ReopenBlockedIntents() (int64, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
 WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
@@ -412,9 +412,6 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, er
 		return "", err
 	}
 	// 主意图审计轨迹保留,但副问答会话随删除态原子清理(延迟快照会拒绝它)。
-	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE intent_id=$1`, id); err != nil {
-		return "", err
-	}
 	var summary string
 	var p map[string]any
 	if json.Unmarshal(rawPayload, &p) == nil {
@@ -566,9 +563,6 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 				bucket.Usage.CacheReadTokens, bucket.Usage.CacheWriteTokens, bucket.Day); err != nil {
 				return out, err
 			}
-		}
-		if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE intent_id=$1`, iid); err != nil {
-			return out, err
 		}
 	}
 

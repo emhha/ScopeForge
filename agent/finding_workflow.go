@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 const findingIDGuidance = "\n\n**漏洞编号约定**：finding_id 是独立漏洞记录 ID；finding_node_id 是探索节点 ID。list_findings / list_task_findings / node_detail / get_task_node_detail 的 id 保留为探索节点 ID，应从同一返回的 finding_id 读取独立编号。get_finding_traffic / bind_finding_traffic 用独立 finding_id。旧 update_finding_report 的 finding_id 参数仍传 finding_node_id。不要把 report_finding 第一行的数字用于证据工具，也不要遇到编号错误后猜测其他数字。"
@@ -22,36 +24,36 @@ func findingTrafficBindingEnabled() bool {
 // Applied after ToolResolve: user descriptions and prompts remain intact, while
 // all actual reporters (including Planner and custom chat agents) see the same
 // API contract. Disabled/unbound tools are never reintroduced here.
-func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.CoreTool, string) {
+func findingWorkflowTools(agentKey string, tools []actool.CallableTool) ([]actool.CallableTool, string) {
 	if !findingTrafficBindingEnabled() {
-		out := make([]actool.CoreTool, 0, len(tools))
+		out := make([]actool.CallableTool, 0, len(tools))
 		for _, tool := range tools {
-			if tool.Name() == "bind_finding_traffic" {
+			if tool.Declaration().Name == "bind_finding_traffic" {
 				continue
 			}
-			if agentKey == "reporter" && (tool.Name() == "traffic_search" || tool.Name() == "traffic_get" || tool.Name() == "traffic_blob") {
+			if agentKey == "reporter" && (tool.Declaration().Name == "traffic_search" || tool.Declaration().Name == "traffic_get" || tool.Declaration().Name == "traffic_blob") {
 				continue
 			}
-			switch tool.Name() {
+			switch tool.Declaration().Name {
 			case "report_finding", "add_hint", "add_task_hint":
 				// Work on a copy: toggling back on must restore the original schema.
-				raw, _ := json.Marshal(tool.InputSchema())
+				raw, _ := json.Marshal(toolkit.SchemaMap(tool.Declaration().InputSchema))
 				var schema map[string]any
 				if json.Unmarshal(raw, &schema) == nil {
 					stripTrafficParameters(schema)
-					tool = DecorateTool(tool, tool.Description(), schema)
+					tool = DecorateTool(tool, tool.Declaration().Description, schema)
 				}
 			}
 			out = append(out, tool)
 		}
 		return out, ""
 	}
-	out := append([]actool.CoreTool(nil), tools...)
+	out := append([]actool.CallableTool(nil), tools...)
 	has := map[string]bool{}
 	for i, tool := range out {
-		has[tool.Name()] = true
+		has[tool.Declaration().Name] = true
 		note := ""
-		switch tool.Name() {
+		switch tool.Declaration().Name {
 		case "report_finding":
 			note = "\n默认由报告 Agent 在编写报告前核对并绑定流量。上报者在 evidence 中保留验证命令、关键输出、已有的真实流量 ID 及其用途，供报告 Agent 对照执行记录核实；无需为绑定额外查包。兼容显式即时绑定：traffic_refs 或 evidence_hint_id 可提交已核实的引用，后者读取本任务指定 hint 的结构化引用；任一无效则本次上报全部失败。TCP/无包不需要这些可选参数。返回 finding_id 与 finding_node_id 分别表示独立记录和探索节点。"
 		case "add_hint", "add_task_hint":
@@ -60,7 +62,7 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 			note = findingIDGuidance
 		}
 		if note != "" {
-			out[i] = DecorateTool(tool, tool.Description()+note, tool.InputSchema())
+			out[i] = DecorateTool(tool, tool.Declaration().Description+note, toolkit.SchemaMap(tool.Declaration().InputSchema))
 		}
 	}
 	guidance := ""

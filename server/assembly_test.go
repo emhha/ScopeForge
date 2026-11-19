@@ -6,15 +6,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 )
 
 // hasSkillTool reports whether the packed tool set contains the Skill meta-tool.
-func hasSkillTool(tools []actool.CoreTool) bool {
-	for _, t := range tools {
-		if t.Name() == "Skill" {
+func hasSkillTool(options []llmagent.Option) bool {
+	ag := llmagent.New("fixture", options...)
+	for _, item := range ag.Tools() {
+		if item.Declaration().Name == "skill_load" {
 			return true
 		}
 	}
@@ -61,9 +63,9 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	t.Cleanup(func() { _ = pg.SetAgentSkillVisibility(ag.ID, orig) })
 
 	// before: skill not visible → no Skill meta-tool
-	extra, _, cleanup := agent.ToolAugment(context.Background(), "planner")
+	_, def, cleanup := agent.ToolAugment(context.Background(), "planner")
 	cleanup()
-	if hasSkillTool(extra) {
+	if hasSkillTool(def.AgentOptions) {
 		t.Fatalf("expected no Skill meta-tool before the skill is made visible")
 	}
 
@@ -74,16 +76,16 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	t.Cleanup(func() { _ = pg.ToggleSkillVisibility(ag.ID, skillName, false) })
 
 	// after: the Skill meta-tool is packed in
-	extra, _, cleanup = agent.ToolAugment(context.Background(), "planner")
+	_, def, cleanup = agent.ToolAugment(context.Background(), "planner")
 	defer cleanup()
-	if !hasSkillTool(extra) {
+	if !hasSkillTool(def.AgentOptions) {
 		t.Fatalf("expected the Skill meta-tool after making the skill visible")
 	}
 
 	// AugmentTools appends extra to base without filtering base
-	combined, _, c2 := agent.AugmentTools(context.Background(), "planner", nil)
+	_, combinedDef, c2 := agent.AugmentTools(context.Background(), "planner", nil)
 	defer c2()
-	if !hasSkillTool(combined) {
+	if !hasSkillTool(combinedDef.AgentOptions) {
 		t.Fatalf("AugmentTools should surface the Skill meta-tool")
 	}
 }

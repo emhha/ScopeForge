@@ -1,3 +1,5 @@
+> 历史验证记录：本文件描述迁移前的实现，不代表当前运行时。当前已使用原生 tRPC-Agent-Go 和内存 checkpoint；SQLite/原生 Runner 的验收范围见 [迁移说明](../MIGRATION_PLAN.md)，自动测试使用临时 SQLite，无需外部数据库。
+
 # `/btw` 验证记录
 
 日期：2026-09-10。分支：`codex/btw-side-question`。基线：`8dae851b9b622f2ff2631f332fde9719d0b16fba`。

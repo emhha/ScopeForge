@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // assetInterceptCandidates 提取一条待插入资产输入项的 域名/IP/URL 候选串，用于资产拦截匹配。
@@ -119,7 +121,7 @@ type assetInputItem struct {
 }
 
 // insertAssets is the unified insert_assets agent tool.
-func (t *ToolSet) insertAssets() actool.CoreTool {
+func (t *ToolSet) insertAssets() actool.CallableTool {
 	return writeTool(
 		"insert_assets",
 		"批量登记新发现的资产，一次可混合多种类型（type 见枚举）。\n"+
@@ -200,15 +202,15 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				}, "type"),
 			},
 		}, "assets"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			if t.as == nil {
-				return actool.Errorf("insert_assets 未启用: AssetStore 未初始化"), nil
+				return toolkit.Error("insert_assets 未启用: AssetStore 未初始化"), nil
 			}
 			var a struct {
 				Assets []assetInputItem `json:"assets"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
-				return actool.Errorf("invalid input: " + err.Error()), nil
+				return toolkit.Error("invalid input: " + err.Error()), nil
 			}
 			// task_id 由程序权威赋值(worker: SetTaskID)，不接受模型传入——避免模型漏传/错传
 			// 导致资产未归任务或归错任务。无任务上下文的调用方(auto/pentest/chat)其 t.taskID=0。
@@ -374,7 +376,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 }
 
 // addCompanyScope writes to company_scope table and triggers asset attribution.
-func (t *ToolSet) addCompanyScope() actool.CoreTool {
+func (t *ToolSet) addCompanyScope() actool.CallableTool {
 	return writeTool(
 		"add_company_scope",
 		"把域名/IP/CIDR/ICP备案/企业关键词加入某公司的【资产范围】——域名、网络和ICP会自动认领命中的资产，关键词只提供给Agent作为范围提示。\n"+
@@ -388,9 +390,9 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 			"reason":  str("归属依据(证据/来源)，务必填写"),
 			"logo":    str("公司图标 URL(可选；仅新建公司时生效)"),
 		}, "company", "scope"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			if t.cs == nil {
-				return actool.Errorf("add_company_scope 未启用: CompanyStore 未初始化"), nil
+				return toolkit.Error("add_company_scope 未启用: CompanyStore 未初始化"), nil
 			}
 			var a struct {
 				Company string `json:"company"`
@@ -399,14 +401,14 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 				Logo    string `json:"logo"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			if strings.TrimSpace(a.Company) == "" {
-				return actool.Errorf("company 不能为空"), nil
+				return toolkit.Error("company 不能为空"), nil
 			}
 			companyID, _, err := t.cs.UpsertCompany(a.Company, a.Logo)
 			if err != nil {
-				return actool.Errorf("创建/获取公司失败: " + err.Error()), nil
+				return toolkit.Error("创建/获取公司失败: " + err.Error()), nil
 			}
 			lines := splitLines(a.Scope)
 			added, skipped, invalid, errMsgs := t.cs.AddScope(companyID, lines, a.Reason)
@@ -428,7 +430,7 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 // denominator and the task's authorization edge. Worker discoveries are auto-scoped
 // (precise host) by insertAssets; this tool is for DELIBERATELY WIDENING: pull a whole
 // root domain or whole company into scope, or add a specific subdomain / ip.
-func (t *ToolSet) addTaskScope() actool.CoreTool {
+func (t *ToolSet) addTaskScope() actool.CallableTool {
 	return writeTool(
 		"add_task_scope",
 		"把测试范围加入【本任务】——这是本任务的授权边界，也是资产测试覆盖度的分母。\n"+
@@ -442,12 +444,12 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 			"value":   str("[单条] 公司名或id / 域名 / IP / CIDR / ICP / 关键词"),
 			"reason":  str("加入依据(用于审计)，务必填写"),
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			if t.as == nil {
-				return actool.Errorf("add_task_scope 未启用: AssetStore 未初始化"), nil
+				return toolkit.Error("add_task_scope 未启用: AssetStore 未初始化"), nil
 			}
 			if t.taskID <= 0 {
-				return actool.Errorf("add_task_scope 需要任务上下文(当前无 task)"), nil
+				return toolkit.Error("add_task_scope 需要任务上下文(当前无 task)"), nil
 			}
 			type scopeEntry struct {
 				Kind  string `json:"kind"`
@@ -484,7 +486,7 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 
 // listUntestedAssets lets the plan agent pull the current + directly inherited
 // scope's not-yet-tested assets on demand (filter by type, paginated).
-func (t *ToolSet) listUntestedAssets() actool.CoreTool {
+func (t *ToolSet) listUntestedAssets() actool.CallableTool {
 	return readTool(
 		"list_untested_assets",
 		"查询【本任务及直接关联任务】范围内、还没被事实锚点覆盖的资产（关联范围只读，供你自己判断要不要补测，不代替你决策）。\n"+
@@ -495,12 +497,12 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 			"page":      intp("页码，从 1 起（默认 1）"),
 			"page_size": intp("每页数量（默认 10）"),
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			if t.as == nil {
-				return actool.Errorf("list_untested_assets 未启用: AssetStore 未初始化"), nil
+				return toolkit.Error("list_untested_assets 未启用: AssetStore 未初始化"), nil
 			}
 			if t.taskID <= 0 || t.ts == nil {
-				return actool.Errorf("list_untested_assets 需要任务上下文"), nil
+				return toolkit.Error("list_untested_assets 需要任务上下文"), nil
 			}
 			var a struct {
 				Type     string `json:"type"`
@@ -517,7 +519,7 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 			offset := (a.Page - 1) * a.PageSize
 			assets, total, err := t.as.ListUntestedAssetsWithSources(t.taskID, strings.TrimSpace(a.Type), a.PageSize, offset)
 			if err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			return jsonResult(map[string]any{
 				"assets": assets, "total": total, "page": a.Page, "page_size": a.PageSize,
@@ -527,7 +529,7 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 }
 
 // listAssets lets an agent query the asset table.
-func (t *ToolSet) listAssets() actool.CoreTool {
+func (t *ToolSet) listAssets() actool.CallableTool {
 	return readTool(
 		"list_assets",
 		"查询资产库：DSL 表达式搜索，或按 id/ids 直取；支持分页。只返回【本任务及直接关联任务】测试范围内的资产。\n"+
@@ -543,9 +545,9 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			"limit":  intp("返回上限，默认 10（可选）"),
 			"offset": intp("分页偏移，默认 0（可选）"),
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			if t.as == nil {
-				return actool.Errorf("list_assets 未启用: AssetStore 未初始化"), nil
+				return toolkit.Error("list_assets 未启用: AssetStore 未初始化"), nil
 			}
 			var a struct {
 				DSL    string  `json:"dsl"`
@@ -570,10 +572,10 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			case a.DSL != "":
 				assets, err = t.as.QueryDSLInScope(a.DSL, a.Type, t.taskID, a.Limit, a.Offset)
 			default:
-				return actool.Errorf("未传 id/ids 时 dsl 不能为空：不允许无条件查询全部资产，请提供查询条件"), nil
+				return toolkit.Error("未传 id/ids 时 dsl 不能为空：不允许无条件查询全部资产，请提供查询条件"), nil
 			}
 			if err != nil {
-				return actool.Errorf("DSL 错误: " + err.Error()), nil
+				return toolkit.Error("DSL 错误: " + err.Error()), nil
 			}
 			return jsonResult(map[string]any{
 				"count":  len(assets),
@@ -584,7 +586,7 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 }
 
 // listCompanies lets an agent enumerate companies (企业) with their scope + asset count.
-func (t *ToolSet) listCompanies() actool.CoreTool {
+func (t *ToolSet) listCompanies() actool.CallableTool {
 	return readTool(
 		"list_companies",
 		"列出资产库中的【企业/公司】及其资产范围(scope)与已归属资产数。用于查看有哪些公司、"+
@@ -593,9 +595,9 @@ func (t *ToolSet) listCompanies() actool.CoreTool {
 		obj(map[string]any{
 			"search": str("按公司名模糊过滤(可选，不区分大小写)；留空返回全部"),
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			if t.cs == nil {
-				return actool.Errorf("list_companies 未启用: CompanyStore 未初始化"), nil
+				return toolkit.Error("list_companies 未启用: CompanyStore 未初始化"), nil
 			}
 			var a struct {
 				Search string `json:"search"`
@@ -603,7 +605,7 @@ func (t *ToolSet) listCompanies() actool.CoreTool {
 			_ = json.Unmarshal(in, &a)
 			cos, err := t.cs.ListCompanies()
 			if err != nil {
-				return actool.Errorf("查询公司失败: " + err.Error()), nil
+				return toolkit.Error("查询公司失败: " + err.Error()), nil
 			}
 			q := strings.ToLower(strings.TrimSpace(a.Search))
 			type companyOut struct {
@@ -641,8 +643,8 @@ func splitLines(s string) []string {
 }
 
 // WorkerTools returns the tool set for a work agent.
-func (t *ToolSet) WorkerTools() []actool.CoreTool {
-	return []actool.CoreTool{
+func (t *ToolSet) WorkerTools() []actool.CallableTool {
+	return []actool.CallableTool{
 		// list_findings 保留：报漏洞前先查本任务已确认漏洞，避免重复上报同一漏洞。
 		t.listFindings(),
 		t.addFinding(), t.recordFact(),
@@ -661,8 +663,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 }
 
 // MainAgentTools returns the human-interface tool set.
-func (t *ToolSet) MainAgentTools() []actool.CoreTool {
-	return []actool.CoreTool{
+func (t *ToolSet) MainAgentTools() []actool.CallableTool {
+	return []actool.CallableTool{
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		t.expandDigest(), // cold-digest §6.1
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.addHint(), t.addIntent(),
@@ -685,13 +687,13 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 // deduped by name (mainagent order wins). Used by the server to build a registry
 // for injecting domain tools into agents (Auto, custom) that don't own a per-task
 // ToolSet. The caller provides real stores; tools are callable at taskID=0 scope.
-func (t *ToolSet) AllDomainTools() []actool.CoreTool {
+func (t *ToolSet) AllDomainTools() []actool.CallableTool {
 	seen := map[string]bool{}
-	var out []actool.CoreTool
+	var out []actool.CallableTool
 	all := append(append(t.MainAgentTools(), t.PlannerTools()...), t.WorkerTools()...)
 	for _, tool := range all {
-		if !seen[tool.Name()] {
-			seen[tool.Name()] = true
+		if !seen[tool.Declaration().Name] {
+			seen[tool.Declaration().Name] = true
 			out = append(out, tool)
 		}
 	}

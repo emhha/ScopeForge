@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/traffic"
@@ -231,8 +233,8 @@ func TestFindingTrafficAPIAndExport(t *testing.T) {
 		t.Fatalf("missing attachments/links: %d %v", binaries, linked)
 	}
 	// Reports can use snapshots with capture stopped and original rows gone.
-	result, err := s.toolGetFindingTraffic().Call(context.Background(), json.RawMessage(fmt.Sprintf(`{"finding_id":"%d"}`, f.FindingID)), nil)
-	if err != nil || !strings.Contains(result.Flatten(), "proof note") {
+	result, err := s.toolGetFindingTraffic().Call(context.Background(), json.RawMessage(fmt.Sprintf(`{"finding_id":"%d"}`, f.FindingID)))
+	if err != nil || !strings.Contains(toolkit.TextOf(result), "proof note") {
 		t.Fatal(result, err)
 	}
 	// Corrupt body must fail before an attachment response is sent.
@@ -349,8 +351,8 @@ func TestFindingTrafficArchiveV3RoundTripAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The read tool enforces task visibility too.
-	result, err := s.toolGetFindingTraffic().Call(agent.WithRunInfo(ctx, agent.RunInfo{TaskID: sid}), json.RawMessage(fmt.Sprintf(`{"finding_id":"%d"}`, f.FindingID)), nil)
-	if err != nil || !strings.Contains(result.Flatten(), "不可读取") {
+	result, err := s.toolGetFindingTraffic().Call(agent.WithRunInfo(ctx, agent.RunInfo{TaskID: sid}), json.RawMessage(fmt.Sprintf(`{"finding_id":"%d"}`, f.FindingID)))
+	if err != nil || !strings.Contains(toolkit.TextOf(result), "不可读取") {
 		t.Fatal(result, err)
 	}
 }
@@ -451,8 +453,8 @@ func TestFindingTrafficUTF8SegmentsAndInheritedWrites(t *testing.T) {
 	if _, err = s.m.traffic.DeleteHost("evidence.local"); err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.toolUpdateFindingReport().Call(ctx, json.RawMessage(fmt.Sprintf(`{"finding_id":%d,"evidence_version":1,"report":"## 证据报告\n\n证据 #%d：已验证完整请求响应"}`, f.NodeID, list.Bindings[0].ID)), nil)
-	if err != nil || result.IsError {
+	result, err := s.toolUpdateFindingReport().Call(ctx, json.RawMessage(fmt.Sprintf(`{"finding_id":%d,"evidence_version":1,"report":"## 证据报告\n\n证据 #%d：已验证完整请求响应"}`, f.NodeID, list.Bindings[0].ID)))
+	if err != nil || toolkit.Failed(result) {
 		t.Fatal(result, err)
 	}
 	updated, err := s.m.pg.GetFinding(f.FindingID)

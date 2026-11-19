@@ -1,7 +1,7 @@
 // Package mcphttp contains remote Streamable HTTP and legacy SSE MCP clients.
 //
 // The core mcp package only speaks stdio; this adapts an HTTP/JSON-RPC MCP server
-// to the same tool.CoreTool shape (mcp__server__tool) WITHOUT touching the SDK.
+// to the same tool.CallableTool shape (mcp__server__tool) WITHOUT touching the SDK.
 // It implements the MCP "Streamable HTTP" transport: JSON-RPC over HTTP POST, with
 // the server free to answer either as application/json or a text/event-stream (SSE)
 // carrying the response. Custom headers (e.g. Authorization) come from the MCP
@@ -23,9 +23,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/artex/toolkit"
+
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 const protocolVersion = "2025-06-18"
@@ -58,6 +58,7 @@ func (e *rpcError) Error() string { return fmt.Sprintf("mcp rpc error %d: %s", e
 // Client is a connection to one remote MCP server. New uses Streamable HTTP;
 // NewSSE uses the legacy GET /sse + POST /message transport.
 type Client struct {
+	stdio   *stdioTransport
 	server  string
 	url     string
 	headers map[string]string
@@ -255,7 +256,7 @@ func (c *Client) initialize(ctx context.Context) error {
 }
 
 // Tools lists the server's tools and adapts them to CoreTools.
-func (c *Client) Tools(ctx context.Context) ([]actool.CoreTool, error) {
+func (c *Client) Tools(ctx context.Context) ([]actool.CallableTool, error) {
 	raw, err := c.call(ctx, "tools/list", map[string]any{})
 	if err != nil {
 		return nil, err
@@ -266,7 +267,7 @@ func (c *Client) Tools(ctx context.Context) ([]actool.CoreTool, error) {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return nil, err
 	}
-	out := make([]actool.CoreTool, 0, len(res.Tools))
+	out := make([]actool.CallableTool, 0, len(res.Tools))
 	for _, rt := range res.Tools {
 		out = append(out, c.wrap(rt))
 	}
@@ -279,47 +280,39 @@ type remoteTool struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-func (c *Client) wrap(rt remoteTool) actool.CoreTool {
+func (c *Client) wrap(rt remoteTool) actool.CallableTool {
 	schema := rt.InputSchema
 	if schema == nil {
 		schema = map[string]any{"type": "object"}
 	}
 	full := ToolName(c.server, rt.Name)
-	return actool.Build(actool.Spec{
-		Name:        full,
-		Description: rt.Description,
-		Schema:      schema,
-		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
-			return permission.AskUser("call MCP tool " + full + "?")
-		},
-		Run: func(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
-			var args any
-			if len(in) > 0 {
-				_ = json.Unmarshal(in, &args)
-			}
-			raw, err := c.call(ctx, "tools/call", map[string]any{"name": rt.Name, "arguments": args})
-			if err != nil {
-				return actool.Errorf("Error: " + err.Error()), nil
-			}
-			var res struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-				IsError bool `json:"isError"`
-			}
-			if err := json.Unmarshal(raw, &res); err != nil {
-				return actool.Errorf("Error: bad MCP response: " + err.Error()), nil
-			}
-			var text string
-			for _, blk := range res.Content {
-				text += blk.Text
-			}
-			// 与内置/自定义工具一致：超长输出走 Capture——按会话 MaxOutputChars（默认
-			// 30000）截断，配了 ToolOutputDir 时全量溢写到磁盘只留 head + 指针，避免大
-			// MCP 结果整段灌爆上下文。
-			return actool.Result{Content: []llm.ContentBlock{llm.TextBlock(actool.Capture(tc, text))}, IsError: res.IsError}, nil
-		},
+	return toolkit.New(full, rt.Description, schema, func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
+		var args any
+		if len(in) > 0 {
+			_ = json.Unmarshal(in, &args)
+		}
+		raw, err := c.call(ctx, "tools/call", map[string]any{"name": rt.Name, "arguments": args})
+		if err != nil {
+			return toolkit.Error("Error: " + err.Error()), nil
+		}
+		var res struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		}
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return toolkit.Error("Error: bad MCP response: " + err.Error()), nil
+		}
+		var text string
+		for _, blk := range res.Content {
+			text += blk.Text
+		}
+		// 与内置/自定义工具一致：超长输出走 Capture——按会话 MaxOutputChars（默认
+		// 30000）截断，配了 ToolOutputDir 时全量溢写到磁盘只留 head + 指针，避免大
+		// MCP 结果整段灌爆上下文。
+		return toolkit.Output{Text: toolkit.Capture(ctx, text), IsError: res.IsError}, nil
 	})
 }
 
@@ -355,6 +348,9 @@ func (c *Client) Call(ctx context.Context, tool string, args any) (string, error
 // Close terminates the MCP session best-effort (DELETE with the session id, per the
 // Streamable HTTP spec). Servers that don't track sessions simply ignore it.
 func (c *Client) Close() error {
+	if c.stdio != nil {
+		return c.stdio.Close()
+	}
 	if c.legacySSE {
 		if c.streamCancel != nil {
 			c.streamCancel()
@@ -417,6 +413,9 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 // server replies 202 Accepted with no body. Otherwise the reply is parsed from JSON
 // or from an SSE stream, whichever the server chose.
 func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
+	if c.stdio != nil {
+		return c.stdio.roundTrip(ctx, body, expectResp)
+	}
 	if c.legacySSE {
 		return c.legacyRoundTrip(ctx, body, expectResp)
 	}

@@ -9,13 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/toolkit"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/Autumn-27/artex/sessionctx"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-// Full chain against a real PG: Recorder → norma provider → capturing transport
 // → llm_records. The unit tests cover each hop; this proves the raw bodies
 // actually survive all the way into the row an operator opens when debugging.
 func TestRecorderPersistsRawWireBodies(t *testing.T) {
@@ -29,6 +31,9 @@ func TestRecorderPersistsRawWireBodies(t *testing.T) {
 	sse := strings.Join([]string{
 		`event: message_start`,
 		`data: {"type":"message_start","message":{"id":"msg_raw","usage":{"input_tokens":5,"output_tokens":1}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 		``,
 		`event: content_block_delta`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"probing"}}`,
@@ -55,8 +60,8 @@ func TestRecorderPersistsRawWireBodies(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := agent.Config{Format: llm.FormatAnthropic, BaseURL: srv.URL, APIKey: "k", Model: "claude-raw-test"}
-	inner, err := cfg.NewProvider()
+	cfg := agent.Config{Format: "anthropic", BaseURL: srv.URL, APIKey: "k", Model: "claude-raw-test"}
+	inner, err := cfg.NewModel()
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
@@ -72,19 +77,16 @@ func TestRecorderPersistsRawWireBodies(t *testing.T) {
 		}
 	}()
 
-	ctx := transcript.WithSessionID(context.Background(), session)
-	for _, err := range rec.Stream(ctx, llm.CompletionRequest{
-		System:   []string{"system prompt"},
-		Messages: []llm.Message{{Role: "user", Content: []llm.ContentBlock{{Type: "text", Text: "go"}}}},
-		Tools: []llm.ToolSchema{{
-			Name:        "bash",
-			Description: "run a shell command",
-			InputSchema: map[string]any{"type": "object"},
-		}},
-		MaxTokens: 512,
-	}) {
-		if err != nil {
-			t.Fatalf("stream: %v", err)
+	ctx := sessionctx.WithID(context.Background(), session)
+	tokens := 512
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleSystem, Content: "system prompt"}, {Role: llm.RoleUser, Content: "go"}}, GenerationConfig: llm.GenerationConfig{Stream: true, MaxTokens: &tokens}, Tools: map[string]actool.Tool{"bash": toolkit.New("bash", "run a shell command", map[string]any{"type": "object"}, nil)}}
+	source, err := rec.GenerateContent(ctx, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ev := range source {
+		if ev.Error != nil {
+			t.Fatal(ev.Error)
 		}
 	}
 

@@ -216,6 +216,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	if err := s.m.pg.CompleteTaskArchive(job.ID, snapshot, archivePath, checksum, originalSize, compressedSize); err != nil {
 		return err
 	}
+	s.m.forgetTaskSessions(snapshot.TaskID, snapshot.ExplorationID)
 	committed = true
 	removePackage = false
 	if trafficStage != nil {

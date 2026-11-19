@@ -2,10 +2,9 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -19,21 +18,21 @@ type toolUsageRecorder interface {
 // embeds the resolved tool so schema overrides, defaults and permission behavior
 // remain unchanged.
 type meteredTool struct {
-	actool.CoreTool
+	actool.CallableTool
 	recorder toolUsageRecorder
 	toolKey  string
 	agentKey string
 	ri       agent.RunInfo
 }
 
-func meterTool(t actool.CoreTool, recorder toolUsageRecorder, toolKey, agentKey string, ri agent.RunInfo) actool.CoreTool {
+func meterTool(t actool.CallableTool, recorder toolUsageRecorder, toolKey, agentKey string, ri agent.RunInfo) actool.CallableTool {
 	if recorder == nil {
 		return t
 	}
-	return &meteredTool{CoreTool: t, recorder: recorder, toolKey: toolKey, agentKey: agentKey, ri: ri}
+	return &meteredTool{CallableTool: t, recorder: recorder, toolKey: toolKey, agentKey: agentKey, ri: ri}
 }
 
-func (m *meteredTool) Call(ctx context.Context, input json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+func (m *meteredTool) Call(ctx context.Context, input []byte) (any, error) {
 	if err := m.recorder.InsertToolUsage(&db.ToolUsage{
 		ToolKey:       m.toolKey,
 		AgentKey:      m.agentKey,
@@ -44,5 +43,5 @@ func (m *meteredTool) Call(ctx context.Context, input json.RawMessage, tc *actoo
 	}); err != nil {
 		log.Printf("[toolusage] insert %s: %v", m.toolKey, err)
 	}
-	return m.CoreTool.Call(ctx, input, tc)
+	return m.CallableTool.Call(ctx, input)
 }

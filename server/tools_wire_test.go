@@ -6,15 +6,17 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
-func names(tools []actool.CoreTool) map[string]actool.CoreTool {
-	m := map[string]actool.CoreTool{}
+func names(tools []actool.CallableTool) map[string]actool.CallableTool {
+	m := map[string]actool.CallableTool{}
 	for _, t := range tools {
-		m[t.Name()] = t
+		m[t.Declaration().Name] = t
 	}
 	return m
 }
@@ -46,7 +48,7 @@ func TestWireTools(t *testing.T) {
 	// Build a base as the worker does: its domain tools + defaults, resolved for
 	// "worker" then for "planner".
 	ts := agent.NewToolSet(nil, "")
-	base := append(ts.WorkerTools(), actool.DefaultTools()...)
+	base := append(ts.WorkerTools(), []actool.CallableTool{toolkit.New("Bash", "command", map[string]any{"type": "object"}, nil)}...)
 	ctx := context.Background()
 
 	worker := names(agent.ToolResolve(ctx, "worker", base))
@@ -58,7 +60,7 @@ func TestWireTools(t *testing.T) {
 	// non-catalog rows, so future user-defined custom tools survive too.
 	if bash, ok := worker["Bash"]; !ok {
 		t.Error("worker lost Bash (should pass through)")
-	} else if bash.Description() != actool.NewBash().Description() {
+	} else if bash.Declaration().Description != "command" {
 		t.Error("Bash should pass through undecorated, but description changed")
 	}
 	// planner is not bound to record_fact → resolving a base that contains it drops it.
@@ -87,12 +89,12 @@ func TestWireTools(t *testing.T) {
 	if got == nil {
 		t.Fatal("record_fact missing after edit")
 	}
-	if got.Description() != "EDITED DESC" {
-		t.Errorf("description = %q, want EDITED DESC", got.Description())
+	if got.Declaration().Description != "EDITED DESC" {
+		t.Errorf("description = %q, want EDITED DESC", got.Declaration().Description)
 	}
 	// Default injection: omit confidence → handler input should carry the default.
 	// We can't run the real handler (nil store), but InputSchema must show the default.
-	sc := got.InputSchema()
+	sc := toolkit.SchemaMap(got.Declaration().InputSchema)
 	props := sc["properties"].(map[string]any)
 	conf := props["confidence"].(map[string]any)
 	if conf["default"] != "inferred" {

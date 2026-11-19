@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
 	"strings"
 	"sync"
 	"testing"
@@ -13,98 +12,65 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/internal/modeltest"
+	"github.com/Autumn-27/artex/runstate"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 type scriptedLLMProvider struct {
-	events []llm.StreamEvent
+	events []llm.Response
 	err    error
 	calls  int
 }
 
-func (p *scriptedLLMProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) {
-		p.calls++
-		for _, event := range p.events {
-			if !yield(event, nil) {
-				return
-			}
-		}
-		if p.err != nil {
-			yield(llm.StreamEvent{}, p.err)
-		}
+func (p *scriptedLLMProvider) Info() llm.Info { return llm.Info{Name: "scripted"} }
+func (p *scriptedLLMProvider) GenerateContent(context.Context, *llm.Request) (<-chan *llm.Response, error) {
+	p.calls++
+	out := make(chan *llm.Response, len(p.events)+1)
+	for _, event := range p.events {
+		copy := event
+		out <- &copy
 	}
-}
-
-func (p *scriptedLLMProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	return accumulateStreamForTest(ctx, p.Stream, req)
-}
-
-// accumulateStreamForTest drains a mock's Stream to satisfy the non-streaming
-// Complete method.
-func accumulateStreamForTest(ctx context.Context, stream func(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error], req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	acc := llm.NewAccumulator()
-	for ev, err := range stream(ctx, req) {
-		if err != nil {
-			return llm.Message{}, "", llm.Usage{}, err
-		}
-		acc.Add(ev)
+	if p.err != nil {
+		out <- modeltest.Failure(p.err)
 	}
-	return acc.Message(), acc.StopReason, acc.Usage, nil
+	close(out)
+	return out, nil
 }
-
-// withZeroRetryBackoff sets the same-provider retry backoff to zero for the
-// duration of a (serial) test and returns a restore func for defer.
 func withZeroRetryBackoff() func() {
-	prev := sameProviderRetryBackoff
+	old := sameProviderRetryBackoff
 	sameProviderRetryBackoff = func(int) time.Duration { return 0 }
-	return func() { sameProviderRetryBackoff = prev }
+	return func() { sameProviderRetryBackoff = old }
 }
 
-// flakyThenOKProvider fails its first failCount stream attempts pre-commit
-// (emitting only a non-committing SEMessageStart before the error, mirroring a
-// gateway that returns 200 then drops), then serves okEvents.
 type flakyThenOKProvider struct {
 	failCount int
 	failErr   error
-	okEvents  []llm.StreamEvent
+	okEvents  []llm.Response
 	calls     int
 }
 
-func (p *flakyThenOKProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) {
-		p.calls++
-		if p.calls <= p.failCount {
-			if !yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil) {
-				return
-			}
-			yield(llm.StreamEvent{}, p.failErr)
-			return
-		}
-		for _, ev := range p.okEvents {
-			if !yield(ev, nil) {
-				return
-			}
+func (p *flakyThenOKProvider) Info() llm.Info { return llm.Info{Name: "flaky"} }
+func (p *flakyThenOKProvider) GenerateContent(ctx context.Context, r *llm.Request) (<-chan *llm.Response, error) {
+	p.calls++
+	if p.calls <= p.failCount {
+		return modeltest.Responses(&llm.Response{IsPartial: true}, modeltest.Failure(p.failErr)), nil
+	}
+	return (&scriptedLLMProvider{events: p.okEvents}).GenerateContent(ctx, r)
+}
+func collectTaskLLMStream(source <-chan *llm.Response, err error) ([]llm.Response, error) {
+	if err != nil {
+		return nil, err
+	}
+	var out []llm.Response
+	for ev := range source {
+		if ev.Error != nil {
+			err = ev.Error
+		} else {
+			out = append(out, *ev)
 		}
 	}
-}
-
-func (p *flakyThenOKProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	return accumulateStreamForTest(ctx, p.Stream, req)
-}
-
-func collectTaskLLMStream(seq iter.Seq2[llm.StreamEvent, error]) ([]llm.StreamEvent, error) {
-	var events []llm.StreamEvent
-	var streamErr error
-	for event, err := range seq {
-		if err != nil {
-			streamErr = err
-			break
-		}
-		events = append(events, event)
-	}
-	return events, streamErr
+	return out, err
 }
 
 func TestIsQuotaExhaustedError(t *testing.T) {
@@ -242,7 +208,9 @@ func TestTaskLLMStreamRetriesPreStreamQuotaOnNextProfile(t *testing.T) {
 	t.Parallel()
 	quota := errors.New("openai: status 402: insufficient_quota")
 	first := &scriptedLLMProvider{err: quota}
-	second := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "fallback"}}}
+	second := &scriptedLLMProvider{events: []llm.Response{llm.Response{IsPartial: true,
+		Choices: []llm.Choice{{Delta: llm.Message{Content: "fallback"}}},
+	}}}
 	active := int64(11)
 	transitions := 0
 	hooks := taskLLMStreamHooks{
@@ -263,11 +231,11 @@ func TestTaskLLMStreamRetriesPreStreamQuotaOnNextProfile(t *testing.T) {
 		transition: func(taskLLMSelection, db.TaskLLMTransition, error) { transitions++ },
 	}
 
-	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	events, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Text != "fallback" {
+	if len(events) != 1 || events[0].Choices[0].Delta.Content != "fallback" {
 		t.Fatalf("unexpected fallback events: %+v", events)
 	}
 	if first.calls != 1 || second.calls != 1 || transitions != 1 {
@@ -279,12 +247,12 @@ func TestTaskLLMStreamRetriesAfterNonContentStartEvent(t *testing.T) {
 	t.Parallel()
 	quota := errors.New("anthropic: status 402: insufficient credit balance")
 	first := &scriptedLLMProvider{
-		events: []llm.StreamEvent{{Type: llm.SEMessageStart}},
+		events: []llm.Response{llm.Response{IsPartial: true}},
 		err:    quota,
 	}
-	second := &scriptedLLMProvider{events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart},
-		{Type: llm.SETextDelta, Text: "fallback"},
+	second := &scriptedLLMProvider{events: []llm.Response{llm.Response{IsPartial: true}, llm.Response{IsPartial: true,
+		Choices: []llm.Choice{{Delta: llm.Message{Content: "fallback"}}},
+	},
 	}}
 	active := int64(11)
 	hooks := taskLLMStreamHooks{
@@ -301,11 +269,11 @@ func TestTaskLLMStreamRetriesAfterNonContentStartEvent(t *testing.T) {
 		},
 	}
 
-	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	events, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[0].Type != llm.SEMessageStart || events[1].Text != "fallback" {
+	if len(events) != 2 || !events[0].IsPartial || events[1].Choices[0].Delta.Content != "fallback" {
 		t.Fatalf("non-content event from failed attempt leaked or fallback missing: %+v", events)
 	}
 	if first.calls != 1 || second.calls != 1 {
@@ -316,7 +284,9 @@ func TestTaskLLMStreamRetriesAfterNonContentStartEvent(t *testing.T) {
 func TestTaskLLMStreamRetriesStalePreStreamFailureAgainstReplacementChain(t *testing.T) {
 	t.Parallel()
 	first := &scriptedLLMProvider{err: errors.New("status 402: insufficient_quota")}
-	second := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "replacement"}}}
+	second := &scriptedLLMProvider{events: []llm.Response{llm.Response{IsPartial: true,
+		Choices: []llm.Choice{{Delta: llm.Message{Content: "replacement"}}},
+	}}}
 	current := first
 	hooks := taskLLMStreamHooks{
 		current: func() (taskLLMSelection, error) {
@@ -332,8 +302,8 @@ func TestTaskLLMStreamRetriesStalePreStreamFailureAgainstReplacementChain(t *tes
 		},
 	}
 
-	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
-	if err != nil || len(events) != 1 || events[0].Text != "replacement" {
+	events, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
+	if err != nil || len(events) != 1 || events[0].Choices[0].Delta.Content != "replacement" {
 		t.Fatalf("stale call did not continue on replacement chain: events=%+v err=%v", events, err)
 	}
 }
@@ -361,7 +331,7 @@ func TestTaskLLMStreamDoesNotSwitchForOrdinaryErrors(t *testing.T) {
 					return db.TaskLLMTransition{}, nil
 				},
 			}
-			_, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+			_, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
 			if err == nil || err.Error() != message {
 				t.Fatalf("error=%v, want %q", err, message)
 			}
@@ -376,10 +346,14 @@ func TestTaskLLMStreamAdvancesAfterMidStreamQuotaWithoutReplay(t *testing.T) {
 	t.Parallel()
 	quota := errors.New("anthropic: status 402: credit balance is too low")
 	first := &scriptedLLMProvider{
-		events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "partial"}},
-		err:    quota,
+		events: []llm.Response{llm.Response{IsPartial: true,
+			Choices: []llm.Choice{{Delta: llm.Message{Content: "partial"}}},
+		}},
+		err: quota,
 	}
-	second := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "next-call"}}}
+	second := &scriptedLLMProvider{events: []llm.Response{llm.Response{IsPartial: true,
+		Choices: []llm.Choice{{Delta: llm.Message{Content: "next-call"}}},
+	}}}
 	active := int64(11)
 	hooks := taskLLMStreamHooks{
 		current: func() (taskLLMSelection, error) {
@@ -395,16 +369,16 @@ func TestTaskLLMStreamAdvancesAfterMidStreamQuotaWithoutReplay(t *testing.T) {
 		},
 	}
 
-	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
-	if len(events) != 1 || events[0].Text != "partial" || err == nil {
+	events, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
+	if len(events) != 1 || events[0].Choices[0].Delta.Content != "partial" || err == nil {
 		t.Fatalf("mid-stream result events=%+v err=%v", events, err)
 	}
 	if first.calls != 1 || second.calls != 0 {
 		t.Fatalf("mid-stream call was replayed: first=%d second=%d", first.calls, second.calls)
 	}
 
-	nextEvents, nextErr := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
-	if nextErr != nil || len(nextEvents) != 1 || nextEvents[0].Text != "next-call" || second.calls != 1 {
+	nextEvents, nextErr := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
+	if nextErr != nil || len(nextEvents) != 1 || nextEvents[0].Choices[0].Delta.Content != "next-call" || second.calls != 1 {
 		t.Fatalf("next call did not use fallback: events=%+v err=%v calls=%d", nextEvents, nextErr, second.calls)
 	}
 }
@@ -414,8 +388,10 @@ func TestTaskLLMStreamMarkFailureAfterToolStartSkipsWorkerReplay(t *testing.T) {
 	quota := errors.New("openai: status 402: insufficient_quota")
 	markFailure := errors.New("database temporarily unavailable")
 	provider := &scriptedLLMProvider{
-		events: []llm.StreamEvent{{Type: llm.SEToolUseStart}},
-		err:    quota,
+		events: []llm.Response{llm.Response{IsPartial: true,
+			Choices: []llm.Choice{{Delta: llm.Message{ToolCalls: []llm.ToolCall{{ID: "probe", Function: llm.FunctionDefinitionParam{Name: "probe"}}}}}},
+		}},
+		err: quota,
 	}
 	hooks := taskLLMStreamHooks{
 		current: func() (taskLLMSelection, error) {
@@ -426,14 +402,14 @@ func TestTaskLLMStreamMarkFailureAfterToolStartSkipsWorkerReplay(t *testing.T) {
 		},
 	}
 
-	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
-	if len(events) != 1 || events[0].Type != llm.SEToolUseStart || err == nil {
+	events, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
+	if len(events) != 1 || len(events[0].Choices) == 0 || err == nil {
 		t.Fatalf("committed tool stream events=%+v err=%v", events, err)
 	}
 	if !isTaskLLMRuntimeError(err) {
 		t.Fatalf("committed mark failure must be router-classified: %T %v", err, err)
 	}
-	if retryableWorkerModelError(harness.ReasonModelError, err) {
+	if retryableWorkerModelError(runstate.ReasonModelError, err) {
 		t.Fatal("worker must not replay after a committed tool stream when quota persistence fails")
 	}
 	if provider.calls != 1 {
@@ -447,10 +423,10 @@ func TestTaskLLMRuntimeErrorSkipsWorkerReplay(t *testing.T) {
 		chainExhausted: false,
 		cause:          errors.New("insufficient_quota after partial output"),
 	}
-	if retryableWorkerModelError(harness.ReasonModelError, partialStreamErr) {
+	if retryableWorkerModelError(runstate.ReasonModelError, partialStreamErr) {
 		t.Fatal("worker must not replay an intent after the task router handled a mid-stream quota error")
 	}
-	if !retryableWorkerModelError(harness.ReasonModelError, errors.New("temporary network error")) {
+	if !retryableWorkerModelError(runstate.ReasonModelError, errors.New("temporary network error")) {
 		t.Fatal("ordinary model errors should retain the existing worker retry behavior")
 	}
 }
@@ -463,7 +439,9 @@ func TestTaskLLMStreamRetriesTransientPreCommitOnSameProvider(t *testing.T) {
 	provider := &flakyThenOKProvider{
 		failCount: 2, // fail twice, succeed on the 3rd attempt (initial + 2 retries)
 		failErr:   errors.New("anthropic: overloaded_error"),
-		okEvents:  []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "ok"}},
+		okEvents: []llm.Response{llm.Response{IsPartial: true}, llm.Response{IsPartial: true,
+			Choices: []llm.Choice{{Delta: llm.Message{Content: "ok"}}},
+		}},
 	}
 	exhausted := 0
 	hooks := taskLLMStreamHooks{
@@ -475,7 +453,7 @@ func TestTaskLLMStreamRetriesTransientPreCommitOnSameProvider(t *testing.T) {
 			return db.TaskLLMTransition{}, nil
 		},
 	}
-	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	events, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
 	if err != nil {
 		t.Fatalf("transient pre-commit failure should have been retried to success, got %v", err)
 	}
@@ -485,7 +463,7 @@ func TestTaskLLMStreamRetriesTransientPreCommitOnSameProvider(t *testing.T) {
 	if exhausted != 0 {
 		t.Fatalf("same-provider retry must not change failover state (exhausted=%d)", exhausted)
 	}
-	if len(events) == 0 || events[len(events)-1].Text != "ok" {
+	if len(events) == 0 || events[len(events)-1].Choices[0].Delta.Content != "ok" {
 		t.Fatalf("recovered stream missing its committed output: %+v", events)
 	}
 }
@@ -506,7 +484,7 @@ func TestTaskLLMStreamSurfacesTransientAfterRetriesExhausted(t *testing.T) {
 			return db.TaskLLMTransition{}, nil
 		},
 	}
-	_, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	_, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
 	if err == nil {
 		t.Fatal("persistent transient failure must still surface an error")
 	}
@@ -531,7 +509,7 @@ func TestTaskLLMStreamDoesNotRetryDeterministicRejection(t *testing.T) {
 			return db.TaskLLMTransition{}, nil
 		},
 	}
-	_, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	_, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
 	if err == nil {
 		t.Fatal("expected the deterministic rejection to surface")
 	}
@@ -629,7 +607,7 @@ func TestTaskLLMStreamStopsWhenChainExhausted(t *testing.T) {
 		transition: func(taskLLMSelection, db.TaskLLMTransition, error) { transitions++ },
 	}
 
-	_, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	_, err := collectTaskLLMStream(generateTaskLLM(context.Background(), "7", &llm.Request{}, hooks))
 	if !isTaskLLMChainExhausted(err) {
 		t.Fatalf("expected chain-exhausted error, got %v", err)
 	}
@@ -711,5 +689,22 @@ func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing
 	state := task.llmStateSnapshot()
 	if len(state.ProfileIDs) != 0 || state.FailoverState != "default" {
 		t.Fatalf("task did not return to fallback state: %+v", state)
+	}
+}
+
+func TestNativeSDKHTTPErrorReplayPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		retry   bool
+	}{
+		{`POST "https://provider.test/v1/messages": 400 Bad Request`, false},
+		{`POST "https://provider.test/v1/messages": 413 Request Too Large`, false},
+		{`POST "https://provider.test/v1/messages": 422 Unprocessable Entity`, false},
+		{`POST "https://provider.test/v1/messages": 429 Too Many Requests`, true},
+		{`POST "https://provider.test/v1/messages": 503 Service Unavailable`, true},
+	} {
+		if got := isRetryableStreamError(errors.New(tc.message)); got != tc.retry {
+			t.Errorf("retry=%v for %s", got, tc.message)
+		}
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/norma/llm"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 func replayFixture(history []Exchange, memory *Memory) Replay {
@@ -37,36 +37,36 @@ func TestSideTwentyExchangeBoundaryAndRestart(t *testing.T) {
 				history = append(history, Exchange{Ordinal: int64(i), Question: fmt.Sprintf("question-%d", i), Answer: "historical answer", Status: "completed", SnapshotAt: time.Unix(int64(i), 0)})
 			}
 			history[0].Answer = "EARLY-DECISION-ALPHA"
-			var requests []llm.CompletionRequest
+			var requests []model.Request
 			summaries := 0
-			p := fakeProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-				if len(r.Tools) == 0 && len(r.System) > 0 && r.System[0] == summaryInstruction {
+			p := fakeModel{complete: func(_ context.Context, r model.Request) (model.Message, string, model.Usage, error) {
+				if isSummary(r) {
 					summaries++
-					if !strings.Contains(r.Messages[0].Text(), "EARLY-DECISION-ALPHA") {
+					if !strings.Contains(r.Messages[1].Content, "EARLY-DECISION-ALPHA") {
 						t.Fatal("rolling update lost prior summary")
 					}
-					return assistant("EARLY-DECISION-ALPHA; historical discussion, not current evidence"), "end_turn", llm.Usage{InputTokens: 11}, nil
+					return assistant("EARLY-DECISION-ALPHA; historical discussion, not current evidence"), "end_turn", model.Usage{PromptTokens: 11}, nil
 				}
 				requests = append(requests, r)
-				return assistant("answer"), "end_turn", llm.Usage{InputTokens: 7}, nil
+				return assistant("answer"), "end_turn", model.Usage{PromptTokens: 7}, nil
 			}}
 			snap := Snapshot{Request: fixture(), Model: Model{WindowTokens: 200000}}
 			var memory Memory
-			out, info, err := (SideQuestionService{p}).Respond(t.Context(), snap, "what was my first decision?", replayFixture(history, &memory), ContextOptions{}, nil)
+			out, info, err := (SideQuestionService{Model: p}).Respond(t.Context(), snap, "what was my first decision?", replayFixture(history, &memory), ContextOptions{}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if info.RecentExchanges != min(n, 20) || memory.Through != int64(max(0, n-20)) {
 				t.Fatalf("boundary: %+v %+v", info, memory)
 			}
-			if out.Usage.InputTokens != 11*summaries+7 {
+			if out.Usage.PromptTokens != 11*summaries+7 {
 				t.Fatal("summary usage missing")
 			}
 			if !strings.Contains(string(mustJSON(t, requests[0])), "EARLY-DECISION-ALPHA") {
 				t.Fatal("first-round decision absent after round 20")
 			}
 			before := summaries
-			_, _, err = (SideQuestionService{p}).Respond(t.Context(), snap, "continue after restart", replayFixture(history, &memory), ContextOptions{}, nil)
+			_, _, err = (SideQuestionService{Model: p}).Respond(t.Context(), snap, "continue after restart", replayFixture(history, &memory), ContextOptions{}, nil)
 			if err != nil || summaries != before {
 				t.Fatalf("persisted summary not reused: %v", err)
 			}
@@ -76,8 +76,8 @@ func TestSideTwentyExchangeBoundaryAndRestart(t *testing.T) {
 
 func TestSideBudgetCountsContentNotJSONCharacters(t *testing.T) {
 	snap := Snapshot{Request: fixture(), Model: Model{WindowTokens: 200000}}
-	snap.Request.MaxTokens = 32768
-	snap.Request.Messages = append(snap.Request.Messages, llm.UserText(strings.Repeat("<script>const result = api.response;</script>\n", 5500)))
+	snap.Request.MaxTokens = tokenLimit(32768)
+	snap.Request.Messages = append(snap.Request.Messages, userText(strings.Repeat("<script>const result = api.response;</script>\n", 5500)))
 	before := mustJSON(t, snap)
 	if len(before) < 200000 {
 		t.Fatal("fixture too small to exercise regression")
@@ -86,14 +86,14 @@ func TestSideBudgetCountsContentNotJSONCharacters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid code-heavy snapshot rejected: %v", err)
 	}
-	if req.MaxTokens != 8192 || EstimateInputTokens(req) >= 200000 {
-		t.Fatalf("budget: %d %d", req.MaxTokens, EstimateInputTokens(req))
+	if maxTokens(req) != 8192 || EstimateInputTokens(req) >= 200000 {
+		t.Fatalf("budget: %d %d", maxTokens(req), EstimateInputTokens(req))
 	}
 	if string(before) != string(mustJSON(t, snap)) {
 		t.Fatal("snapshot mutated")
 	}
-	baseline := EstimateInputTokens(llm.CompletionRequest{Messages: []llm.Message{llm.UserText("x")}})
-	if EstimateInputTokens(llm.CompletionRequest{Messages: []llm.Message{llm.UserText("x")}, System: []string{strings.Repeat("中", 3000)}, Tools: fixture().Tools}) <= baseline+3000 {
+	baseline := EstimateInputTokens(model.Request{Messages: []model.Message{userText("x")}})
+	if EstimateInputTokens(model.Request{Messages: []model.Message{{Role: model.RoleSystem, Content: strings.Repeat("中", 3000)}, userText("x")}, Tools: fixture().Tools}) <= baseline+3000 {
 		t.Fatal("system/schema/CJK omitted")
 	}
 }
@@ -106,32 +106,32 @@ func TestSideLongExchangeAndSnapshotCompactionAreBounded(t *testing.T) {
 			if hugeHistory {
 				history = []Exchange{{Ordinal: 1, Question: "earlier", Answer: strings.Repeat("历史依据ABC", 14000), Status: "completed"}}
 			} else {
-				snap.Request.Messages = append([]llm.Message{llm.UserText(strings.Repeat("old tool evidence 中文", 9000))}, snap.Request.Messages...)
+				snap.Request.Messages = append([]model.Message{userText(strings.Repeat("old tool evidence 中文", 9000))}, snap.Request.Messages...)
 			}
 			original := mustJSON(t, snap)
 			calls, answers := 0, 0
-			var final llm.CompletionRequest
-			p := fakeProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-				if r.Thinking == "disabled" {
+			var final model.Request
+			p := fakeModel{complete: func(_ context.Context, r model.Request) (model.Message, string, model.Usage, error) {
+				if isSummary(r) {
 					calls++
-					if len(r.Tools) != 0 || EstimateInputTokens(r)+r.MaxTokens > 32000 || !utf8.ValidString(r.Messages[0].Text()) {
+					if len(r.Tools) != 0 || EstimateInputTokens(r)+maxTokens(r) > 32000 || !utf8.ValidString(r.Messages[len(r.Messages)-1].Content) {
 						t.Fatal("unsafe summary request")
 					}
-					return assistant("goal, evidence and unresolved questions"), "end_turn", llm.Usage{OutputTokens: 3}, nil
+					return assistant("goal, evidence and unresolved questions"), "end_turn", model.Usage{CompletionTokens: 3}, nil
 				}
 				answers++
 				final = r
-				return assistant("done"), "end_turn", llm.Usage{OutputTokens: 5}, nil
+				return assistant("done"), "end_turn", model.Usage{CompletionTokens: 5}, nil
 			}}
 			var memory Memory
-			out, info, err := (SideQuestionService{p}).Respond(t.Context(), snap, "progress?", replayFixture(history, &memory), ContextOptions{}, nil)
-			if err != nil || calls < 2 || calls > 12 || answers != 1 || out.Usage.OutputTokens != 3*calls+5 {
+			out, info, err := (SideQuestionService{Model: p}).Respond(t.Context(), snap, "progress?", replayFixture(history, &memory), ContextOptions{}, nil)
+			if err != nil || calls < 2 || calls > 12 || answers != 1 || out.Usage.CompletionTokens != 3*calls+5 {
 				t.Fatalf("calls=%d answers=%d info=%+v err=%v", calls, answers, info, err)
 			}
 			if info.EstimatedInputTokens > info.InputBudget {
 				t.Fatal("oversized final request")
 			}
-			if !reflect.DeepEqual(final.Messages, llm.MessagesForAPI(final.Messages)) {
+			if !reflect.DeepEqual(final.Messages, evidencePairs(final.Messages)) {
 				t.Fatal("tool pairing broken")
 			}
 			if !strings.Contains(string(mustJSON(t, final)), "verified asset") {
@@ -141,13 +141,13 @@ func TestSideLongExchangeAndSnapshotCompactionAreBounded(t *testing.T) {
 				t.Fatal("main snapshot modified")
 			}
 			before := calls
-			_, _, err = (SideQuestionService{p}).Respond(t.Context(), snap, "another question", replayFixture(history, &memory), ContextOptions{}, nil)
+			_, _, err = (SideQuestionService{Model: p}).Respond(t.Context(), snap, "another question", replayFixture(history, &memory), ContextOptions{}, nil)
 			if err != nil || calls != before {
 				t.Fatalf("summary cache not reused: %v", err)
 			}
 			if !hugeHistory {
 				snap.Version++
-				_, _, err = (SideQuestionService{p}).Respond(t.Context(), snap, "new snapshot", replayFixture(history, &memory), ContextOptions{}, nil)
+				_, _, err = (SideQuestionService{Model: p}).Respond(t.Context(), snap, "new snapshot", replayFixture(history, &memory), ContextOptions{}, nil)
 				if err != nil || calls == before {
 					t.Fatalf("stale snapshot cache reused: %v", err)
 				}
@@ -160,20 +160,20 @@ func TestSideOverflowRecoveryOnceAndFailureUsage(t *testing.T) {
 	for _, twice := range []bool{false, true} {
 		t.Run(fmt.Sprint(twice), func(t *testing.T) {
 			answers, summaries := 0, 0
-			p := fakeProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-				if r.Thinking == "disabled" {
+			p := fakeModel{complete: func(_ context.Context, r model.Request) (model.Message, string, model.Usage, error) {
+				if isSummary(r) {
 					summaries++
-					return assistant("summary"), "end_turn", llm.Usage{InputTokens: 3}, nil
+					return assistant("summary"), "end_turn", model.Usage{PromptTokens: 3}, nil
 				}
 				answers++
 				if answers == 1 || twice {
-					return llm.Message{}, "", llm.Usage{InputTokens: 5}, errors.New("context_length_exceeded")
+					return model.Message{}, "", model.Usage{PromptTokens: 5}, &model.ResponseError{Code: nativeCode("context_length_exceeded"), Message: "context limit"}
 				}
-				return assistant("recovered"), "end_turn", llm.Usage{InputTokens: 7}, nil
+				return assistant("recovered"), "end_turn", model.Usage{PromptTokens: 7}, nil
 			}}
 			snap := Snapshot{Request: fixture(), Model: Model{WindowTokens: 32000}}
-			snap.Request.Messages = append([]llm.Message{llm.UserText(strings.Repeat("old context ", 2000))}, snap.Request.Messages...)
-			out, info, err := (SideQuestionService{p}).Respond(t.Context(), snap, "question", Replay{}, ContextOptions{}, nil)
+			snap.Request.Messages = append([]model.Message{userText(strings.Repeat("old context ", 2000))}, snap.Request.Messages...)
+			out, info, err := (SideQuestionService{Model: p}).Respond(t.Context(), snap, "question", Replay{}, ContextOptions{}, nil)
 			if answers != 2 || summaries != 1 || !info.OverflowRetried || (err != nil) != twice {
 				t.Fatalf("retry limit: %d %d %+v %v", answers, summaries, info, err)
 			}
@@ -181,21 +181,21 @@ func TestSideOverflowRecoveryOnceAndFailureUsage(t *testing.T) {
 			if twice {
 				want = 13
 			}
-			if out.Usage.InputTokens != want {
+			if out.Usage.PromptTokens != want {
 				t.Fatalf("usage=%+v", out.Usage)
 			}
 		})
 	}
 	// A stream that already exposed text must never replay it as a fresh answer.
 	count := 0
-	p := fakeProvider{stream: func(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-		return func(y func(llm.StreamEvent, error) bool) {
+	p := fakeModel{stream: func(context.Context, model.Request) iter.Seq2[*model.Response, error] {
+		return func(y func(*model.Response, error) bool) {
 			count++
-			y(llm.StreamEvent{Type: llm.SETextDelta, Text: "partial"}, nil)
-			y(llm.StreamEvent{}, errors.New("context_length_exceeded"))
+			y(partial("partial"), nil)
+			y(&model.Response{}, &model.ResponseError{Code: nativeCode("context_length_exceeded"), Message: "context limit"})
 		}
 	}}
-	out, _, err := (SideQuestionService{p}).Respond(t.Context(), Snapshot{Request: fixture(), Model: Model{Streaming: true}}, "q", Replay{}, ContextOptions{}, nil)
+	out, _, err := (SideQuestionService{Model: p}).Respond(t.Context(), Snapshot{Request: fixture(), Model: Model{Streaming: true}}, "q", Replay{}, ContextOptions{}, nil)
 	if err == nil || out.Text != "partial" || count != 1 {
 		t.Fatal("partial stream retried")
 	}
@@ -207,10 +207,10 @@ func TestSideSummaryCancellationAndFailureDoNotAdvanceMemory(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			calls := 0
-			p := fakeProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+			p := fakeModel{complete: func(_ context.Context, r model.Request) (model.Message, string, model.Usage, error) {
 				calls++
-				usage := llm.Usage{InputTokens: 9}
-				if r.Thinking != "disabled" {
+				usage := model.Usage{PromptTokens: 9}
+				if !isSummary(r) {
 					t.Fatal("failed summary continued to answer")
 				}
 				switch mode {
@@ -218,7 +218,7 @@ func TestSideSummaryCancellationAndFailureDoNotAdvanceMemory(t *testing.T) {
 					cancel()
 					return assistant("late"), "end_turn", usage, nil
 				case "error":
-					return llm.Message{}, "", usage, errors.New("unavailable")
+					return model.Message{}, "", usage, errors.New("unavailable")
 				case "empty":
 					return assistant(""), "end_turn", usage, nil
 				case "truncated":
@@ -226,7 +226,7 @@ func TestSideSummaryCancellationAndFailureDoNotAdvanceMemory(t *testing.T) {
 				case "too-large":
 					return assistant(strings.Repeat("中", 5000)), "end_turn", usage, nil
 				case "tool":
-					return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "forbidden", Name: "Bash"}}}, "tool_use", usage, nil
+					return model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "forbidden", Function: model.FunctionDefinitionParam{Name: "Bash"}}}}, "tool_use", usage, nil
 				}
 				return assistant("summary"), "end_turn", usage, nil
 			}}
@@ -239,8 +239,8 @@ func TestSideSummaryCancellationAndFailureDoNotAdvanceMemory(t *testing.T) {
 			if mode == "save-failed" {
 				replay.Save = func(context.Context, Memory) error { return errors.New("cleared") }
 			}
-			out, _, err := (SideQuestionService{p}).Respond(ctx, Snapshot{Request: fixture()}, "q", replay, ContextOptions{}, nil)
-			if err == nil || calls != 1 || memory.Through != 0 || out.Usage.InputTokens != 9 {
+			out, _, err := (SideQuestionService{Model: p}).Respond(ctx, Snapshot{Request: fixture()}, "q", replay, ContextOptions{}, nil)
+			if err == nil || calls != 1 || memory.Through != 0 || out.Usage.PromptTokens != 9 {
 				t.Fatalf("failed preparation: %+v %+v %v", memory, out, err)
 			}
 		})
@@ -249,22 +249,22 @@ func TestSideSummaryCancellationAndFailureDoNotAdvanceMemory(t *testing.T) {
 
 func TestSideSummaryCallCapAndStaticBudget(t *testing.T) {
 	calls := 0
-	p := fakeProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	p := fakeModel{complete: func(_ context.Context, r model.Request) (model.Message, string, model.Usage, error) {
 		calls++
-		if r.Thinking != "disabled" {
+		if !isSummary(r) {
 			t.Fatal("oversized request answered")
 		}
-		return assistant("bounded summary"), "end_turn", llm.Usage{OutputTokens: 1}, nil
+		return assistant("bounded summary"), "end_turn", model.Usage{CompletionTokens: 1}, nil
 	}}
 	snap := Snapshot{Model: Model{WindowTokens: 32000}, Request: fixture()}
-	snap.Request.Messages = []llm.Message{llm.UserText(strings.Repeat("x", 1200000))}
-	out, _, err := (SideQuestionService{p}).Respond(t.Context(), snap, "q", Replay{}, ContextOptions{}, nil)
-	if err == nil || calls != 12 || out.Usage.OutputTokens != 12 {
+	snap.Request.Messages = []model.Message{userText(strings.Repeat("x", 1200000))}
+	out, _, err := (SideQuestionService{Model: p}).Respond(t.Context(), snap, "q", Replay{}, ContextOptions{}, nil)
+	if err == nil || calls != 12 || out.Usage.CompletionTokens != 12 {
 		t.Fatalf("summary cap calls=%d err=%v", calls, err)
 	}
 	calls = 0
-	snap.Request.System = []string{strings.Repeat("x", 200000)}
-	_, _, err = (SideQuestionService{p}).Respond(t.Context(), snap, "q", Replay{}, ContextOptions{}, nil)
+	snap.Request.Messages = append([]model.Message{{Role: model.RoleSystem, Content: strings.Repeat("x", 200000)}}, snap.Request.Messages...)
+	_, _, err = (SideQuestionService{Model: p}).Respond(t.Context(), snap, "q", Replay{}, ContextOptions{}, nil)
 	if !errors.Is(err, ErrContextBudget) || calls != 0 {
 		t.Fatalf("static oversized budget: calls=%d err=%v", calls, err)
 	}
@@ -276,18 +276,18 @@ func TestSideTwentyLongRepliesRespectSmallWindow(t *testing.T) {
 		history = append(history, Exchange{Ordinal: int64(i), Question: fmt.Sprintf("question-%d", i), Answer: strings.Repeat("evidence ", 3000), Status: "completed"})
 	}
 	calls := 0
-	p := fakeProvider{complete: func(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-		if EstimateInputTokens(req)+req.MaxTokens > 32000 {
+	p := fakeModel{complete: func(_ context.Context, req model.Request) (model.Message, string, model.Usage, error) {
+		if EstimateInputTokens(req)+maxTokens(req) > 32000 {
 			t.Fatal("request exceeds small model window")
 		}
-		if req.Thinking == "disabled" {
+		if isSummary(req) {
 			calls++
-			return assistant("historical objectives and evidence"), "end_turn", llm.Usage{}, nil
+			return assistant("historical objectives and evidence"), "end_turn", model.Usage{}, nil
 		}
-		return assistant("answer"), "end_turn", llm.Usage{}, nil
+		return assistant("answer"), "end_turn", model.Usage{}, nil
 	}}
 	var memory Memory
-	_, info, err := (SideQuestionService{p}).Respond(t.Context(), Snapshot{Request: fixture(), Model: Model{WindowTokens: 32000}}, "current status?", replayFixture(history, &memory), ContextOptions{}, nil)
+	_, info, err := (SideQuestionService{Model: p}).Respond(t.Context(), Snapshot{Request: fixture(), Model: Model{WindowTokens: 32000}}, "current status?", replayFixture(history, &memory), ContextOptions{}, nil)
 	if err != nil || !info.HistorySummarized || calls > 12 || memory.Through != 20 {
 		t.Fatalf("20 long replies: calls=%d info=%+v memory=%+v err=%v", calls, info, memory, err)
 	}
@@ -295,17 +295,17 @@ func TestSideTwentyLongRepliesRespectSmallWindow(t *testing.T) {
 
 func TestSideOverflowWithoutReductionDoesNotRepeatAnswer(t *testing.T) {
 	answers, summaries := 0, 0
-	p := fakeProvider{complete: func(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-		if req.Thinking == "disabled" {
+	p := fakeModel{complete: func(_ context.Context, req model.Request) (model.Message, string, model.Usage, error) {
+		if isSummary(req) {
 			summaries++
-			return assistant(strings.Repeat("longer summary ", 100)), "end_turn", llm.Usage{InputTokens: 3}, nil
+			return assistant(strings.Repeat("longer summary ", 100)), "end_turn", model.Usage{PromptTokens: 3}, nil
 		}
 		answers++
-		return llm.Message{}, "", llm.Usage{InputTokens: 5}, errors.New("context_length_exceeded")
+		return model.Message{}, "", model.Usage{PromptTokens: 5}, &model.ResponseError{Code: nativeCode("context_length_exceeded"), Message: "context limit"}
 	}}
-	snapshot := Snapshot{Request: llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("tiny")}}}
-	out, _, err := (SideQuestionService{p}).Respond(t.Context(), snapshot, "question", Replay{}, ContextOptions{}, nil)
-	if err == nil || !strings.Contains(err.Error(), "未能进一步缩减") || answers != 1 || summaries != 1 || out.Usage.InputTokens != 8 {
+	snapshot := Snapshot{Request: model.Request{GenerationConfig: model.GenerationConfig{MaxTokens: tokenLimit(128)}, Messages: []model.Message{userText("tiny")}}}
+	out, _, err := (SideQuestionService{Model: p}).Respond(t.Context(), snapshot, "question", Replay{}, ContextOptions{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "未能进一步缩减") || answers != 1 || summaries != 1 || out.Usage.PromptTokens != 8 {
 		t.Fatalf("no-progress recovery: %d %d %+v %v", answers, summaries, out, err)
 	}
 }

@@ -18,9 +18,9 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/llmrec"
+	"github.com/Autumn-27/artex/sessionctx"
 	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 type sideRun struct {
@@ -46,7 +46,7 @@ func sideModel(cfg agent.Config, id int64, name string) sidequestion.Model {
 	return sidequestion.Model{ProfileID: id, Name: name, Format: string(cfg.Format), Model: cfg.Model, Identity: hex.EncodeToString(h[:]), Streaming: cfg.Stream, WindowTokens: cfg.CompactionWindow()}
 }
 
-func bindSideProvider(p llm.Provider, cfg agent.Config, id int64, name string) llm.Provider {
+func bindSideProvider(p llm.Model, cfg agent.Config, id int64, name string) llm.Model {
 	return sidequestion.Bind(p, sideModel(cfg, id, name))
 }
 
@@ -163,7 +163,7 @@ func (s *Server) drainTaskSideQuestions(ctx context.Context, taskID string) erro
 		}
 	}
 	s.flushSideSnapshots()
-	// A failed flush must not silently leave the latest checkpoint out of archive.
+	// Drain pending in-memory publication before releasing the task operation.
 	s.side.mu.Lock()
 	defer s.side.mu.Unlock()
 	for _, snap := range s.side.pending {
@@ -185,8 +185,8 @@ func (s *Server) cancelWorkerSide(taskID string, expID, iid int64) {
 	s.cancelSideWhere(func(parent sidequestion.Parent) bool { return parent == p })
 }
 
-func (s *Server) sideProvider(model sidequestion.Model) (llm.Provider, error) {
-	var p llm.Provider
+func (s *Server) sideProvider(model sidequestion.Model) (llm.Model, error) {
+	var p llm.Model
 	var cfg agent.Config
 	var ok bool
 	if model.ProfileID > 0 {
@@ -418,7 +418,7 @@ func (s *Server) handleSideQuestions(w http.ResponseWriter, r *http.Request, p s
 	writeJSON(w, 202, e)
 }
 
-func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sidequestion.Exchange, parent sidequestion.Parent, provider llm.Provider, snapshot sidequestion.Snapshot, agentQuestion string) {
+func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sidequestion.Exchange, parent sidequestion.Parent, provider llm.Model, snapshot sidequestion.Snapshot, agentQuestion string) {
 	defer cancel()
 	defer func() {
 		s.side.mu.Lock()
@@ -428,7 +428,7 @@ func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sideq
 		delete(s.side.runs, e.ID)
 		s.side.mu.Unlock()
 	}()
-	ctx = transcript.WithSessionID(ctx, fmt.Sprintf("exp%d-btw-%s", parent.ExplorationID, e.ID))
+	ctx = sessionctx.WithID(ctx, fmt.Sprintf("exp%d-btw-%s", parent.ExplorationID, e.ID))
 	if parent.TaskID > 0 {
 		ctx = llmrec.WithTaskID(ctx, strconv.FormatInt(parent.TaskID, 10))
 	}
@@ -465,7 +465,7 @@ func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sideq
 	memory, runErr := s.m.pg.SideMemory(ctx, e)
 	var answer sidequestion.Answer
 	if runErr == nil {
-		answer, e.Context, runErr = (sidequestion.SideQuestionService{Provider: provider}).Respond(ctx, snapshot, agentQuestion, sidequestion.Replay{
+		answer, e.Context, runErr = (sidequestion.SideQuestionService{Model: provider}).Respond(ctx, snapshot, agentQuestion, sidequestion.Replay{
 			Memory: memory,
 			Load: func(ctx context.Context, after int64) ([]sidequestion.Exchange, error) {
 				return s.m.pg.SideReplayPage(ctx, e, after)
@@ -475,7 +475,7 @@ func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sideq
 			},
 		}, sidequestion.ContextOptions{OutputTokens: s.side.outputTokens}, func(a sidequestion.Answer, info sidequestion.ContextInfo) {
 			phaseChanged := e.Context.Phase != info.Phase
-			e.Answer, e.Usage, e.Context = a.Text, a.Usage, info
+			e.Answer, e.Usage, e.Context = a.Text, sidequestion.StoredUsage(a.Usage), info
 			if phaseChanged || time.Since(lastSave) >= 250*time.Millisecond {
 				lastSave = time.Now()
 				if ok, _ := persist(); !ok {
@@ -484,7 +484,7 @@ func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sideq
 			}
 		})
 	}
-	e.Answer, e.Usage = answer.Text, answer.Usage
+	e.Answer, e.Usage = answer.Text, sidequestion.StoredUsage(answer.Usage)
 	e.Status = "completed"
 	if ctx.Err() != nil {
 		e.Status = "cancelled"

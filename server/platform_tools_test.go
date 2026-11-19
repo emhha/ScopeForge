@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/toolkit"
 )
 
 // TestSkillTools functionally exercises create_skill + update_skill_file against a
@@ -19,8 +21,8 @@ func TestSkillTools(t *testing.T) {
 	in, _ := json.Marshal(map[string]any{
 		"name": "my-skill", "description": "does X", "instructions": "## do\n1. a",
 	})
-	res, err := s.toolCreateSkill().Call(context.Background(), in, nil)
-	if err != nil || res.IsError {
+	res, err := s.toolCreateSkill().Call(context.Background(), in)
+	if err != nil || toolkit.Failed(res) {
 		t.Fatalf("create_skill: err=%v result=%+v", err, res)
 	}
 	md, err := os.ReadFile(filepath.Join(dir, "my-skill", "SKILL.md"))
@@ -32,19 +34,19 @@ func TestSkillTools(t *testing.T) {
 	}
 
 	// creating the same skill again fails.
-	if r, _ := s.toolCreateSkill().Call(context.Background(), in, nil); !r.IsError {
+	if r, _ := s.toolCreateSkill().Call(context.Background(), in); !toolkit.Failed(r) {
 		t.Fatal("duplicate create should error")
 	}
 
 	// invalid name rejected.
 	bad, _ := json.Marshal(map[string]any{"name": "Bad Name", "description": "x"})
-	if r, _ := s.toolCreateSkill().Call(context.Background(), bad, nil); !r.IsError {
+	if r, _ := s.toolCreateSkill().Call(context.Background(), bad); !toolkit.Failed(r) {
 		t.Fatal("invalid skill name should error")
 	}
 
 	// update_skill_file writes a nested script; path traversal is rejected.
 	up, _ := json.Marshal(map[string]any{"name": "my-skill", "file": "scripts/run.py", "content": "print(1)"})
-	if r, err := s.toolUpdateSkillFile().Call(context.Background(), up, nil); err != nil || r.IsError {
+	if r, err := s.toolUpdateSkillFile().Call(context.Background(), up); err != nil || toolkit.Failed(r) {
 		t.Fatalf("update_skill_file: err=%v result=%+v", err, r)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "my-skill", "scripts", "run.py"))
@@ -52,7 +54,7 @@ func TestSkillTools(t *testing.T) {
 		t.Fatalf("nested file not written: %v %q", err, got)
 	}
 	evil, _ := json.Marshal(map[string]any{"name": "my-skill", "file": "../escape.txt", "content": "x"})
-	if r, _ := s.toolUpdateSkillFile().Call(context.Background(), evil, nil); !r.IsError {
+	if r, _ := s.toolUpdateSkillFile().Call(context.Background(), evil); !toolkit.Failed(r) {
 		t.Fatal("path traversal should be rejected")
 	}
 }

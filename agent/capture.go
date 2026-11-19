@@ -2,190 +2,176 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/sidequestion"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/modelutil"
+	"github.com/Autumn-27/artex/runstate"
+	"github.com/Autumn-27/artex/sessionctx"
+	"github.com/Autumn-27/artex/toolkit"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-// captureRun drives one agent turn-to-completion over Session.Prompt and emits a
-// coalesced ActivityRecord per execution step (tool_use / tool_result / text /
-// thinking / result). It is shared by every LLM agent in the system (worker,
-// planner, …) so their execution is visible instead of a black box — the old
-// agentcore.Run discarded every event. The emitted records carry only
-// Kind/Tool/ToolUseID/IsError/Summary/Detail; the caller's emit fills in
-// IntentID/Worker. Returns the final assistant text + terminal error.
-//
-// KindText/KindThinking arrive as streaming deltas (one event per fragment); a
-// contiguous run is coalesced into a single record so the trace shows whole
-// messages, not dozens of fragments.
-func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
-	s := agentcore.NewSession(opts)
-	defer s.Close() // release the session's background-task manager (temp dir + processes)
-	return captureRunSession(ctx, s, input, emit)
+func captureRun(ctx context.Context, cfg RunConfig, input string, emit func(db.Activity)) (string, runstate.Reason, error) {
+	t := newTurn(cfg)
+	defer t.Close()
+	return captureRunSession(ctx, t, input, emit)
 }
-
-// captureRunSession is captureRun over an existing session, so a caller can run
-// multiple prompts on the SAME conversation (e.g. a settlement round that reuses
-// the worker's accumulated context after the main run hit max_turns).
-func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
-	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
-	defer auditTrace.Finish()
-	var reason harness.TerminalReason
-	rec := func(r db.Activity) {
-		if r.Kind == "text" || r.Kind == "tool_result" {
-			auditTrace.Append(db.InterceptContextEntry{Kind: r.Kind, Tool: r.Tool, ToolUseID: r.ToolUseID, Text: r.Detail, IsError: r.IsError})
-		}
+func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.Activity)) (text string, reason runstate.Reason, runErr error) {
+	ctx = sessionctx.WithID(ctx, t.key.SessionID)
+	ctx, audit := intercept.WithTrace(ctx, input, approvalHistory(t.History(ctx)))
+	defer audit.Finish()
+	trace := &runTrace{startedAt: time.Now()}
+	names := map[string]string{}
+	var total, current model.Usage
+	rec := func(a db.Activity) {
 		if emit != nil {
-			emit(r)
+			emit(a)
 		}
 	}
-	toolNames := map[string]string{} // tool_use id -> name, to label results
-
-	var tbuf strings.Builder
-	var tkind string
-	flush := func() {
-		if tbuf.Len() == 0 {
-			return
-		}
-		s := strings.TrimSpace(tbuf.String())
-		k := tkind
-		tbuf.Reset()
-		tkind = ""
-		if s != "" {
-			rec(db.Activity{Kind: k, Summary: firstLine(s, 200), Detail: s})
-		}
-	}
-	addDelta := func(kind, text string) {
-		if text == "" {
-			return
-		}
-		if tkind != "" && tkind != kind {
-			flush()
-		}
-		tkind = kind
-		tbuf.WriteString(text)
-	}
-	lastTool := &runTrace{startedAt: time.Now()}
-	var lastUsage *llm.Usage
-
-	var finalText string
-	var rerr error
-	for ev, err := range s.Prompt(ctx, input) {
+	run := func(callCtx context.Context, prompt string, settling bool) error {
+		events, err := t.Run(callCtx, prompt, settling)
 		if err != nil {
-			flush()
-			if ctx.Err() != nil { // engine/user cancellation, not a provider failure
-				sum, detail := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
-				rec(activityWithUsage(db.Activity{Kind: "result", Summary: firstLine(sum, 400), Detail: detail}, lastUsage))
-				return finalText, reason, ctx.Err()
-			}
-			rec(activityWithUsage(db.Activity{Kind: "result", IsError: true, Summary: "执行出错: " + err.Error(), Detail: err.Error()}, lastUsage))
-			return finalText, reason, err
+			return err
 		}
-		switch ev.Kind {
-		case harness.KindToolUse:
-			if ev.ToolUse == nil {
+		var visible, thinking strings.Builder
+		for ev := range events {
+			if ev == nil || ev.Response == nil {
 				continue
 			}
-			flush()
-			toolNames[ev.ToolUse.ID] = ev.ToolUse.Name
-			in := string(ev.ToolUse.Input)
-			lastTool.start(ev.ToolUse.ID, ev.ToolUse.Name, in)
-			auditTrace.Start(ev.ToolUse.ID, ev.ToolUse.Name, ev.ToolUse.Input)
-			rec(db.Activity{Kind: "tool_use", Tool: ev.ToolUse.Name, ToolUseID: ev.ToolUse.ID,
-				Summary: ev.ToolUse.Name + " " + firstLine(in, 200), Detail: in})
-		case harness.KindToolResult:
-			if ev.ToolResult == nil {
-				continue
-			}
-			flush()
-			out := blocksText(ev.ToolResult.Content)
-			lastTool.done(ev.ToolResult.ToolUseID)
-			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
-			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
-				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
-		case harness.KindText:
-			addDelta("text", ev.Text)
-		case harness.KindThinking:
-			addDelta("thinking", ev.Text)
-		case harness.KindUsage:
-			// live cumulative token usage (per model turn). Emitted as a non-rendered
-			// "usage" activity carrying only the token fields; the UI uses the latest
-			// one for a running session's live token count. Don't flush() here — the
-			// buffered final-answer text must stay for the KindResult de-dup.
 			if ev.Usage != nil {
-				u := *ev.Usage
-				lastUsage = &u
-				rec(db.Activity{Kind: "usage",
-					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
-					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens})
+				modelutil.MergeUsage(&current, *ev.Usage)
+				live := total
+				modelutil.AddUsage(&live, current)
+				rec(activityWithUsage(db.Activity{Kind: "usage"}, &live))
+				if !ev.IsPartial {
+					modelutil.AddUsage(&total, current)
+					current = model.Usage{}
+				}
 			}
-		case harness.KindResult:
-			if ev.Terminal != nil {
-				if ev.Terminal.Reason != harness.ReasonAbortedStreaming {
-					sidequestion.Finish(ctx, ev.Terminal.Messages)
+			if ev.Error != nil {
+				err = ev.Error
+				continue
+			}
+			for _, choice := range ev.Choices {
+				if ev.IsPartial {
+					visible.WriteString(choice.Delta.Content)
+					thinking.WriteString(choice.Delta.ReasoningContent)
+					continue
 				}
-				finalText = ev.Terminal.Text
-				reason = ev.Terminal.Reason
-				// the buffered tail text usually equals Terminal.Text (final answer);
-				// drop it to avoid a duplicate record, the result row carries it.
-				if tkind == "text" && strings.TrimSpace(tbuf.String()) == strings.TrimSpace(ev.Terminal.Text) {
-					tbuf.Reset()
-					tkind = ""
+				m := choice.Message
+				if m.Role == model.RoleTool {
+					failed := toolkit.FailedJSON(m.Content)
+					trace.done(m.ToolID)
+					audit.Complete(m.ToolID, m.Content, failed)
+					rec(db.Activity{Kind: "tool_result", Tool: names[m.ToolID], ToolUseID: m.ToolID, IsError: failed, Summary: firstLine(m.Content, 200), Detail: m.Content})
+					continue
 				}
-				flush() // flush any trailing thinking / non-final text
-				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if sum == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
-					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
+				if m.Role != model.RoleAssistant {
+					continue
 				}
-				u := ev.Terminal.Usage // cumulative token usage for this session
-				rec(db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
-					Summary: firstLine(sum, 400), Detail: detail,
-					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
-					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens})
-				if ev.Terminal.Err != nil {
-					rerr = ev.Terminal.Err
+				if m.ReasoningContent != "" {
+					thinking.Reset()
+					thinking.WriteString(m.ReasoningContent)
+				}
+				if thinking.Len() > 0 {
+					rec(db.Activity{Kind: "thinking", Summary: firstLine(thinking.String(), 200), Detail: thinking.String()})
+					thinking.Reset()
+				}
+				if m.Content != "" {
+					visible.Reset()
+					visible.WriteString(m.Content)
+				}
+				if len(m.ToolCalls) == 0 {
+					text = visible.String()
+				} else if visible.Len() > 0 {
+					rec(db.Activity{Kind: "text", Summary: firstLine(visible.String(), 200), Detail: visible.String()})
+				}
+				visible.Reset()
+				for _, call := range m.ToolCalls {
+					names[call.ID] = call.Function.Name
+					trace.start(call.ID, call.Function.Name, string(call.Function.Arguments))
+					audit.Start(call.ID, call.Function.Name, call.Function.Arguments)
+					rec(db.Activity{Kind: "tool_use", Tool: call.Function.Name, ToolUseID: call.ID, Summary: call.Function.Name + " " + firstLine(string(call.Function.Arguments), 200), Detail: string(call.Function.Arguments)})
 				}
 			}
 		}
+		t.models.Wait()
+		if visible.Len() > 0 {
+			text = visible.String()
+		}
+		if thinking.Len() > 0 {
+			rec(db.Activity{Kind: "thinking", Summary: firstLine(thinking.String(), 200), Detail: thinking.String()})
+		}
+		if callCtx.Err() != nil {
+			return callCtx.Err()
+		}
+		return err
 	}
-	flush() // safety: any unflushed text if the stream ended without KindResult
-	return finalText, reason, rerr
-}
-
-func activityWithUsage(activity db.Activity, usage *llm.Usage) db.Activity {
-	if usage == nil {
-		return activity
+	callCtx, cancel := context.WithCancel(ctx)
+	if t.config.MaxDuration > 0 {
+		cancel()
+		callCtx, cancel = context.WithTimeout(ctx, t.config.MaxDuration)
 	}
-	u := *usage
-	activity.InputTokens = &u.InputTokens
-	activity.OutputTokens = &u.OutputTokens
-	activity.CacheReadTokens = &u.CacheReadTokens
-	activity.CacheWriteTokens = &u.CacheWriteTokens
-	return activity
-}
-
-// blocksText concatenates the text of a tool-result's content blocks.
-func blocksText(blocks []llm.ContentBlock) string {
-	var b strings.Builder
-	for _, bl := range blocks {
-		if bl.Type == llm.BlockText && bl.Text != "" {
-			if b.Len() > 0 {
-				b.WriteByte('\n')
+	runErr = run(callCtx, input, false)
+	cancel()
+	reason = runstate.ReasonCompleted
+	if runErr != nil {
+		reason = runstate.ReasonModelError
+		if strings.Contains(strings.ToLower(runErr.Error()), "max llm") {
+			reason = runstate.ReasonMaxTurns
+		}
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			reason = runstate.ReasonTimeout
+		}
+		if ctx.Err() != nil {
+			reason = runstate.ReasonAbortedStreaming
+			if trace.pending {
+				reason = runstate.ReasonAbortedTools
 			}
-			b.WriteString(bl.Text)
 		}
 	}
-	return b.String()
+	if (reason == runstate.ReasonMaxTurns || reason == runstate.ReasonTimeout) && ctx.Err() == nil && t.config.Settlement != nil {
+		policy := t.config.Settlement
+		prompt := policy.Prompt
+		if value := policy.PromptByReason[reason]; value != "" {
+			prompt = value
+		}
+		settleCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+		settleErr := run(settleCtx, prompt, true)
+		stop()
+		if settleErr == nil {
+			runErr = nil
+		} else {
+			runErr = settleErr
+		}
+	}
+	t.models.Wait()
+	t.usageMu.Lock()
+	total = t.usage
+	t.usageMu.Unlock()
+	summary, detail := text, text
+	if strings.TrimSpace(summary) == "" {
+		summary, detail = terminalText(ctx, &runstate.Outcome{Reason: reason, Text: text, Err: runErr, Usage: total}, trace)
+	}
+	rec(activityWithUsage(db.Activity{Kind: "result", IsError: runErr != nil, Summary: firstLine(summary, 400), Detail: detail}, &total))
+	return
 }
-
-// firstLine returns a single-line, rune-capped preview for the summary column.
+func activityWithUsage(a db.Activity, u *model.Usage) db.Activity {
+	if u == nil {
+		return a
+	}
+	i, o, r, w := modelutil.Counts(*u)
+	a.InputTokens = &i
+	a.OutputTokens = &o
+	a.CacheReadTokens = &r
+	a.CacheWriteTokens = &w
+	return a
+}
 func firstLine(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if before, _, found := strings.Cut(s, "\n"); found {
@@ -196,27 +182,19 @@ func firstLine(s string, max int) string {
 	}
 	return s
 }
-
-// Preserve the recorded session's visible messages, excluding thinking blocks.
-// This is audit context; the judge receives only bounded, paired execution
-// evidence selected from it, never assistant prose or thinking blocks.
-func approvalHistory(messages []llm.Message) []db.InterceptContextEntry {
-	var entries []db.InterceptContextEntry
-	for _, message := range messages {
-		for _, block := range message.Content {
-			entry := db.InterceptContextEntry{Kind: string(message.Role)}
-			switch block.Type {
-			case llm.BlockText:
-				entry.Text = block.Text
-			case llm.BlockToolUse:
-				entry.Kind, entry.Tool, entry.ToolUseID, entry.Text = "tool_use", block.Name, block.ID, string(block.Input)
-			case llm.BlockToolResult:
-				entry.Kind, entry.ToolUseID, entry.Text, entry.IsError = "tool_result", block.ToolUseID, blocksText(block.Content), block.IsError
-			default:
-				continue
+func approvalHistory(messages []model.Message) []db.InterceptContextEntry {
+	var out []db.InterceptContextEntry
+	for _, m := range messages {
+		if m.Content != "" {
+			kind := string(m.Role)
+			if m.Role == model.RoleTool {
+				kind = "tool_result"
 			}
-			entries = append(entries, entry)
+			out = append(out, db.InterceptContextEntry{Kind: kind, Tool: m.ToolName, ToolUseID: m.ToolID, Text: m.Content})
+		}
+		for _, c := range m.ToolCalls {
+			out = append(out, db.InterceptContextEntry{Kind: "tool_use", Tool: c.Function.Name, ToolUseID: c.ID, Text: string(c.Function.Arguments)})
 		}
 	}
-	return entries
+	return out
 }

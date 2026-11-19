@@ -4,85 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"path/filepath"
 	"strings"
-
-	"github.com/Autumn-27/norma/skill"
-	actool "github.com/Autumn-27/norma/tool"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
-// maxLedgerSkillName caps the skill name stored for a MISS — that string comes
-// straight from the model and is otherwise unbounded.
 const maxLedgerSkillName = 128
 
-// meteredSkill wraps the Skill meta-tool to append one skill_usage row per call.
-// The metering lives here rather than in Registry.OnInvoke because OnInvoke only
-// receives the resolved Skill: it never fires for an unknown skill name (norma
-// returns a tool error before the hook) and it cannot see the caller's args. Both
-// matter — a miss tells you which procedure the agents wished existed.
-type meteredSkill struct {
-	actool.CoreTool
-	pg       *db.DB
-	reg      *skill.Registry
-	agentKey string
-	ri       agent.RunInfo
-}
-
-// meterSkillTool returns t unchanged when there is no DB to meter into.
-func meterSkillTool(t actool.CoreTool, pg *db.DB, reg *skill.Registry, agentKey string, ri agent.RunInfo) actool.CoreTool {
-	if pg == nil {
-		return t
-	}
-	return &meteredSkill{CoreTool: t, pg: pg, reg: reg, agentKey: agentKey, ri: ri}
-}
-
-func (m *meteredSkill) Call(ctx context.Context, input json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
-	m.record(input)
-	return m.CoreTool.Call(ctx, input, tc)
-}
-
-// record appends the ledger row. Best-effort by design: a metering failure must
-// never turn into a failed skill invocation, so every error path just logs.
-func (m *meteredSkill) record(input json.RawMessage) {
-	var in struct {
-		Name string `json:"name"`
-		Args string `json:"args"`
-	}
-	if err := json.Unmarshal(input, &in); err != nil {
-		return // malformed call; norma will reject it too
-	}
-	name := strings.TrimSpace(in.Name)
-	if name == "" {
+func recordNativeSkill(ctx context.Context, store *db.DB, key string, args *tool.BeforeToolArgs, found bool) {
+	if args.ToolName != "skill_load" || store == nil {
 		return
 	}
-	// Resolve to the directory name so the ledger keys match agent_skill_visibility
-	// and the skills page (a skill's display Name can differ from its directory).
-	found := false
-	if m.reg != nil {
-		if s, ok := m.reg.Get(name); ok {
-			found = true
-			if s.Dir != "" {
-				name = filepath.Base(s.Dir)
-			}
-		}
+	var in struct {
+		Name string `json:"skill"`
 	}
+	if json.Unmarshal(args.Arguments, &in) != nil {
+		return
+	}
+	name := strings.TrimSpace(in.Name)
 	if len(name) > maxLedgerSkillName {
 		name = name[:maxLedgerSkillName]
 	}
-	err := m.pg.InsertSkillUsage(&db.SkillUsage{
-		Skill:         name,
-		AgentKey:      m.agentKey,
-		TaskID:        m.ri.TaskID,
-		ExplorationID: m.ri.ExplorationID,
-		IntentID:      m.ri.IntentID,
-		SessionID:     m.ri.SessionID,
-		ArgsLen:       len(in.Args),
-		Found:         found,
-	})
+	ri := agent.RunInfoFrom(ctx)
+	err := store.InsertSkillUsage(&db.SkillUsage{Skill: name, AgentKey: key, TaskID: ri.TaskID, ExplorationID: ri.ExplorationID, IntentID: ri.IntentID, SessionID: ri.SessionID, Found: found})
 	if err != nil {
-		log.Printf("[skillusage] insert: %v", err)
+		log.Printf("[skillusage] %v", err)
 	}
 }

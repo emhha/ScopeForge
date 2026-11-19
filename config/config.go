@@ -38,7 +38,7 @@ type Config struct {
 // When launched via `go run`, the binary is throwaway: it sits either in a temp
 // build dir (cache miss → fresh link) OR straight inside the Go build cache
 // (cache hit → run from $GOCACHE/.../...-d). We detect both and fall back to the
-// current working directory so dev artifacts (data/, transcripts) and config
+// current working directory so dev artifacts (data/) and config
 // resolve against the project dir, not the throwaway binary's location.
 func BaseDir() string {
 	exe, err := os.Executable()

@@ -10,7 +10,6 @@ import (
 	"github.com/Autumn-27/artex/llmrec"
 )
 
-// The transport is the only layer that still sees the wire bodies: norma builds
 // the request body internally and decodes the SSE response before the recorder
 // gets it. This checks the round trip preserves both directions untouched.
 func TestRoundTripCapturesRawBodies(t *testing.T) {
@@ -45,7 +44,7 @@ func TestRoundTripCapturesRawBodies(t *testing.T) {
 	_ = resp.Body.Close()
 
 	if string(got) != sse {
-		t.Fatal("capture altered the response delivered to norma")
+		t.Fatal("capture altered the response delivered to the native model")
 	}
 	if capt.RawRequest() != reqBody {
 		t.Fatalf("RawRequest()=%q want %q", capt.RawRequest(), reqBody)

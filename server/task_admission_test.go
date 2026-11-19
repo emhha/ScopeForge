@@ -780,7 +780,7 @@ func TestPauseTaskToolPersistsAndDequeuesTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.toolPauseTask().Call(context.Background(), input, nil); err != nil {
+	if _, err := s.toolPauseTask().Call(context.Background(), input); err != nil {
 		t.Fatal(err)
 	}
 	if !task.Paused || task.Queued || task.QueueMode != "bootstrap" || !s.engine.IsPaused(task.ID) {
@@ -813,7 +813,7 @@ func TestPauseTaskToolUsesOrchestratorCancellationCause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.toolPauseTask().Call(context.Background(), input, nil); err != nil {
+	if _, err := s.toolPauseTask().Call(context.Background(), input); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, _, ok := agent.AbortReason(execCtx); !ok || code != "paused_by_orchestrator" {

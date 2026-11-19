@@ -3,7 +3,9 @@ package agent
 import (
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/modelutil"
+
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 func TestWorkerSessionIDIsStablePerIntent(t *testing.T) {
@@ -15,9 +17,7 @@ func TestWorkerSessionIDIsStablePerIntent(t *testing.T) {
 func TestWorkerChatMarkerOnlyMatchesItsNormalUserTurn(t *testing.T) {
 	requestID := "worker-message-123"
 	messages := []llm.Message{
-		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock(workerChatMarker(requestID))}},
-		llm.UserText(workerChatMarker("worker-message-other") + "\nother"),
-		llm.UserText(workerChatMarker(requestID) + "\nnew intent"),
+		{Role: llm.RoleAssistant, Content: workerChatMarker(requestID)}, modelutil.User(workerChatMarker("worker-message-other") + "\nother"), modelutil.User(workerChatMarker(requestID) + "\nnew intent"),
 	}
 	if !hasWorkerChatMessage(messages, requestID) {
 		t.Fatal("expected the matching user turn to be detected")

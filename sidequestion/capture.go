@@ -6,13 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"iter"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 type Parent struct {
@@ -44,28 +41,30 @@ type Model struct {
 }
 
 type Snapshot struct {
-	Parent     Parent                `json:"parent"`
-	RunID      int64                 `json:"run_id"`
-	Version    int64                 `json:"version"`
-	CapturedAt time.Time             `json:"captured_at"`
-	Model      Model                 `json:"model"`
-	Request    llm.CompletionRequest `json:"request"`
+	Parent     Parent        `json:"parent"`
+	RunID      int64         `json:"run_id"`
+	Version    int64         `json:"version"`
+	CapturedAt time.Time     `json:"captured_at"`
+	Model      Model         `json:"model"`
+	Request    model.Request `json:"request"`
 }
 
-func CloneRequest(req llm.CompletionRequest) (llm.CompletionRequest, error) {
-	b, err := json.Marshal(req)
+// Native request JSON preserves message/provider data and generation settings.
+// Tools and HTTP headers are deliberately absent: a checkpoint is evidence,
+// never a retained capability or transport credential. Answer always has no tools.
+func CloneRequest(req model.Request) (model.Request, error) {
+	data, err := json.Marshal(req)
 	if err != nil {
-		return llm.CompletionRequest{}, err
+		return model.Request{}, err
 	}
-	var out llm.CompletionRequest
-	err = json.Unmarshal(b, &out)
+	var out model.Request
+	err = json.Unmarshal(data, &out)
 	return out, err
 }
 
 type Publisher func(Snapshot)
 type publisherKey struct{}
 type captureKey struct{}
-type attemptKey struct{}
 
 func WithPublisher(ctx context.Context, publish Publisher) context.Context {
 	return context.WithValue(ctx, publisherKey{}, publish)
@@ -77,121 +76,94 @@ type Capture struct {
 	runID   int64
 	version int64
 	publish Publisher
-	last    *Snapshot
 }
 
-// Attach uses QueryDeps rather than a global provider hook so compaction and
-// other auxiliary completions cannot replace the main conversation checkpoint.
-func Attach(ctx context.Context, parent Parent, deps harness.QueryDeps, provider llm.Provider) (context.Context, harness.QueryDeps) {
+func Attach(ctx context.Context, parent Parent) context.Context {
 	publish, _ := ctx.Value(publisherKey{}).(Publisher)
 	if publish == nil {
-		return ctx, deps
+		return ctx
 	}
-	c := &Capture{parent: parent, runID: time.Now().UnixNano(), publish: publish}
-	stream, complete := deps.CallModel, deps.CallModelSync
-	if stream == nil {
-		stream = provider.Stream
-	}
-	if complete == nil {
-		complete = provider.Complete
-	}
-	deps.CallModel = func(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-		return stream(context.WithValue(ctx, attemptKey{}, c), req)
-	}
-	deps.CallModelSync = func(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-		return complete(context.WithValue(ctx, attemptKey{}, c), req)
-	}
-	return context.WithValue(ctx, captureKey{}, c), deps
+	return context.WithValue(ctx, captureKey{}, &Capture{parent: parent, runID: time.Now().UnixNano(), publish: publish})
 }
-
-func (c *Capture) save(req llm.CompletionRequest, model Model) {
+func (c *Capture) save(req model.Request, identity Model) {
 	copy, err := CloneRequest(req)
 	if err != nil {
 		return
-	} // Observability must not break the main run.
+	}
 	c.mu.Lock()
 	c.version++
-	s := Snapshot{Parent: c.parent, RunID: c.runID, Version: c.version, CapturedAt: time.Now().UTC(), Model: model, Request: copy}
-	c.last = &s
+	s := Snapshot{Parent: c.parent, RunID: c.runID, Version: c.version, CapturedAt: time.Now().UTC(), Model: identity, Request: copy}
 	c.mu.Unlock()
 	c.publish(s)
 }
 
-// Finish adds tool results that landed after the final model request. Norma's
-// first API message is its host reminder, absent from Terminal.Messages.
-func Finish(ctx context.Context, messages []llm.Message) {
+type boundModel struct {
+	inner    model.Model
+	identity Model
+}
+
+func Bind(inner model.Model, identity Model) model.Model {
+	bound := &boundModel{inner: inner, identity: identity}
+	if projector, ok := inner.(model.ProviderDataProjector); ok {
+		return &projectingModel{boundModel: bound, ProviderDataProjector: projector}
+	}
+	return bound
+}
+
+type projectingModel struct {
+	*boundModel
+	model.ProviderDataProjector
+}
+
+func (m *boundModel) Info() model.Info { return m.inner.Info() }
+func (m *boundModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
 	c, _ := ctx.Value(captureKey{}).(*Capture)
-	if c == nil {
-		return
+	if c == nil || req == nil || isSummary(*req) {
+		return m.inner.GenerateContent(ctx, req)
 	}
-	c.mu.Lock()
-	s := c.last
-	c.mu.Unlock()
-	if s == nil {
-		return
+	c.save(*req, m.identity)
+	checkpoint, err := CloneRequest(*req)
+	if err != nil {
+		return m.inner.GenerateContent(ctx, req)
 	}
-	req := s.Request
-	var prefix []llm.Message
-	if len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Text(), "<system-reminder>") {
-		prefix = append(prefix, req.Messages[0])
+	attemptCtx, cancel := context.WithCancel(ctx)
+	source, err := m.inner.GenerateContent(attemptCtx, req)
+	if source == nil {
+		cancel()
+		return nil, err
 	}
-	req.Messages = append(prefix, llm.MessagesForAPI(messages)...)
-	c.save(req, s.Model)
-}
-
-type boundProvider struct {
-	inner llm.Provider
-	model Model
-}
-
-// Bind belongs immediately around a concrete provider, inside any routing pool.
-func Bind(inner llm.Provider, model Model) llm.Provider { return &boundProvider{inner, model} }
-
-func (p *boundProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) {
-		c, _ := ctx.Value(attemptKey{}).(*Capture)
-		if c == nil {
-			for ev, err := range p.inner.Stream(ctx, req) {
-				if !yield(ev, err) {
-					return
+	out := make(chan *model.Response)
+	go func(startupErr error) {
+		defer close(out)
+		defer func() {
+			cancel()
+			for range source {
+			}
+		}()
+		complete, failed := false, startupErr != nil
+		var assistant model.Message
+		for ev := range source {
+			if ev != nil {
+				failed = failed || ev.Error != nil
+				complete = complete || ev.Done
+				if !ev.IsPartial {
+					for _, choice := range ev.Choices {
+						if choice.Message.Role == model.RoleAssistant {
+							assistant = choice.Message
+						}
+					}
 				}
 			}
-			return
-		}
-		c.save(req, p.model)
-		acc := llm.NewAccumulator()
-		failed := false
-		complete := false
-		for ev, err := range p.inner.Stream(ctx, req) {
-			if err != nil {
-				failed = true
-			} else {
-				acc.Add(ev)
-				if ev.Type == llm.SEMessageStop {
-					complete = true
-				}
-			}
-			if !yield(ev, err) {
+			select {
+			case out <- ev:
+			case <-ctx.Done():
 				return
 			}
 		}
-		if !failed && complete && ctx.Err() == nil {
-			msg := acc.Message()
-			req.Messages = llm.MessagesForAPI(append(append([]llm.Message{}, req.Messages...), msg))
-			c.save(req, p.model)
+		if complete && !failed && ctx.Err() == nil && assistant.Role == model.RoleAssistant {
+			checkpoint.Messages = append(checkpoint.Messages, assistant)
+			c.save(checkpoint, m.identity)
 		}
-	}
-}
-
-func (p *boundProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	c, _ := ctx.Value(attemptKey{}).(*Capture)
-	if c != nil {
-		c.save(req, p.model)
-	}
-	msg, stop, usage, err := p.inner.Complete(ctx, req)
-	if c != nil && err == nil && ctx.Err() == nil {
-		req.Messages = llm.MessagesForAPI(append(append([]llm.Message{}, req.Messages...), msg))
-		c.save(req, p.model)
-	}
-	return msg, stop, usage, err
+	}(err)
+	return out, err
 }

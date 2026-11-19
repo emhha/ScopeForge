@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
 )
 
@@ -28,11 +30,11 @@ func callInsertAssets(t *testing.T, ts *ToolSet, payload any) map[string]any {
 	t.Helper()
 	raw, _ := json.Marshal(payload)
 	tool := ts.insertAssets()
-	res, err := tool.Call(context.Background(), raw, nil)
+	res, err := tool.Call(context.Background(), raw)
 	if err != nil {
 		t.Fatalf("insertAssets Call error: %v", err)
 	}
-	text := res.Flatten()
+	text := toolkit.TextOf(res)
 	var out map[string]any
 	if err := json.Unmarshal([]byte(text), &out); err != nil {
 		t.Fatalf("unmarshal result: %v\nraw: %s", err, text)

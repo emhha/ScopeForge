@@ -18,19 +18,20 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/compaction"
-	"github.com/Autumn-27/norma/llm"
-	acperm "github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/Autumn-27/artex/modelutil"
+	"github.com/Autumn-27/artex/sessionctx"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 // Config describes the LLM backend resolved from the environment.
 type Config struct {
-	Format  llm.Format
+	Format  string
 	BaseURL string
 	APIKey  string
 	Model   string
@@ -57,11 +58,11 @@ type Config struct {
 	// Stream 控制该 profile 是否使用流式(SSE)接口。true(默认)= 流式;false = 真·
 	// 非流式(发 stream:false,一次性拿完整 JSON,走 Provider.Complete)。非流式可绕开
 	// 某些网关糟糕的 SSE 实现(空帧、思考字段丢帧),代价是失去运行中的实时进度/实时
-	// token 计数。映射为 agentcore.Options.NonStreaming = !Stream。
+	// token 计数。映射为 RunConfig.NonStreaming = !Stream。
 	Stream bool
 	// MaxTokens 是单次回复的输出上限(token)。0 = 不发送该字段,由服务端默认值决定
 	// (历史行为)。与 ContextWindowK 不同:后者是模型总容量,只在本地用来算压缩阈值,
-	// 不出现在请求里;本值随每次请求发出。映射为 agentcore.Options.MaxTokens。
+	// 不出现在请求里;本值随每次请求发出。映射为 RunConfig.MaxTokens。
 	MaxTokens int
 	// MaxTokensField 选择 MaxTokens 用哪个请求字段名,仅对 format=openai 生效:
 	//   "" = max_tokens(默认); "max_completion_tokens" = 新字段。
@@ -71,7 +72,7 @@ type Config struct {
 	// SessionHeaderKey,非空时,让每次 LLM 请求带上一个自定义 HTTP 头,头名为该值、
 	// 头值为【当前会话的 session id】(chat 会话=conv-<id>,worker=exp<x>-worker-i<intent>
 	// 等,见 WorkerSessionID)。用于某些按 session-id 头做提示缓存/粘性路由的网关。
-	// 空 = 不发送。值由 transcript.WithSessionID 挂在请求 context 上,由 RoundTripper
+	// 空 = 不发送。值由 sessionctx.WithID 挂在请求 context 上,由 RoundTripper
 	// 读取填入,因此同一共享 provider 也能按会话发出不同的头值。
 	SessionHeaderKey string
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
@@ -125,16 +126,6 @@ func (c Config) CompactionWindow() int {
 	return k * 1000
 }
 
-// compactionConfig builds the agent-core compaction config for a context window
-// in tokens. agentcore.NewSession wires the summarizer (same provider) when this
-// is set on Options.Compaction.
-func compactionConfig(windowTokens int) *compaction.Config {
-	if windowTokens <= 0 {
-		windowTokens = defaultWindowK * 1000
-	}
-	return &compaction.Config{ContextWindow: windowTokens}
-}
-
 // FromEnv resolves the LLM provider config:
 //
 //	ARTEX_LLM_PROVIDER = anthropic|openai (default: inferred from keys)
@@ -167,19 +158,19 @@ func FromEnv() (Config, bool) {
 	}
 	switch prov {
 	case "openai":
-		c.Format = llm.FormatOpenAI
+		c.Format = "openai"
 		c.APIKey = oaiKey
 		if c.Model == "" {
 			c.Model = "gpt-4o"
 		}
 	case "openai-responses":
-		c.Format = llm.FormatOpenAIResponses
+		c.Format = "openai-responses"
 		c.APIKey = oaiKey
 		if c.Model == "" {
 			c.Model = "gpt-5"
 		}
 	default:
-		c.Format = llm.FormatAnthropic
+		c.Format = "anthropic"
 		c.APIKey = anthKey
 		if c.Model == "" {
 			c.Model = "claude-opus-4-8"
@@ -205,21 +196,21 @@ func ConfigFrom(provider, model, baseURL, apiKey, proxy string) Config {
 	}
 	switch strings.TrimSpace(provider) {
 	case "openai":
-		c.Format = llm.FormatOpenAI
+		c.Format = "openai"
 		// provider appends "/chat/completions"; tolerate a full endpoint URL.
 		c.BaseURL = strings.TrimRight(strings.TrimSuffix(c.BaseURL, "/chat/completions"), "/")
 		if c.Model == "" {
 			c.Model = "gpt-4o"
 		}
 	case "openai-responses":
-		c.Format = llm.FormatOpenAIResponses
+		c.Format = "openai-responses"
 		// provider appends "/responses"; tolerate a full endpoint URL.
 		c.BaseURL = strings.TrimRight(strings.TrimSuffix(c.BaseURL, "/responses"), "/")
 		if c.Model == "" {
 			c.Model = "gpt-5"
 		}
 	default:
-		c.Format = llm.FormatAnthropic
+		c.Format = "anthropic"
 		// provider appends "/v1/messages".
 		c.BaseURL = strings.TrimRight(strings.TrimSuffix(c.BaseURL, "/v1/messages"), "/")
 		if c.Model == "" {
@@ -242,45 +233,60 @@ func isFalsy(s string) bool {
 // Provider returns the short provider name ("anthropic"/"openai").
 func (c Config) Provider() string {
 	switch c.Format {
-	case llm.FormatOpenAI:
+	case "openai":
 		return "openai"
-	case llm.FormatOpenAIResponses:
+	case "openai-responses":
 		return "openai-responses"
 	}
 	return "anthropic"
 }
 
-// NewProvider builds an llm.Provider from the config. When a rate is set, the
+// NewProvider builds an llm.Model from the config. When a rate is set, the
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
-func (c Config) NewProvider() (llm.Provider, error) {
+func (c Config) NewModel() (llm.Model, error) {
 	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
 	if err != nil {
 		return nil, err
 	}
-	lc := llm.Config{
-		Format:     c.Format,
-		BaseURL:    c.BaseURL,
-		APIKey:     c.APIKey,
-		Model:      c.Model,
-		HTTPClient: client,
+	inner, err := modelutil.Open(c.Format, c.Model, c.BaseURL, c.APIKey, c.MaxTokens, c.MaxTokensField, client)
+	if err != nil {
+		return nil, err
 	}
-	// 思考开关与强度两个字段各自透传(空 = 该字段不发送)。二者解耦:
-	// 可只发 thinking.type、只发 effort、都发、或都不发。
-	lc.ThinkingType = c.ThinkingType
-	lc.ReasoningEffort = c.ReasoningEffort
-	// 输出上限的字段名选择(空 = 用 max_tokens)。上限的「值」不在这里:它每轮随
-	// agentcore.Options.MaxTokens 走,provider 只决定把它塞进哪个键。
-	lc.MaxTokensField = c.MaxTokensField
-	// 重试参数与 SDK 同语义(次数 0=默认/负=关闭,间隔 0=指数退避/>0=固定),原样透传。
-	lc.MaxRetries = c.Retry.ConnectAttempts
-	lc.RetryInterval = c.Retry.ConnectInterval
-	lc.EmptyResponseRetries = c.Retry.EmptyAttempts
-	lc.EmptyResponseInterval = c.Retry.EmptyInterval
-	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
-		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
+	return &configuredModel{inner: inner, config: c}, nil
+}
+
+type configuredModel struct {
+	rateMu sync.Mutex
+	next   time.Time
+	inner  llm.Model
+	config Config
+}
+
+func (m *configuredModel) Info() llm.Info {
+	i := m.inner.Info()
+	i.ContextWindow = m.config.CompactionWindow()
+	return i
+}
+func (m *configuredModel) GenerateContent(ctx context.Context, req *llm.Request) (<-chan *llm.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("nil request")
 	}
-	return llm.NewProvider(lc)
+	copy := *req
+	copy.ExtraFields = map[string]any{}
+	for k, v := range req.ExtraFields {
+		copy.ExtraFields[k] = v
+	}
+	if m.config.ThinkingType != "" {
+		copy.ExtraFields["thinking"] = map[string]string{"type": m.config.ThinkingType}
+	}
+	if m.config.ReasoningEffort != "" {
+		copy.ReasoningEffort = &m.config.ReasoningEffort
+	}
+	if m.config.Format == "anthropic" {
+		ctx = modelutil.WithAnthropicRequest(ctx, &copy)
+	}
+	return m.generate(ctx, &copy)
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
@@ -322,8 +328,6 @@ func IsQuotaExhaustedMessage(message string) bool {
 		!strings.Contains(message, "too many requests")
 }
 
-// quotaAwareTransport preserves Norma's normal retry behavior except for a 429
-// whose body explicitly says the account quota/balance is exhausted. Norma's
 // retry loop treats every 429 as transient; normalizing only that response to
 // 402 lets a task router fail over immediately while retaining the original
 // response body for provider-specific classification and audit logs.
@@ -337,17 +341,15 @@ type quotaAwareTransport struct {
 
 func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Custom session-id header: name is user-configured, value is THIS run's
-	// session id (norma stashes it on the context via transcript.WithSessionID).
 	// Stable across a session's turns and distinct across sessions — exactly what
 	// a session-keyed prompt cache wants. Skipped when no session id is present.
 	if t.sessionHeaderKey != "" {
-		if sid := transcript.SessionIDFrom(req.Context()); sid != "" {
+		if sid := sessionctx.ID(req.Context()); sid != "" {
 			req.Header.Set(t.sessionHeaderKey, sid)
 		}
 	}
 	// When LLM recording is on, the Recorder puts a Capture on the context so the
 	// raw wire bodies can be persisted. This is the only layer that still sees
-	// them: norma builds the request body internally and decodes the SSE response
 	// before either reaches the recorder.
 	capt := llmrec.CaptureFrom(req.Context())
 	capt.SetRequest(requestBodySnapshot(req))
@@ -379,7 +381,6 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // requestBodySnapshot copies an outgoing request body without consuming it.
-// norma builds every model request from a *bytes.Reader, so net/http populates
 // GetBody and the copy has no effect on what gets sent.
 func requestBodySnapshot(req *http.Request) string {
 	if req.GetBody == nil {
@@ -455,37 +456,29 @@ func clipBody(s string) string {
 // endpoint/key actually work. Returns the round-trip latency and the model's
 // reply text.
 func TestConnection(ctx context.Context, c Config) (time.Duration, string, error) {
-	prov, err := c.NewProvider()
+	prov, err := c.NewModel()
 	if err != nil {
 		return 0, "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	// 抓取原始 wire 报文:连接测试最需要看到的就是网关到底回了什么(状态码+响应体),
-	// 而 norma 把响应解码成 StreamEvent 后这些就没了。quotaAwareTransport 会在
 	// context 里找到这个 Capture 并填入每次 HTTP 尝试的状态码与 body。
 	ctx, capt := llmrec.NewCapture(ctx)
 	defer logTestConnection(c, capt)
-	// 连接测试是一条单发路径,不经过 agentcore 的会话循环,因此没人往 context 上挂
+	// 连接测试是一条单发路径,不经过 Runner 的会话循环,因此没人往 context 上挂
 	// session id。对配了 SessionHeaderKey 的端点(如 opencode zen 强制要求
 	// x-opencode-session 头,缺了直接 400 MissingSessionID),这会导致"对话正常、
 	// 点击测试却 400"的落差。这里补挂一个一次性随机 session id,让测试与真实对话走同
 	// 一套发头逻辑;未配 SessionHeaderKey 的端点不读它,无副作用。
-	ctx = transcript.WithSessionID(ctx, "conntest-"+transcript.NewSessionID())
+	ctx = sessionctx.WithID(ctx, "conntest-"+uuid.NewString())
 	start := time.Now()
 	// MaxTokens 要给足：推理模型(如 deepseek-v4-pro)在给出答案前会先产出一大段
 	// 思考(实测对一句 "ping" 也能烧 ~2900 token)。若只给 32,模型会一直卡在"思考阶段"
 	// 就撞到输出上限(finish=length)、被截断,连接测试虽仍算通(err=nil)但显示成
 	// "已中断/length/resume" 一团糟。给足预算让它把 OK 干净吐完(finish=stop)。
 	// EscalateMaxTokens 保持 false:不因截断而抬额重试,避免 resume 循环空烧。
-	reply, err := agentcore.Run(ctx, agentcore.Options{
-		Provider:       prov,
-		SystemPrompt:   []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
-		PermissionMode: acperm.ModeBypass,
-		MaxTurns:       1,
-		MaxTokens:      8192,
-		NonStreaming:   !c.Stream, // 用该 profile 的真实收发模式做连接测试
-	}, "ping")
+	reply, _, err := captureRun(ctx, RunConfig{Model: prov, Instructions: []string{"你是连接测试。直接输出 OK。"}, MaxTurns: 1, MaxTokens: 8192, NonStreaming: !c.Stream, DisableHostTools: true}, "ping", nil)
 	lat := time.Since(start)
 	if err != nil {
 		return lat, "", err

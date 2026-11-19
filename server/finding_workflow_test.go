@@ -8,28 +8,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
-func workflowCall(t *testing.T, ctx context.Context, tool actool.CoreTool, input any, wantError bool) string {
+func workflowCall(t *testing.T, ctx context.Context, tool actool.CallableTool, input any, wantError bool) string {
 	t.Helper()
 	raw, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := tool.Call(ctx, raw, nil)
-	if err != nil || r.IsError != wantError {
-		t.Fatalf("%s: error=%v result=%s", tool.Name(), err, r.Flatten())
+	r, err := tool.Call(ctx, raw)
+	if err != nil || toolkit.Failed(r) != wantError {
+		t.Fatalf("%s: error=%v result=%s", tool.Declaration().Name, err, toolkit.TextOf(r))
 	}
-	return r.Flatten()
+	return toolkit.TextOf(r)
 }
 
-func workflowTool(t *testing.T, tools []actool.CoreTool, name string) actool.CoreTool {
+func workflowTool(t *testing.T, tools []actool.CallableTool, name string) actool.CallableTool {
 	t.Helper()
 	for _, tool := range tools {
-		if tool.Name() == name {
+		if tool.Declaration().Name == name {
 			return tool
 		}
 	}
@@ -189,7 +191,7 @@ func TestFindingWorkflowAutoHintToPlannerAndSetting(t *testing.T) {
 		t.Fatal("disabled feature still injects guidance")
 	}
 	for _, tool := range tools {
-		if tool.Name() == "bind_finding_traffic" {
+		if tool.Declaration().Name == "bind_finding_traffic" {
 			t.Fatal("disabled binding tool exposed")
 		}
 	}
@@ -319,8 +321,8 @@ func TestFindingWorkflowReporterBindsBeforeWritingReport(t *testing.T) {
 		t.Fatal("off reporter still receives auto-binding guidance")
 	}
 	for _, tool := range off {
-		if tool.Name() == "traffic_search" || tool.Name() == "traffic_get" || tool.Name() == "traffic_blob" || tool.Name() == "bind_finding_traffic" {
-			t.Fatal("auto-binding tool exposed while off", tool.Name())
+		if tool.Declaration().Name == "traffic_search" || tool.Declaration().Name == "traffic_get" || tool.Declaration().Name == "traffic_blob" || tool.Declaration().Name == "bind_finding_traffic" {
+			t.Fatal("auto-binding tool exposed while off", tool.Declaration().Name)
 		}
 	}
 	workflowCall(t, ctx, workflowTool(t, off, "get_finding_traffic"), map[string]any{"finding_id": f.FindingID}, false)

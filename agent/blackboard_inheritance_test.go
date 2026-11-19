@@ -8,19 +8,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
-func callReadJSON(t *testing.T, tool actool.CoreTool, input string) any {
+func callReadJSON(t *testing.T, tool actool.CallableTool, input string) any {
 	t.Helper()
-	result, err := tool.Call(context.Background(), json.RawMessage(input), nil)
+	result, err := tool.Call(context.Background(), json.RawMessage(input))
 	if err != nil {
 		t.Fatalf("tool call: %v", err)
 	}
 	var out any
-	if err := json.Unmarshal([]byte(result.Flatten()), &out); err != nil {
-		t.Fatalf("decode tool result: %v; raw=%s", err, result.Flatten())
+	if err := json.Unmarshal([]byte(toolkit.TextOf(result)), &out); err != nil {
+		t.Fatalf("decode tool result: %v; raw=%s", err, toolkit.TextOf(result))
 	}
 	return out
 }

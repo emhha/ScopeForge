@@ -8,15 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // 平台操作工具(给内置 Auto agent 用):建/改 skill、自定义工具、MCP。都是 host 工具,
 // seed 进 tools 表、默认绑定 auto,经 hostTools 注入。复用现有 db/文件系统逻辑。
 
-func (s *Server) platformTools() []actool.CoreTool {
-	return []actool.CoreTool{
+func (s *Server) platformTools() []actool.CallableTool {
+	return []actool.CallableTool{
 		s.toolCreateSkill(),
 		s.toolUpdateSkillFile(),
 		s.toolCreateCustomTool(),
@@ -39,7 +41,7 @@ var platformToolKeys = []string{
 
 // toolDeleteAssetsByHost hard-deletes every asset tied to one host (exact match).
 // Platform-level (not a per-task tool): operates on the global, cross-task asset库.
-func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
+func (s *Server) toolDeleteAssetsByHost() actool.CallableTool {
 	return wrTool("delete_assets_by_host",
 		"按 host 精确删除资产：删掉该 host 的域名/子域名，以及其下的服务(service)、接口(endpoint)。\n"+
 			"host 完全匹配(小写、去空格)，不是模糊/通配。\n"+
@@ -48,21 +50,21 @@ func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 		objSchema(map[string]any{
 			"host": strParam("要删除的 host：域名/子域名/IP。完全匹配，如 example.com 或 a.example.com 或 1.2.3.4"),
 		}, "host"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			as := s.assetStore()
 			if as == nil {
-				return actool.Errorf("资产库未初始化"), nil
+				return toolkit.Error("资产库未初始化"), nil
 			}
 			var a struct {
 				Host string `json:"host"`
 			}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Host) == "" {
-				return actool.Errorf("host 不能为空"), nil
+				return toolkit.Error("host 不能为空"), nil
 			}
 			counts, err := as.DeleteByHost(a.Host)
 			if err != nil {
-				return actool.Errorf("删除失败: " + err.Error()), nil
+				return toolkit.Error("删除失败: " + err.Error()), nil
 			}
 			var total int64
 			for _, n := range counts {
@@ -78,7 +80,7 @@ func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 
 // ---- skills ----
 
-func (s *Server) toolCreateSkill() actool.CoreTool {
+func (s *Server) toolCreateSkill() actool.CallableTool {
 	return wrTool("create_skill",
 		"创建一个新 skill(写 SKILL.md，agentskills.io 规范)。name 小写字母/数字/连字符。",
 		objSchema(map[string]any{
@@ -86,21 +88,21 @@ func (s *Server) toolCreateSkill() actool.CoreTool {
 			"description":  strParam("skill 描述(必填，说明它做什么/何时用)"),
 			"instructions": strParam("Markdown 正文说明(可选)"),
 		}, "name", "description"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct{ Name, Description, Instructions string }
 			_ = json.Unmarshal(in, &a)
 			if !validSkillName(a.Name) {
-				return actool.Errorf("skill 名不合法(小写字母开头，仅字母/数字/连字符，≤64)"), nil
+				return toolkit.Error("skill 名不合法(小写字母开头，仅字母/数字/连字符，≤64)"), nil
 			}
 			if strings.TrimSpace(a.Description) == "" {
-				return actool.Errorf("description 必填"), nil
+				return toolkit.Error("description 必填"), nil
 			}
 			path := filepath.Join(s.skillDir, a.Name)
 			if _, err := os.Stat(path); err == nil {
-				return actool.Errorf("skill 已存在: " + a.Name), nil
+				return toolkit.Error("skill 已存在: " + a.Name), nil
 			}
 			if err := os.MkdirAll(path, 0o755); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			var b strings.Builder
 			b.WriteString("---\n")
@@ -114,13 +116,13 @@ func (s *Server) toolCreateSkill() actool.CoreTool {
 			}
 			if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(b.String()), 0o644); err != nil {
 				_ = os.RemoveAll(path)
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
-			return actool.Text("skill created: " + a.Name), nil
+			return toolkit.Text("skill created: " + a.Name), nil
 		})
 }
 
-func (s *Server) toolUpdateSkillFile() actool.CoreTool {
+func (s *Server) toolUpdateSkillFile() actool.CallableTool {
 	return wrTool("update_skill_file",
 		"写/覆盖某个 skill 内的一个文件(默认 SKILL.md)。用于修改技能内容或加脚本/引用。",
 		objSchema(map[string]any{
@@ -128,15 +130,15 @@ func (s *Server) toolUpdateSkillFile() actool.CoreTool {
 			"file":    strParam("相对路径(可选，默认 SKILL.md，如 scripts/run.py)"),
 			"content": strParam("文件完整内容"),
 		}, "name", "content"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct{ Name, File, Content string }
 			_ = json.Unmarshal(in, &a)
 			if !validSkillName(a.Name) {
-				return actool.Errorf("skill 名不合法"), nil
+				return toolkit.Error("skill 名不合法"), nil
 			}
 			skillPath := filepath.Join(s.skillDir, a.Name)
 			if _, err := os.Stat(skillPath); os.IsNotExist(err) {
-				return actool.Errorf("skill 不存在: " + a.Name), nil
+				return toolkit.Error("skill 不存在: " + a.Name), nil
 			}
 			rel := strings.TrimSpace(a.File)
 			if rel == "" {
@@ -144,16 +146,16 @@ func (s *Server) toolUpdateSkillFile() actool.CoreTool {
 			}
 			clean, msg := skillRelPath(rel)
 			if msg != "" {
-				return actool.Errorf("非法路径: " + msg), nil
+				return toolkit.Error("非法路径: " + msg), nil
 			}
 			full := filepath.Join(skillPath, clean)
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			if err := os.WriteFile(full, []byte(a.Content), 0o644); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
-			return actool.Text("skill file written: " + a.Name + "/" + clean), nil
+			return toolkit.Text("skill file written: " + a.Name + "/" + clean), nil
 		})
 }
 
@@ -194,52 +196,52 @@ func toDBTool(a customToolToolInput) *db.Tool {
 	}
 }
 
-func (s *Server) toolCreateCustomTool() actool.CoreTool {
+func (s *Server) toolCreateCustomTool() actool.CallableTool {
 	return wrTool("create_custom_tool", "【重要】当安装一些平台没有的工具时，调用该工具将安装的工具放入平台中，让平台可以调用！创建一个自定义工具(shell/command/script/http)。shell=bash 环境声明，只需 key+description+agents，无需 exec/schema。",
 		customToolSchema("工具 key(小写字母开头，字母/数字/下划线)"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a customToolToolInput
 			_ = json.Unmarshal(in, &a)
 			a.Key = strings.TrimSpace(a.Key)
 			if !reToolKey.MatchString(a.Key) {
-				return actool.Errorf("key 需小写字母开头，仅含小写字母/数字/下划线"), nil
+				return toolkit.Error("key 需小写字母开头，仅含小写字母/数字/下划线"), nil
 			}
 			if a.Kind != "shell" && a.Kind != "command" && a.Kind != "script" && a.Kind != "http" {
-				return actool.Errorf("kind 需为 shell / command / script / http"), nil
+				return toolkit.Error("kind 需为 shell / command / script / http"), nil
 			}
 			if a.Kind == "http" && !hasSchemaProps(a.Schema) {
-				return actool.Errorf("http 工具必须提供参数 JSON Schema(不能留空)"), nil
+				return toolkit.Error("http 工具必须提供参数 JSON Schema(不能留空)"), nil
 			}
 			if exist, _ := s.m.pg.GetTool(a.Key); exist != nil {
-				return actool.Errorf("该 key 已存在: " + a.Key), nil
+				return toolkit.Error("该 key 已存在: " + a.Key), nil
 			}
 			if err := s.m.pg.CreateCustomTool(toDBTool(a)); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
-			return actool.Text("custom tool created: " + a.Key), nil
+			return toolkit.Text("custom tool created: " + a.Key), nil
 		})
 }
 
-func (s *Server) toolUpdateCustomTool() actool.CoreTool {
+func (s *Server) toolUpdateCustomTool() actool.CallableTool {
 	return wrTool("update_custom_tool", "修改一个已有的自定义工具(按 key)。",
 		customToolSchema("要修改的自定义工具 key"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a customToolToolInput
 			_ = json.Unmarshal(in, &a)
 			existing, _ := s.m.pg.GetTool(a.Key)
 			if existing == nil || existing.System {
-				return actool.Errorf("只能修改自定义工具: " + a.Key), nil
+				return toolkit.Error("只能修改自定义工具: " + a.Key), nil
 			}
 			if a.Kind != "shell" && a.Kind != "command" && a.Kind != "script" && a.Kind != "http" {
-				return actool.Errorf("kind 需为 shell / command / script / http"), nil
+				return toolkit.Error("kind 需为 shell / command / script / http"), nil
 			}
 			if a.Kind == "http" && !hasSchemaProps(a.Schema) {
-				return actool.Errorf("http 工具必须提供参数 JSON Schema(不能留空)"), nil
+				return toolkit.Error("http 工具必须提供参数 JSON Schema(不能留空)"), nil
 			}
 			if err := s.m.pg.UpdateCustomTool(toDBTool(a)); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
-			return actool.Text("custom tool updated: " + a.Key), nil
+			return toolkit.Text("custom tool updated: " + a.Key), nil
 		})
 }
 
@@ -291,36 +293,36 @@ func (a mcpToolInput) toDB() *db.MCPServer {
 	}
 }
 
-func (s *Server) toolCreateMCP() actool.CoreTool {
+func (s *Server) toolCreateMCP() actool.CallableTool {
 	return wrTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。创建后其工具需按 agent 可见性授权。",
 		mcpSchema(false),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a mcpToolInput
 			_ = json.Unmarshal(in, &a)
 			a.ID = 0
 			if strings.TrimSpace(a.Name) == "" || strings.TrimSpace(a.Transport) == "" {
-				return actool.Errorf("name / transport 必填"), nil
+				return toolkit.Error("name / transport 必填"), nil
 			}
 			id, err := s.m.pg.SaveMCP(a.toDB())
 			if err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("mcp created: id=%d name=%s", id, a.Name)), nil
+			return toolkit.Text(fmt.Sprintf("mcp created: id=%d name=%s", id, a.Name)), nil
 		})
 }
 
-func (s *Server) toolUpdateMCP() actool.CoreTool {
+func (s *Server) toolUpdateMCP() actool.CallableTool {
 	return wrTool("update_mcp", "修改一个已有的 MCP 服务器(按 id)。",
 		mcpSchema(true),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a mcpToolInput
 			_ = json.Unmarshal(in, &a)
 			if a.ID == 0 {
-				return actool.Errorf("id 必填"), nil
+				return toolkit.Error("id 必填"), nil
 			}
 			if _, err := s.m.pg.SaveMCP(a.toDB()); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
-			return actool.Text(fmt.Sprintf("mcp updated: id=%d", a.ID)), nil
+			return toolkit.Text(fmt.Sprintf("mcp updated: id=%d", a.ID)), nil
 		})
 }

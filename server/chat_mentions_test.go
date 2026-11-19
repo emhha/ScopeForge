@@ -15,7 +15,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 func TestChatMentionParsing(t *testing.T) {
@@ -144,10 +144,10 @@ func TestChatMentionWorkerReceivesServerDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m.pg.DeleteFinding(fid)
-	requests := make(chan llm.CompletionRequest, 10)
-	worker := agent.NewWorker(retestProvider{complete: func(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	requests := make(chan llm.Request, 10)
+	worker := agent.NewWorker(&retestProvider{complete: func(_ context.Context, req llm.Request) (llm.Message, string, llm.Usage, error) {
 		requests <- req
-		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("已读取引用")}}, "end_turn", llm.Usage{}, nil
+		return llm.Message{Role: llm.RoleAssistant, Content: "已读取引用"}, "end_turn", llm.Usage{}, nil
 	}}, "test", m.dir, nil, 10000, 1)
 	worker.SetNonStreaming(func() bool { return true })
 	s.engine.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) {
@@ -302,12 +302,12 @@ func TestChatMentionCatalogAndContext(t *testing.T) {
 
 func TestChatMentionConversationReceivesServerDetails(t *testing.T) {
 	s, fid := newRetestServer(t)
-	setRetestProvider(s, retestProvider{complete: func(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	setRetestProvider(s, retestProvider{complete: func(_ context.Context, req llm.Request) (llm.Message, string, llm.Usage, error) {
 		blob, _ := json.Marshal(req.Messages)
 		if !strings.Contains(string(blob), "original proof") || !strings.Contains(string(blob), "用户引用的记录快照") {
 			t.Errorf("model did not receive resolved evidence: %s", blob)
 		}
-		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("已读取引用")}}, "end_turn", llm.Usage{}, nil
+		return llm.Message{Role: llm.RoleAssistant, Content: "已读取引用"}, "end_turn", llm.Usage{}, nil
 	}})
 	c, err := s.m.pg.CreateConversation("auto", "引用测试", nil)
 	if err != nil {

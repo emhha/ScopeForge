@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"iter"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/internal/modeltest"
+	"github.com/Autumn-27/artex/modelutil"
+
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 // fakeProv is a scripted provider: script[i] is what the i-th call yields —
@@ -17,13 +19,10 @@ import (
 type fakeProv struct {
 	name   string
 	calls  int
-	events [][]llm.StreamEvent // events emitted before the error, per call
-	errs   []error             // error to end each call with (nil = clean finish)
+	events [][]llm.Response
+	errs   []error
 }
 
-// at returns script entry n, repeating the last one once the script runs out, so
-// a provider defined as "always succeeds" / "always 402" keeps behaving that way
-// across repeated calls.
 func at[T any](s []T, n int) (T, bool) {
 	var zero T
 	if len(s) == 0 {
@@ -34,71 +33,52 @@ func at[T any](s []T, n int) (T, bool) {
 	}
 	return s[n], true
 }
-
-func (f *fakeProv) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+func (f *fakeProv) Info() llm.Info { return llm.Info{Name: f.name} }
+func (f *fakeProv) GenerateContent(context.Context, *llm.Request) (<-chan *llm.Response, error) {
 	n := f.calls
 	f.calls++
-	return func(yield func(llm.StreamEvent, error) bool) {
-		if evs, ok := at(f.events, n); ok {
-			for _, e := range evs {
-				if !yield(e, nil) {
-					return
-				}
-			}
+	var events []*llm.Response
+	if items, ok := at(f.events, n); ok {
+		for _, item := range items {
+			copy := item
+			events = append(events, &copy)
 		}
-		err, _ := at(f.errs, n)
-		if err != nil {
-			yield(llm.StreamEvent{}, err)
-			return
-		}
-		yield(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
 	}
-}
-
-func (f *fakeProv) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	acc := llm.NewAccumulator()
-	for ev, err := range f.Stream(ctx, req) {
-		if err != nil {
-			return llm.Message{}, "", llm.Usage{}, err
-		}
-		acc.Add(ev)
+	if err, _ := at(f.errs, n); err != nil {
+		events = append(events, modeltest.Failure(err))
 	}
-	return acc.Message(), acc.StopReason, acc.Usage, nil
+	return modeltest.Responses(events...), nil
 }
-
-// ok builds a provider that always succeeds with one text delta.
 func okProv(name, text string) *fakeProv {
-	return &fakeProv{name: name, events: [][]llm.StreamEvent{{{Type: llm.SETextDelta, Text: text}}}}
+	return &fakeProv{name: name, events: [][]llm.Response{{*modeltest.Text(text)}}}
 }
-
-// failProv builds a provider that fails immediately (before any event) with status.
 func failProv(name string, status int) *fakeProv {
-	return &fakeProv{name: name, errs: []error{fmt.Errorf("anthropic: status %d: nope", status)}}
+	return &fakeProv{name: name, errs: []error{fmt.Errorf("status %d: nope", status)}}
 }
-
-func member(id int64, name string, rank int, p llm.Provider) *Member {
+func member(id int64, name string, rank int, p llm.Model) *Member {
 	return &Member{ID: id, Name: name, Model: "m" + name, Rank: rank, Prov: p}
 }
-
-// drain consumes a stream, returning the concatenated text and terminal error.
-func drain(seq iter.Seq2[llm.StreamEvent, error]) (string, error) {
-	var sb strings.Builder
-	for ev, err := range seq {
-		if err != nil {
-			return sb.String(), err
+func drain(source <-chan *llm.Response, err error) (string, error) {
+	var text strings.Builder
+	if err != nil {
+		return "", err
+	}
+	for ev := range source {
+		if ev.Error != nil {
+			err = ev.Error
 		}
-		if ev.Type == llm.SETextDelta {
-			sb.WriteString(ev.Text)
+		for _, c := range ev.Choices {
+			text.WriteString(c.Delta.Content)
 		}
 	}
-	return sb.String(), nil
+	return text.String(), err
 }
 
 func TestFailoverOnNoCredit(t *testing.T) {
 	a, b := failProv("a", 402), okProv("b", "hello")
 	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
 
-	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	got, err := drain(p.GenerateContent(context.Background(), &llm.Request{}))
 	if err != nil {
 		t.Fatalf("expected failover to succeed, got %v", err)
 	}
@@ -117,11 +97,11 @@ func TestHardFailureTripsBreakerImmediately(t *testing.T) {
 	reg := NewRegistry(nil, nil)
 	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
 
-	_, _ = drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	_, _ = drain(p.GenerateContent(context.Background(), &llm.Request{}))
 	if !reg.IsOpen(1) {
 		t.Fatal("402 should have tripped the breaker on the first failure")
 	}
-	_, _ = drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	_, _ = drain(p.GenerateContent(context.Background(), &llm.Request{}))
 	if a.calls != 1 {
 		t.Fatalf("tripped profile was called again: calls=%d, want 1", a.calls)
 	}
@@ -187,14 +167,16 @@ func TestBackoffLadderGrows(t *testing.T) {
 // NOT be retried on another model — that would duplicate the assistant turn.
 func TestNoFailoverAfterEmit(t *testing.T) {
 	a := &fakeProv{
-		name:   "a",
-		events: [][]llm.StreamEvent{{{Type: llm.SETextDelta, Text: "partial"}}},
-		errs:   []error{fmt.Errorf("anthropic: status 500: mid-stream drop")},
+		name: "a",
+		events: [][]llm.Response{{llm.Response{IsPartial: true,
+			Choices: []llm.Choice{{Delta: llm.Message{Content: "partial"}}},
+		}}},
+		errs: []error{fmt.Errorf("anthropic: status 500: mid-stream drop")},
 	}
 	b := okProv("b", "full")
 	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
 
-	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	got, err := drain(p.GenerateContent(context.Background(), &llm.Request{}))
 	if err == nil {
 		t.Fatal("mid-stream error should surface, not be swallowed by a failover")
 	}
@@ -216,7 +198,7 @@ func TestNoFailoverOnCancel(t *testing.T) {
 	reg := NewRegistry(nil, nil)
 	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
 
-	_, err := drain(p.Stream(ctx, llm.CompletionRequest{}))
+	_, err := drain(p.GenerateContent(ctx, &llm.Request{}))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -273,8 +255,8 @@ func TestSkipsMembersTooSmallForRequest(t *testing.T) {
 	mb.WindowTokens = 1_000_000
 	p := New([]*Member{ms, mb}, NewRegistry(nil, nil))
 
-	req := llm.CompletionRequest{Messages: []llm.Message{llm.UserText(strings.Repeat("x", 100_000))}}
-	got, err := drain(p.Stream(context.Background(), req))
+	req := llm.Request{Messages: []llm.Message{modelutil.User(strings.Repeat("x", 100_000))}}
+	got, err := drain(p.GenerateContent(context.Background(), &req))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -294,7 +276,7 @@ func TestAllTrippedStillProbesHead(t *testing.T) {
 	reg.Trip(2, "402", true)
 	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
 
-	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	got, err := drain(p.GenerateContent(context.Background(), &llm.Request{}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,8 +289,8 @@ func TestExhaustedChainReportsClearly(t *testing.T) {
 	a, b := failProv("a", 402), failProv("b", 402)
 	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
 
-	_, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
-	if !errors.Is(err, ErrExhausted) {
+	_, err := drain(p.GenerateContent(context.Background(), &llm.Request{}))
+	if !strings.Contains(err.Error(), ErrExhausted.Error()) {
 		t.Fatalf("err = %v, want it to wrap ErrExhausted", err)
 	}
 }
@@ -321,7 +303,7 @@ func TestEqualRankRotates(t *testing.T) {
 
 	first := map[string]int{}
 	for range 4 {
-		txt, _ := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+		txt, _ := drain(p.GenerateContent(context.Background(), &llm.Request{}))
 		first[txt]++
 	}
 	if first["a"] == 0 || first["b"] == 0 {
@@ -338,7 +320,7 @@ func TestHeadAlwaysFirst(t *testing.T) {
 		member(3, "b", 5, okProv("b", "b")),
 	}, NewRegistry(nil, nil))
 	for range 5 {
-		if txt, _ := drain(p.Stream(context.Background(), llm.CompletionRequest{})); txt != "H" {
+		if txt, _ := drain(p.GenerateContent(context.Background(), &llm.Request{})); txt != "H" {
 			t.Fatalf("head was not tried first, got %q", txt)
 		}
 	}
@@ -348,7 +330,7 @@ func TestHeadAlwaysFirst(t *testing.T) {
 func TestSingleMemberPassthrough(t *testing.T) {
 	a := okProv("a", "solo")
 	p := New([]*Member{member(1, "a", RankActive, a)}, NewRegistry(nil, nil))
-	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
+	got, err := drain(p.GenerateContent(context.Background(), &llm.Request{}))
 	if err != nil || got != "solo" {
 		t.Fatalf("got %q / %v, want solo / nil", got, err)
 	}
@@ -366,5 +348,26 @@ func TestExpiredWindowIsClosed(t *testing.T) {
 	reg.Restore(1, State{Trips: 1, OpenUntil: time.Now().Add(-time.Second)})
 	if reg.IsOpen(1) {
 		t.Fatal("expired window should read as closed")
+	}
+}
+
+func TestNativeSDKHTTPErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		message  string
+		status   int
+		failover bool
+	}{
+		{`POST "https://provider.test/v1/messages": 400 Bad Request`, 400, false},
+		{`POST "https://provider.test/v1/messages": 401 Unauthorized`, 401, true},
+		{`request failed: status=422`, 422, false},
+		{`POST "https://provider.test/v1/messages": 503 Service Unavailable`, 503, true},
+	} {
+		err := errors.New(tc.message)
+		if got := HTTPStatus(err); got != tc.status {
+			t.Errorf("status=%d want=%d", got, tc.status)
+		}
+		if got := shouldFailover(t.Context(), err); got != tc.failover {
+			t.Errorf("failover=%v for %s", got, tc.message)
+		}
 	}
 }

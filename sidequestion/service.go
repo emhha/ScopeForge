@@ -4,57 +4,105 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
-	"github.com/Autumn-27/norma/llm"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-// SideQuestionService has no harness, tool executor, transcript writer or model
-// failover chain. Answer is one completion; Respond adds bounded preparation
-// and at most one context-overflow recovery around that completion.
-type SideQuestionService struct{ Provider llm.Provider }
-
-type Answer struct {
-	Text    string
-	Usage   llm.Usage
-	ToolUse bool
+// SideQuestionService is a single tools-free native model call, not an Agent.
+// Respond adds only the existing bounded context preparation/recovery policy.
+type SideQuestionService struct {
+	Model  model.Model
+	OnCall func(Answer, time.Duration, error)
 }
 
-func (s SideQuestionService) Answer(ctx context.Context, req llm.CompletionRequest, streaming bool, update func(Answer)) (out Answer, err error) {
-	if streaming {
-		complete := false
-		for ev, streamErr := range s.Provider.Stream(ctx, req) {
-			if streamErr != nil {
-				err = streamErr
-				break
+type Answer struct {
+	Text         string
+	Usage        model.Usage
+	ToolUse      bool
+	FinishReason string
+}
+
+func (s SideQuestionService) Answer(ctx context.Context, req model.Request, streaming bool, update func(Answer)) (out Answer, err error) {
+	started := time.Now()
+	defer func() {
+		if s.OnCall != nil {
+			s.OnCall(out, time.Since(started), err)
+		}
+	}()
+	req.Tools = nil
+	req.Stream = streaming
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	source, err := s.Model.GenerateContent(attemptCtx, &req)
+	if source == nil {
+		if err == nil {
+			err = errors.New("模型没有返回响应通道")
+		}
+		return out, err
+	}
+	// Join the native producer even on startup failure/cancellation. Late usage
+	// still belongs to this call and must be metered before releasing admission.
+	observeUsage := func(ev *model.Response) {
+		if ev != nil && ev.Usage != nil {
+			mergeUsage(&out.Usage, *ev.Usage)
+		}
+	}
+	defer func() {
+		cancel()
+		for ev := range source {
+			observeUsage(ev)
+		}
+	}()
+	if err != nil {
+		return out, err
+	}
+	complete := false
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			break loop
+		case ev, ok := <-source:
+			if !ok {
+				break loop
 			}
-			switch ev.Type {
-			case llm.SETextDelta:
-				out.Text += ev.Text
-			case llm.SEToolUseStart:
-				out.ToolUse = true
-			case llm.SEMessageStart, llm.SEMessageDelta:
-				out.Usage.Add(ev.Usage)
-			case llm.SEMessageStop:
-				complete = true
+			if ev == nil {
+				continue
 			}
+			observeUsage(ev)
+			if ev.Error != nil {
+				err = ev.Error
+			}
+			for _, choice := range ev.Choices {
+				if choice.FinishReason != nil {
+					out.FinishReason = *choice.FinishReason
+				}
+				if ev.IsPartial {
+					out.Text += choice.Delta.Content
+					out.ToolUse = out.ToolUse || len(choice.Delta.ToolCalls) > 0
+				} else if choice.Message.Role == model.RoleAssistant {
+					if choice.Message.Content != "" {
+						out.Text = choice.Message.Content
+					}
+					out.ToolUse = out.ToolUse || len(choice.Message.ToolCalls) > 0
+				}
+			}
+			complete = complete || ev.Done
 			if update != nil {
 				update(out)
 			}
-			if ctx.Err() != nil {
-				err = ctx.Err()
-				break
+			if err != nil {
+				break loop
 			}
 		}
-		if err == nil && !complete {
-			err = errors.New("模型响应中断，请重新提问")
-		}
-	} else {
-		var msg llm.Message
-		msg, _, out.Usage, err = s.Provider.Complete(ctx, req)
-		out.Text, out.ToolUse = msg.Text(), len(msg.ToolUses()) > 0
 	}
 	if ctx.Err() != nil {
 		err = ctx.Err()
+	}
+	if err == nil && !complete {
+		err = errors.New("模型响应中断，请重新提问")
 	}
 	if err == nil && strings.TrimSpace(out.Text) == "" {
 		if out.ToolUse {

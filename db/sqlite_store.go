@@ -213,7 +213,7 @@ func openSQLite(path string) (*DB, error) {
 	return d, nil
 }
 
-const sqliteSchemaVersion = 1
+const sqliteSchemaVersion = 2
 const sqliteApplicationID = 0x41525458 // ARTX
 func initializeSQLite(writer *sql.DB) error {
 	tx, err := writer.Begin()
@@ -253,6 +253,11 @@ func initializeSQLite(writer *sql.DB) error {
 		}
 	} else if application != sqliteApplicationID {
 		return errors.New("SQLite database application ID is missing")
+	}
+	if version < 2 {
+		if _, err = tx.Exec(`DROP TABLE IF EXISTS side_question_requests; DROP TABLE IF EXISTS side_question_sessions; PRAGMA user_version=2`); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

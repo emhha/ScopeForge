@@ -100,7 +100,7 @@ func stageTaskArchiveFiles(dataDir string, archiveID int64, taskID string, explo
 		// The journal is written before the first rename, so its presence does not mean
 		// the payload is complete: a previous round may have failed mid-loop with a
 		// rollback that itself errored, which leaves the root in place. Replay the moves
-		// rather than packaging a payload that is missing transcripts or workspace files.
+		// rather than packaging a payload that is missing workspace files.
 		if err := os.MkdirAll(filepath.Join(stage.payload, "files"), archiveDirMode); err != nil {
 			return nil, err
 		}
@@ -122,21 +122,6 @@ func stageTaskArchiveFiles(dataDir string, archiveID int64, taskID string, explo
 		targets = append(targets, archiveFileMove{Source: taskDir, Relative: filepath.Join("files", "tasks", taskID)})
 	} else if !os.IsNotExist(err) {
 		return nil, err
-	}
-	transcriptDir := filepath.Join(dataDir, "transcripts")
-	entries, err := os.ReadDir(transcriptDir)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	prefix := fmt.Sprintf("exp%d-", explorationID)
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && !strings.HasSuffix(name, ".jsonl")) {
-			continue
-		}
-		targets = append(targets, archiveFileMove{
-			Source: filepath.Join(transcriptDir, name), Relative: filepath.Join("files", "transcripts", name),
-		})
 	}
 	// Persist the complete plan before the first rename. Recovery can therefore
 	// roll back any prefix of the moves after an abrupt process termination.
@@ -239,16 +224,6 @@ func installTaskArchiveFiles(dataDir, extractedDir, taskID string, archiveID int
 		sources = append(sources, restoredArchivePath{Source: workspace, Destination: filepath.Join(dataDir, "tasks", taskID)})
 	} else if !os.IsNotExist(err) {
 		return nil, err
-	}
-	transcripts := filepath.Join(extractedDir, "files", "transcripts")
-	entries, err := os.ReadDir(transcripts)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	for _, entry := range entries {
-		sources = append(sources, restoredArchivePath{
-			Source: filepath.Join(transcripts, entry.Name()), Destination: filepath.Join(dataDir, "transcripts", entry.Name()),
-		})
 	}
 	for _, move := range sources {
 		if _, err := os.Lstat(move.Destination); err == nil {

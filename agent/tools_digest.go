@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // digestMemberEntry builds the compact per-member view expand_digest returns —
@@ -117,7 +119,7 @@ func (t *ToolSet) resolveDigest(id int64) (*db.Node, *db.ExplorationStore, int64
 // expandDigest returns a digest's covered members as a compact list (§6.1). It is
 // a distinct tool from node_detail because it returns a LIST of members, not one
 // node's full detail.
-func (t *ToolSet) expandDigest() actool.CoreTool {
+func (t *ToolSet) expandDigest() actool.CallableTool {
 	return t.writeExpTool("expand_digest",
 		"展开一个 cold digest：返回它折叠的成员紧凑列表（id/summary/state/confidence），与概览 recent_facts/recent_done_intents 同形状。要某条完整细节/证据用 node_detail(member_id)。",
 		map[string]any{
@@ -127,7 +129,7 @@ func (t *ToolSet) expandDigest() actool.CoreTool {
 			},
 			"required": []any{"id"},
 		},
-		func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
 			var in struct {
 				ID int64 `json:"id"`
 			}

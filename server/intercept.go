@@ -9,13 +9,13 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/modelutil"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 // judgeWorkerLane is the usage-ledger "worker" label for intercept fallback-judge
@@ -61,7 +61,7 @@ func (s *Server) wireInterceptReviewer() {
 	})
 }
 
-func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, input intercept.ReviewInput) (string, error) {
+func reviewCompletion(ctx context.Context, prov llm.Model, prompt string, input intercept.ReviewInput) (string, error) {
 	user, err := json.Marshal(input)
 	if err != nil {
 		return "", err
@@ -72,25 +72,11 @@ func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, inp
 // streamCollectText runs a single non-streaming-style completion (thinking off,
 // low temperature, bounded output) and returns the concatenated text. The
 // budget includes the explanation and complete closing JSON delimiters.
-func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
-	temp := 0.0
-	req := llm.CompletionRequest{
-		System:      []string{system},
-		Messages:    []llm.Message{llm.UserText(user)},
-		MaxTokens:   1024,
-		Temperature: &temp,
-		Thinking:    "disabled",
-	}
-	var sb strings.Builder
-	for ev, err := range prov.Stream(ctx, req) {
-		if err != nil {
-			return "", err
-		}
-		if ev.Type == llm.SETextDelta {
-			sb.WriteString(ev.Text)
-		}
-	}
-	return sb.String(), nil
+func streamCollectText(ctx context.Context, prov llm.Model, system, user string) (string, error) {
+	tokens := 1024
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleSystem, Content: system}, {Role: llm.RoleUser, Content: user}}, GenerationConfig: llm.GenerationConfig{MaxTokens: &tokens}, ExtraFields: map[string]any{"thinking": map[string]string{"type": "disabled"}}}
+	message, _, _, err := modelutil.Complete(ctx, prov, req)
+	return message.Content, err
 }
 
 // --- intercept rule CRUD ---

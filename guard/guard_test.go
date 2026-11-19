@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Autumn-27/norma/hook"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // A guard with no interceptor no longer hard-blocks anything: destructive/exfil
@@ -16,8 +16,11 @@ func TestPreToolUsePassthrough(t *testing.T) {
 
 	block := func(cmd string) bool {
 		input, _ := json.Marshal(map[string]string{"command": cmd})
-		b, _, _ := g.Hooks().PreToolUse(context.Background(), "Bash", input)
-		return b
+		result, err := g.Hooks().RunBeforeTool(context.Background(), &tool.BeforeToolArgs{ToolName: "Bash", Arguments: input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result != nil && result.CustomResult != nil
 	}
 
 	for _, cmd := range []string{
@@ -35,5 +38,3 @@ func TestPreToolUsePassthrough(t *testing.T) {
 		t.Error("audit should record gated calls")
 	}
 }
-
-var _ = hook.PreToolUse

@@ -609,46 +609,7 @@ CREATE TRIGGER IF NOT EXISTS "trg_settings_updated" AFTER UPDATE ON "settings"
 WHEN NEW.updated_at = OLD.updated_at
 BEGIN UPDATE "settings" SET updated_at=utc_now() WHERE "key"=NEW."key"; END;
 
-CREATE TABLE IF NOT EXISTS "side_question_requests" (
-    "id" TEXT NOT NULL,
-    "ordinal" INTEGER PRIMARY KEY AUTOINCREMENT,
-    "session_key" TEXT NOT NULL,
-    "generation" INTEGER NOT NULL,
-    "client_id" TEXT NOT NULL,
-    "question" TEXT NOT NULL,
-    "answer" TEXT NOT NULL DEFAULT '',
-    "status" TEXT NOT NULL,
-    "error" TEXT NOT NULL DEFAULT '',
-    "model" JSON_TEXT NOT NULL CHECK ("model" IS NULL OR json_valid("model")),
-    "snapshot_at" TIMESTAMP NOT NULL,
-    "created_at" TIMESTAMP NOT NULL DEFAULT (utc_now()),
-    "sequence" INTEGER NOT NULL DEFAULT 0,
-    "usage" JSON_TEXT NOT NULL DEFAULT '{}' CHECK ("usage" IS NULL OR json_valid("usage")),
-    "context_info" JSON_TEXT NOT NULL DEFAULT '{}' CHECK ("context_info" IS NULL OR json_valid("context_info")),
-    CHECK ((status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted'))),
-    UNIQUE (id),
-    UNIQUE (session_key, generation, client_id),
-    FOREIGN KEY (session_key) REFERENCES side_question_sessions(session_key) ON DELETE CASCADE
-);
 
-CREATE TABLE IF NOT EXISTS "side_question_sessions" (
-    "session_key" TEXT NOT NULL,
-    "conversation_id" INTEGER,
-    "task_id" INTEGER,
-    "exploration_id" INTEGER,
-    "intent_id" INTEGER,
-    "run_id" INTEGER NOT NULL,
-    "version" INTEGER NOT NULL,
-    "snapshot" JSON_TEXT NOT NULL CHECK ("snapshot" IS NULL OR json_valid("snapshot")),
-    "generation" INTEGER NOT NULL DEFAULT 0,
-    "memory" JSON_TEXT NOT NULL DEFAULT '{}' CHECK ("memory" IS NULL OR json_valid("memory")),
-    CHECK ((((conversation_id IS NOT NULL) AND (task_id IS NULL) AND (exploration_id IS NULL) AND (intent_id IS NULL)) OR ((conversation_id IS NULL) AND (task_id IS NOT NULL) AND (exploration_id IS NOT NULL)))),
-    PRIMARY KEY (session_key),
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-    FOREIGN KEY (exploration_id) REFERENCES explorations(id) ON DELETE CASCADE,
-    FOREIGN KEY (intent_id) REFERENCES exploration_nodes(id) ON DELETE CASCADE
-);
 
 CREATE TABLE IF NOT EXISTS "skill_usage" (
     "id" INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1037,17 +998,11 @@ CREATE INDEX IF NOT EXISTS idx_notification_events_pending ON notification_event
 
 CREATE INDEX IF NOT EXISTS idx_server_logs_id ON server_logs (id DESC);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_side_request_running ON side_question_requests (session_key) WHERE (status = 'running');
 
-CREATE INDEX IF NOT EXISTS idx_side_requests_history ON side_question_requests (session_key, ordinal DESC);
 
-CREATE INDEX IF NOT EXISTS idx_side_sessions_conv ON side_question_sessions (conversation_id);
 
-CREATE INDEX IF NOT EXISTS idx_side_sessions_exp ON side_question_sessions (exploration_id);
 
-CREATE INDEX IF NOT EXISTS idx_side_sessions_intent ON side_question_sessions (intent_id);
 
-CREATE INDEX IF NOT EXISTS idx_side_sessions_task ON side_question_sessions (task_id);
 
 CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage (skill, ts DESC);
 

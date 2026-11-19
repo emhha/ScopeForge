@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/artex/toolkit"
+
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // 本文件把「内置工具」从纯代码变成可枚举、可被 DB 覆盖的目录：
@@ -14,10 +16,10 @@ import (
 //     覆盖描述/schema + 注入参数默认值」。key/handler 仍在代码层，DB 只改「散文与默认值」。
 // handler（Call 行为）永远来自代码——DB 改不了它，只能改模型看到的说明与缺省入参。
 
-// ToolSeed 是一个内置工具的可播种快照：key 即 CoreTool.Name()（与 handler 死绑，
+// ToolSeed 是一个内置工具的可播种快照：key 即 CoreTool.Declaration().Name（与 handler 死绑，
 // UI 只读），Desc/Schema 取自代码里的工具定义，Agents 是代码默认把它给了哪些 agent。
 type ToolSeed struct {
-	Key    string         // = CoreTool.Name()，主键，不可改
+	Key    string         // = CoreTool.Declaration().Name，主键，不可改
 	Desc   string         // 顶层描述（可在 UI 覆盖）
 	Schema map[string]any // 参数 JSON-Schema（结构只读，description/default 可在 UI 改）
 	Agents []string       // 默认绑定的 agent key（worker/planner/mainagent）
@@ -31,9 +33,9 @@ type ToolSeed struct {
 // Grep/Bash）：它们每个 agent 都固定拥有、没有「绑定到谁」的取舍，且说明大多在 Prompt()
 // 里（本表只覆盖 Description()，会造成半覆盖误导）。不 seed → 无 DB 行 → ToolResolve
 // 原样放行、不覆盖，行为与从前一致。只有 artex 自己的领域工具入表可管。
-func builtinToolsByAgent() map[string][]actool.CoreTool {
+func builtinToolsByAgent() map[string][]actool.CallableTool {
 	ts := NewToolSet(nil, "")
-	return map[string][]actool.CoreTool{
+	return map[string][]actool.CallableTool{
 		"mainagent": ts.MainAgentTools(),
 		"planner":   ts.PlannerTools(),
 		"worker":    ts.WorkerTools(),
@@ -65,18 +67,18 @@ func BuiltinToolSeeds() []ToolSeed {
 	order := []string{"mainagent", "goals", "planner", "worker", "auto", "pentest"}
 
 	type acc struct {
-		tool   actool.CoreTool
+		tool   actool.CallableTool
 		agents []string
 	}
 	m := map[string]*acc{}
 	var keys []string
 	for _, ak := range order {
 		for _, t := range byAgent[ak] {
-			a, ok := m[t.Name()]
+			a, ok := m[t.Declaration().Name]
 			if !ok {
 				a = &acc{tool: t}
-				m[t.Name()] = a
-				keys = append(keys, t.Name())
+				m[t.Declaration().Name] = a
+				keys = append(keys, t.Declaration().Name)
 			}
 			a.agents = append(a.agents, ak)
 		}
@@ -91,8 +93,8 @@ func BuiltinToolSeeds() []ToolSeed {
 		}
 		out = append(out, ToolSeed{
 			Key:    k,
-			Desc:   a.tool.Description(),
-			Schema: a.tool.InputSchema(),
+			Desc:   a.tool.Declaration().Description,
+			Schema: toolkit.SchemaMap(a.tool.Declaration().InputSchema),
 			Agents: agents,
 		})
 	}
@@ -104,36 +106,39 @@ func BuiltinToolSeeds() []ToolSeed {
 // and wraps the rest so the model sees the DB-overridden description/schema and
 // 缺省入参 get injected. Tools with no matching DB row (MCP/skill/host tools like
 // traffic) pass through untouched. nil = tools unchanged. Wired in server/assembly.go.
-var ToolResolve func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool
+var ToolResolve func(ctx context.Context, agentKey string, tools []actool.CallableTool) []actool.CallableTool
 
 // DecorateTool wraps t so Description()/InputSchema() report the DB overrides and
 // Call() injects scalar parameter defaults (from schema's "default" props) whenever
 // the model omitted them. Name/Prompt/permission/scheduler flags delegate to t, so
 // the tool's identity and handler are unchanged. Empty desc/schema fall back to t's.
-func DecorateTool(t actool.CoreTool, desc string, schema map[string]any) actool.CoreTool {
+func DecorateTool(t actool.CallableTool, desc string, schema map[string]any) actool.CallableTool {
 	if desc == "" {
-		desc = t.Description()
+		desc = t.Declaration().Description
 	}
 	if len(schema) == 0 {
-		schema = t.InputSchema()
+		schema = toolkit.SchemaMap(t.Declaration().InputSchema)
 	}
-	return &overriddenTool{CoreTool: t, desc: desc, schema: schema}
+	return &overriddenTool{CallableTool: t, desc: desc, schema: schema}
 }
 
 // overriddenTool is a CoreTool decorator: it embeds the original (so all behavioral
 // methods — Prompt/IsReadOnly/IsConcurrencySafe/CheckPermissions/Name — delegate)
 // and overrides only the model-facing description/schema plus default injection.
 type overriddenTool struct {
-	actool.CoreTool
+	actool.CallableTool
 	desc   string
 	schema map[string]any
 }
 
-func (o *overriddenTool) Description() string         { return o.desc }
-func (o *overriddenTool) InputSchema() map[string]any { return o.schema }
-
-func (o *overriddenTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
-	return o.CoreTool.Call(ctx, injectDefaults(in, o.schema), tc)
+func (o *overriddenTool) Declaration() *actool.Declaration {
+	declaration := *o.CallableTool.Declaration()
+	declaration.Description = o.desc
+	declaration.InputSchema = toolkit.Schema(o.schema)
+	return &declaration
+}
+func (o *overriddenTool) Call(ctx context.Context, in []byte) (any, error) {
+	return o.CallableTool.Call(ctx, injectDefaults(in, o.schema))
 }
 
 // injectDefaults fills scalar parameter defaults declared in the (possibly edited)

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Autumn-27/artex/toolkit"
 )
 
 func TestRenderTemplateCommand(t *testing.T) {
@@ -129,18 +131,18 @@ func TestRunHTTPTool(t *testing.T) {
 		"body":    `{"flag":"{flag}"}`,
 	})
 	res, err := (&Server{}).runHTTPTool(context.Background(), execRaw,
-		map[string]any{"flag": "CTF{x}", "token": "sekret"}, nil)
+		map[string]any{"flag": "CTF{x}", "token": "sekret"})
 	if err != nil {
 		t.Fatalf("runHTTPTool: %v", err)
 	}
-	if res.IsError || len(res.Content) == 0 {
+	if res.IsError || len(res.Text) == 0 {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 	var out struct {
 		Status int    `json:"status"`
 		Body   string `json:"body"`
 	}
-	_ = json.Unmarshal([]byte(res.Content[0].Text), &out)
+	_ = json.Unmarshal([]byte(res.Text), &out)
 
 	if gotMethod != "POST" {
 		t.Fatalf("method: %q", gotMethod)
@@ -165,7 +167,6 @@ func TestDetectPython(t *testing.T) {
 	}
 }
 
-// The http tool must truncate an oversized response through norma's Capture, the
 // same valve every other tool uses — a session with no OutputDir falls back to a
 // head+tail cut, so a body far past the default cap comes back shortened.
 func TestHTTPToolTruncatesLargeBody(t *testing.T) {
@@ -176,11 +177,11 @@ func TestHTTPToolTruncatesLargeBody(t *testing.T) {
 	defer srv.Close()
 
 	execRaw, _ := json.Marshal(map[string]any{"method": "GET", "url": srv.URL})
-	res, err := (&Server{}).runHTTPTool(context.Background(), execRaw, map[string]any{}, nil)
+	res, err := (&Server{}).runHTTPTool(context.Background(), execRaw, map[string]any{})
 	if err != nil {
 		t.Fatalf("runHTTPTool: %v", err)
 	}
-	out := res.Flatten()
+	out := toolkit.TextOf(res)
 	if len(out) >= 40000 {
 		t.Fatalf("oversized http body was not truncated: len=%d", len(out))
 	}

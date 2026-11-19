@@ -28,13 +28,12 @@ func validWorkerMessageRequestID(id string) bool {
 
 // sendWorkerMessage continues a paused Worker intent with a human-authored message.
 // The message is injected as the next turn's input through the same
-// resume-from-transcript path the worker uses on a normal resume (ExecuteWithMessage),
+// in-memory session continuation path the worker uses on a normal resume (ExecuteWithMessage),
 // so this reuses the existing pause/resume machinery rather than a bespoke protocol.
 // The run happens in a dedicated goroutine outside the worker pool (runDetachedIntent),
 // so the message is picked up immediately even when every pool slot is busy — the same
 // way the main-agent chat handler starts its run directly. In-memory only: a process
-// restart re-runs the intent from its transcript without the message, which is
-// acceptable for this rare interrupt-then-continue action.
+// restart clears the model context; a later run uses the retained task graph.
 func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {

@@ -75,9 +75,6 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 			return err
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE task_id=$1`, taskID); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(`DELETE FROM findings WHERE task_id=$1`, taskID); err != nil {
 		return err
 	}
@@ -130,7 +127,11 @@ WHERE id=$1`, archiveID, ArchiveReady, archivePath, sha256, originalSize, compre
 		string(countsRaw), string(statsRaw), snapshot.FormatVersion); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	d.ForgetSideTask(taskID)
+	return nil
 }
 
 // RestoreTaskArchive restores SQLite rows from a verified manifest. It is
@@ -248,11 +249,7 @@ WHERE archive.id=$1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
 	} else {
 		warnings = append(warnings, warning...)
 	}
-	for _, table := range []string{"side_question_sessions", "side_question_requests"} {
-		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
-			return nil, fmt.Errorf("restore %s: %w", table, err)
-		}
-	}
+
 	if warning, err := restoreTaskScopes(tx, remappedTables["task_scope"]); err != nil {
 		return nil, err
 	} else {
@@ -358,33 +355,12 @@ func rowExists(tx *Tx, table string, id int64) bool {
 }
 
 func insertArchiveRows(tx *Tx, table string, raw json.RawMessage) error {
-	// json_populate_recordset inserts NULL for absent columns, bypassing SQL
-	// defaults. Preserve compatibility with v3 archives predating side memory.
-	if (table == "side_question_sessions" || table == "side_question_requests") && len(raw) > 0 {
-		var rows []map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			return err
-		}
-		field := "memory"
-		if table == "side_question_requests" {
-			field = "context_info"
-		}
-		for _, row := range rows {
-			if len(row[field]) == 0 || string(row[field]) == "null" {
-				row[field] = json.RawMessage(`{}`)
-			}
-		}
-		var err error
-		raw, err = json.Marshal(rows)
-		if err != nil {
-			return err
-		}
-	}
+
 	allowed := map[string]bool{
 		"exploration_nodes": true, "exploration_edges": true, "exploration_anchors": true,
 		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true,
 		"llm_records": true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
-		"side_question_sessions": true, "side_question_requests": true, "finding_traffic_bindings": true,
+		"finding_traffic_bindings": true,
 	}
 	if !allowed[table] {
 		return fmt.Errorf("archive restore table %q is not allowed", table)

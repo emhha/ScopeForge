@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/artex/toolkit"
 )
 
 // TestBuiltinToolSeeds ensures the catalog builds from a nil-store ToolSet without
@@ -50,24 +50,21 @@ func TestBuiltinToolSeeds(t *testing.T) {
 // before the underlying handler runs, and an explicitly-provided value is kept.
 func TestDecorateToolInjectsDefaults(t *testing.T) {
 	var seen map[string]any
-	base := actool.Build(actool.Spec{
-		Name: "probe", Description: "orig",
-		Run: func(_ context.Context, in json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
-			_ = json.Unmarshal(in, &seen)
-			return actool.Text("ok"), nil
-		},
+	base := toolkit.New("probe", "orig", nil, func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
+		_ = json.Unmarshal(in, &seen)
+		return toolkit.Text("ok"), nil
 	})
 	schema := map[string]any{"type": "object", "properties": map[string]any{
 		"limit": map[string]any{"type": "integer", "description": "n", "default": float64(3)},
 		"q":     map[string]any{"type": "string", "description": "query"},
 	}}
 	dec := DecorateTool(base, "new desc", schema)
-	if dec.Description() != "new desc" {
-		t.Errorf("description = %q", dec.Description())
+	if dec.Declaration().Description != "new desc" {
+		t.Errorf("description = %q", dec.Declaration().Description)
 	}
 
 	// limit omitted → default 3 injected; q kept.
-	if _, err := dec.Call(context.Background(), json.RawMessage(`{"q":"x"}`), nil); err != nil {
+	if _, err := dec.Call(context.Background(), json.RawMessage(`{"q":"x"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if seen["limit"] != float64(3) || seen["q"] != "x" {
@@ -75,7 +72,7 @@ func TestDecorateToolInjectsDefaults(t *testing.T) {
 	}
 
 	// limit provided → default does NOT override.
-	if _, err := dec.Call(context.Background(), json.RawMessage(`{"limit":9}`), nil); err != nil {
+	if _, err := dec.Call(context.Background(), json.RawMessage(`{"limit":9}`)); err != nil {
 		t.Fatal(err)
 	}
 	if seen["limit"] != float64(9) {

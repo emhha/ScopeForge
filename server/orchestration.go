@@ -9,19 +9,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // jsonResult marshals v to a JSON tool result.
-func jsonResult(v any) (actool.Result, error) {
+func jsonResult(v any) (toolkit.Output, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return actool.Errorf(err.Error()), nil
+		return toolkit.Error(err.Error()), nil
 	}
-	return actool.Text(string(b)), nil
+	return toolkit.Text(string(b)), nil
 }
 
 // 本文件实现 P2「跨任务编排工具集」(docs/跑分编排 §2 P2)。这些是 host 工具——需要
@@ -37,7 +38,7 @@ func jsonResult(v any) (actool.Result, error) {
 // decides who actually sees any of them.
 //
 //nolint:unused // used as the hostTools provider in wireAgentAugment
-func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
+func (s *Server) hostTools() ([]actool.CallableTool, map[string][]string) {
 	tools := append(s.m.HostTools(), s.orchestrationTools()...)
 	tools = append(tools, s.findingRetestTools()...)
 	tools = append(tools, s.platformTools()...) // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
@@ -62,8 +63,8 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 
 // orchestrationTools returns the cross-task tool set. Bound per-agent via the
 // tools table (default: no binding — opt-in for orchestration agents).
-func (s *Server) orchestrationTools() []actool.CoreTool {
-	return []actool.CoreTool{
+func (s *Server) orchestrationTools() []actool.CallableTool {
+	return []actool.CallableTool{
 		s.toolListTasks(),
 		s.toolListLLMProfiles(),
 		s.toolSpawnTask(),
@@ -117,46 +118,32 @@ func objSchema(props map[string]any, required ...string) map[string]any {
 	return m
 }
 
-func roTool(name, desc string, schema map[string]any, run func(context.Context, json.RawMessage) (actool.Result, error)) actool.CoreTool {
-	return actool.Build(actool.Spec{
-		Name: name, Description: desc, Schema: schema,
-		ReadOnly:   func(json.RawMessage) bool { return true },
-		Concurrent: func(json.RawMessage) bool { return true },
-		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
-			return permission.Allowed()
-		},
-		Run: func(ctx context.Context, in json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
-			return run(ctx, in)
-		},
+func roTool(name, desc string, schema map[string]any, run func(context.Context, json.RawMessage) (toolkit.Output, error)) actool.CallableTool {
+	return toolkit.New(name, desc, schema, func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
+		return run(ctx, in)
 	})
 }
 
-func wrTool(name, desc string, schema map[string]any, run func(context.Context, json.RawMessage) (actool.Result, error)) actool.CoreTool {
-	return actool.Build(actool.Spec{
-		Name: name, Description: desc, Schema: schema,
-		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
-			return permission.Allowed()
-		},
-		Run: func(ctx context.Context, in json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
-			return run(ctx, in)
-		},
+func wrTool(name, desc string, schema map[string]any, run func(context.Context, json.RawMessage) (toolkit.Output, error)) actool.CallableTool {
+	return toolkit.New(name, desc, schema, func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
+		return run(ctx, in)
 	})
 }
 
 // delegateToTask resolves the `task_id` in the input, builds a ToolSet bound to
 // that task's store, strips task_id, and calls the chosen per-task tool — so the
 // cross-task read reuses the exact in-task logic against another task.
-func (s *Server) delegateToTask(ctx context.Context, in json.RawMessage, pick func(*agent.ToolSet) actool.CoreTool) (actool.Result, error) {
+func (s *Server) delegateToTask(ctx context.Context, in json.RawMessage, pick func(*agent.ToolSet) actool.CallableTool) (toolkit.Output, error) {
 	var head struct {
 		TaskID string `json:"task_id"`
 	}
 	_ = json.Unmarshal(in, &head)
 	if strings.TrimSpace(head.TaskID) == "" {
-		return actool.Errorf("task_id 为必填"), nil
+		return toolkit.Error("task_id 为必填"), nil
 	}
 	t, ok := s.m.Task(head.TaskID)
 	if !ok {
-		return actool.Errorf("task 不存在: " + head.TaskID), nil
+		return toolkit.Error("task 不存在: " + head.TaskID), nil
 	}
 	var m map[string]json.RawMessage
 	_ = json.Unmarshal(in, &m)
@@ -168,16 +155,17 @@ func (s *Server) delegateToTask(ctx context.Context, in json.RawMessage, pick fu
 	}
 	tsx.SetNotify(t.Notify)         // 通用唤醒（无专用回调的写操作走它；读工具为 no-op）
 	tsx.SetNotifyHint(t.NotifyHint) // add_hint → 记一条「人新增了 N 条战略提示：…」触发并唤醒 planner
-	return pick(tsx).Call(ctx, inner, nil)
+	result, err := pick(tsx).Call(ctx, inner)
+	return toolkit.Output{Text: toolkit.TextOf(result), IsError: toolkit.Failed(result)}, err
 }
 
 // --- tools ---
 
-func (s *Server) toolListTasks() actool.CoreTool {
+func (s *Server) toolListTasks() actool.CallableTool {
 	return roTool("list_tasks",
 		"列出所有任务(id/描述/目标/状态/运行时长/父任务/LLM 配置)，编排 agent 用它掌握全局、看哪些任务卡太久、各自用哪个 LLM。运行时长：运行中=创建→现在，终态=创建→最后活动(秒)。llm_profile：任务 planner/worker 用的配置名，(激活配置)=跟随全局激活。",
 		objSchema(map[string]any{}),
-		func(context.Context, json.RawMessage) (actool.Result, error) {
+		func(context.Context, json.RawMessage) (toolkit.Output, error) {
 			lastAct, _ := s.m.PG().LastActivityAll()
 			// id -> name to resolve each task's pinned LLM profile.
 			profName := map[int64]string{}
@@ -219,14 +207,14 @@ func (s *Server) toolListTasks() actool.CoreTool {
 
 // toolListLLMProfiles lists the available LLM profiles (name/model/active) so an
 // orchestration agent can pick one for spawn_task's llm_profile. Never leaks keys.
-func (s *Server) toolListLLMProfiles() actool.CoreTool {
+func (s *Server) toolListLLMProfiles() actool.CallableTool {
 	return roTool("list_llm_profiles",
 		"列出可用的 LLM 配置(profile)：id、名称、模型、格式、是否为当前激活配置。用 id 给 spawn_task 的 llm_profile_id 参数指定子任务专属 LLM（如侦察用便宜模型、利用用强模型）。不含 API Key。",
 		objSchema(map[string]any{}),
-		func(context.Context, json.RawMessage) (actool.Result, error) {
+		func(context.Context, json.RawMessage) (toolkit.Output, error) {
 			profs, err := s.m.pg.ListProfiles()
 			if err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			out := make([]map[string]any, 0, len(profs))
 			for _, p := range profs {
@@ -238,7 +226,7 @@ func (s *Server) toolListLLMProfiles() actool.CoreTool {
 		})
 }
 
-func (s *Server) toolSpawnTask() actool.CoreTool {
+func (s *Server) toolSpawnTask() actool.CallableTool {
 	return wrTool("spawn_task",
 		"新建一个子任务并启动探索引擎，返回 task_id。用于把一件事(如一道题/一个目标)派成独立任务。parent_ref 可选：填当前编排关联的父任务 id 做父子关联。",
 		objSchema(map[string]any{
@@ -251,7 +239,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
 			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
 		}, "description", "goal"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct {
 				Description          string          `json:"description"`
 				Goal                 string          `json:"goal"`
@@ -267,24 +255,24 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				a.Description = "未命名任务"
 			}
 			if strings.TrimSpace(a.Goal) == "" {
-				return actool.Errorf("goal 为必填"), nil
+				return toolkit.Error("goal 为必填"), nil
 			}
 			if a.TimeoutSeconds < 0 {
 				a.TimeoutSeconds = 0
 			}
 			// 只读继承来源任务：数量上限 + 每个 id 有效/去重/存在，校验规则与 HTTP 建任务一致。
 			if len(a.SourceTaskIDs) > db.MaxTaskSourceCount {
-				return actool.Errorf(fmt.Sprintf("关联任务最多选择 %d 个", db.MaxTaskSourceCount)), nil
+				return toolkit.Error(fmt.Sprintf("关联任务最多选择 %d 个", db.MaxTaskSourceCount)), nil
 			}
 			sourceIDs := make([]int64, 0, len(a.SourceTaskIDs))
 			seenSources := map[int64]bool{}
 			for _, raw := range a.SourceTaskIDs {
 				id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 				if err != nil || id <= 0 || seenSources[id] {
-					return actool.Errorf("关联任务 id 无效或重复"), nil
+					return toolkit.Error("关联任务 id 无效或重复"), nil
 				}
 				if _, ok := s.m.Task(strconv.FormatInt(id, 10)); !ok {
-					return actool.Errorf(fmt.Sprintf("关联任务 #%d 不存在", id)), nil
+					return toolkit.Error(fmt.Sprintf("关联任务 #%d 不存在", id)), nil
 				}
 				seenSources[id] = true
 				sourceIDs = append(sourceIDs, id)
@@ -293,7 +281,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			var pin *int64
 			if id := parseProfileID(a.LLMProfileID); id > 0 {
 				if _, ok := s.loadProfileConfig(id); !ok {
-					return actool.Errorf(fmt.Sprintf("LLM 配置 #%d 不存在或未设置 API Key", id)), nil
+					return toolkit.Error(fmt.Sprintf("LLM 配置 #%d 不存在或未设置 API Key", id)), nil
 				}
 				pin = &id
 			} else if a.ParentRef != "" {
@@ -312,7 +300,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
 			})
 			if err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			if a.ParentRef != "" {
 				t.ParentRef = a.ParentRef
@@ -324,46 +312,46 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			// seed + 后台可见地做目标分解(第0轮/LLM步骤/逐条goal) + engine.Run。
 			// seed_first_intent 默认 false(标准先规划再执行);简单任务可开启直接下发一 work 测试。
 			s.launchTask(t, a.Description+" "+a.Goal, a.SeedFirstIntent)
-			return actool.Text(fmt.Sprintf("task created: %s", t.ID)), nil
+			return toolkit.Text(fmt.Sprintf("task created: %s", t.ID)), nil
 		})
 }
 
-func (s *Server) toolPauseTask() actool.CoreTool {
+func (s *Server) toolPauseTask() actool.CallableTool {
 	return wrTool("pause_task", "暂停指定任务(停止其 planner/worker 循环)。",
 		objSchema(map[string]any{"task_id": strParam("要暂停的任务 id")}, "task_id"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(_ context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct {
 				TaskID string `json:"task_id"`
 			}
 			_ = json.Unmarshal(in, &a)
 			t, ok := s.m.Task(a.TaskID)
 			if !ok {
-				return actool.Errorf("task 不存在: " + a.TaskID), nil
+				return toolkit.Error("task 不存在: " + a.TaskID), nil
 			}
 			if _, err := s.applyTaskControlWithCause(t, "pause", agent.AbortPausedByOrchestrator); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
-			return actool.Text("task paused: " + a.TaskID), nil
+			return toolkit.Text("task paused: " + a.TaskID), nil
 		})
 }
 
-func (s *Server) toolGetTaskGraph() actool.CoreTool {
+func (s *Server) toolGetTaskGraph() actool.CallableTool {
 	return roTool("get_task_graph", "读指定任务的探索图总览(同 graph_overview：资产计数/frontier/发现/覆盖等)，用 task_id 指定任务。",
 		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).GraphOverviewTool)
 		})
 }
 
-func (s *Server) toolListTaskFindings() actool.CoreTool {
+func (s *Server) toolListTaskFindings() actool.CallableTool {
 	return roTool("list_task_findings", "读指定任务的确认漏洞(含 flag/PoC；每条带 id/task_id/intent_id/vulnclass/severity/摘要/状态)，用 task_id 指定任务。",
 		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).ListFindingsTool)
 		})
 }
 
-func (s *Server) toolAddHint() actool.CoreTool {
+func (s *Server) toolAddHint() actool.CallableTool {
 	return wrTool("add_task_hint", "给指定任务注入战略提示(该任务的 planner 下轮生成意图时会读到)。\n"+
 		"★优先批量：多条提示放进 hints 数组一次提交（返回 ids 数组，与 hints 等长同序，失败项 id=0）；单条则省略 hints 直接给顶层 text。",
 		objSchema(map[string]any{
@@ -373,12 +361,12 @@ func (s *Server) toolAddHint() actool.CoreTool {
 			"traffic_refs": agent.HintTrafficSchema(),
 			"asset_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "锚定的资产 id（可选，0/1/多个；该任务内的资产 id）"},
 		}, "task_id"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).AddHintTool)
 		})
 }
 
-func (s *Server) toolGetWorkerTrace() actool.CoreTool {
+func (s *Server) toolGetWorkerTrace() actool.CallableTool {
 	return roTool("get_task_worker_trace",
 		"看指定任务里某个 work(意图)的执行过程：get_task_worker_trace(task_id, intent_id) 看步骤摘要；再带 step_ids=[...] 取那几步完整内容(一次最多 5 个,多传只返回前 5 个)。",
 		objSchema(map[string]any{
@@ -386,35 +374,35 @@ func (s *Server) toolGetWorkerTrace() actool.CoreTool {
 			"intent_id": map[string]any{"type": "integer", "description": "意图 id(该任务里的 work)"},
 			"step_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：要取完整内容的步骤 id(一次最多 5 个,多传只返回前 5 个,其余在 omitted_step_ids 里列出)"},
 		}, "task_id", "intent_id"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).GetWorkerTraceTool)
 		})
 }
 
-func (s *Server) toolListWorkerTraces() actool.CoreTool {
+func (s *Server) toolListWorkerTraces() actool.CallableTool {
 	return roTool("list_task_worker_traces", "列出指定任务里跑过哪些 work(意图) + 各自步数，用于发现哪些 work 值得翻看(再用 get_task_worker_trace)。",
 		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).ListWorkerTracesTool)
 		})
 }
 
-func (s *Server) toolSearchWorkerTraces() actool.CoreTool {
+func (s *Server) toolSearchWorkerTraces() actool.CallableTool {
 	return roTool("search_task_worker_traces", "在指定任务里按关键字搜索所有 work 的执行过程(返回命中步骤摘要 + intent_id)。",
 		objSchema(map[string]any{"task_id": strParam("任务 id"), "q": strParam("搜索关键字")}, "task_id", "q"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).SearchWorkerTracesTool)
 		})
 }
 
-func (s *Server) toolGetTaskNodeDetail() actool.CoreTool {
+func (s *Server) toolGetTaskNodeDetail() actool.CallableTool {
 	return roTool("get_task_node_detail",
 		"读指定任务里某个探索图节点的完整内容(发现/事实/意图/目标：摘要 + 详情/证据/PoC)。id 为探索节点 id(如 report_finding 返回、或 list_task_findings 里的 id)。写漏洞报告前用它取该漏洞的完整证据。",
 		objSchema(map[string]any{
 			"task_id": strParam("任务 id"),
 			"id":      map[string]any{"type": "integer", "description": "探索图节点 id(非资产 id)"},
 		}, "task_id", "id"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).NodeDetailTool)
 		})
 }
@@ -423,7 +411,7 @@ func (s *Server) toolGetTaskNodeDetail() actool.CoreTool {
 // finding_id is the id report_finding returned ("finding recorded: <id>", the
 // finding node id). The write (SetFindingReportByNodeID) is keyed by node_id and
 // task-agnostic, so this host tool needs no task_id / exploration store.
-func (s *Server) toolUpdateFindingReport() actool.CoreTool {
+func (s *Server) toolUpdateFindingReport() actool.CallableTool {
 	return wrTool("update_finding_report",
 		"为已登记的漏洞写入/更新【详细报告】(Markdown 全文,整段覆盖旧内容)。finding_id 传 report_finding 返回的那个 id(\"finding recorded: <id>\" 里的数字)。报告建议包含:漏洞概述、影响与危害、复现步骤、证据/PoC、修复建议。",
 		objSchema(map[string]any{
@@ -431,7 +419,7 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 			"report":           strParam("详细报告全文,Markdown 格式"),
 			"evidence_version": map[string]any{"type": "integer", "description": "get_finding_traffic 返回的证据 version；用于防止报告覆盖新的证据变更"},
 		}, "finding_id", "report"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct {
 				EvidenceVersion *int64          `json:"evidence_version"`
 				FindingID       json.RawMessage `json:"finding_id"`
@@ -440,16 +428,16 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 			_ = json.Unmarshal(in, &a)
 			nodeID := parseProfileID(a.FindingID) // 复用「数字或数字字符串」解析
 			if nodeID <= 0 {
-				return actool.Errorf("finding_id 无效"), nil
+				return toolkit.Error("finding_id 无效"), nil
 			}
 			n, err := s.m.pg.SetFindingReportVersionByNodeID(ctx, nodeID, a.Report, a.EvidenceVersion)
 			if err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			if n == 0 {
-				return actool.Errorf(fmt.Sprintf("未找到 finding_id=%d 对应的漏洞记录(先用 report_finding 登记)", nodeID)), nil
+				return toolkit.Error(fmt.Sprintf("未找到 finding_id=%d 对应的漏洞记录(先用 report_finding 登记)", nodeID)), nil
 			}
-			return actool.Text(fmt.Sprintf("finding %d report updated (%d chars)", nodeID, len(a.Report))), nil
+			return toolkit.Text(fmt.Sprintf("finding %d report updated (%d chars)", nodeID, len(a.Report))), nil
 		})
 }
 
@@ -475,16 +463,16 @@ func (s *Server) seedOrchestrationTools() {
 	// 操作平台)。SeedTool 首插入生效;老库已 seed 的行由 seedAutoDefaultBindings 补绑。
 	autoAgents, _ := json.Marshal([]string{"auto"})
 	for _, t := range s.orchestrationTools() {
-		schema, _ := json.Marshal(t.InputSchema())
+		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
 		bindings := autoAgents
-		if t.Name() == "bind_finding_traffic" {
+		if t.Declaration().Name == "bind_finding_traffic" {
 			bindings = json.RawMessage(`["reporter"]`)
 		}
-		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
+		_ = s.m.PG().SeedTool(t.Declaration().Name, t.Declaration().Description, schema, bindings)
 	}
 	for _, t := range s.platformTools() {
-		schema, _ := json.Marshal(t.InputSchema())
-		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
+		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
+		_ = s.m.PG().SeedTool(t.Declaration().Name, t.Declaration().Description, schema, autoAgents)
 	}
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
@@ -520,9 +508,9 @@ func (s *Server) refreshBuiltinToolSchemas() {
 	}
 	tools := append(s.orchestrationTools(), s.platformTools()...)
 	for _, t := range tools {
-		schema, _ := json.Marshal(t.InputSchema())
-		if err := s.m.pg.RefreshToolDefaults(t.Name(), t.Description(), schema); err != nil {
-			log.Printf("[tools] refresh %s schema failed: %v", t.Name(), err)
+		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
+		if err := s.m.pg.RefreshToolDefaults(t.Declaration().Name, t.Declaration().Description, schema); err != nil {
+			log.Printf("[tools] refresh %s schema failed: %v", t.Declaration().Name, err)
 		}
 	}
 	// 同时把部分内置 agent 工具刷成代码默认：
@@ -907,7 +895,7 @@ func (s *Server) seedAutoDefaultBindings() {
 	}
 	keys := make([]string, 0, len(platformToolKeys)+12)
 	for _, t := range s.orchestrationTools() {
-		keys = append(keys, t.Name())
+		keys = append(keys, t.Declaration().Name)
 	}
 	keys = append(keys, platformToolKeys...)
 	// 资产工具：Auto 操作平台常要看/登记资产、管理公司范围。

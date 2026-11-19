@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"sync"
 
 	"github.com/Autumn-27/artex/config"
 )
@@ -26,6 +27,9 @@ func DSN() (dsn, source string, err error) {
 
 // DB owns a read pool and one serialized writer connection.
 type DB struct {
+	sideMu       sync.Mutex
+	sideSessions map[string]*sideState
+	sideOrdinal  int64
 	*sql.DB
 	writer *sql.DB
 }
@@ -175,7 +179,7 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 
 // builtinSkillVisibility maps a shipped skill's directory name → the built-in
 // agent keys that should see it by default. The skill FILES themselves live on the
-// filesystem (SkillDir, loaded by norma at runtime); DB only carries this visibility
+// filesystem (SkillDir, loaded by the native skill repository); DB only carries this visibility
 // binding. Skills omitted here (e.g. playwright-cli, scopesentry) ship invisible by
 // default — the user turns them on per-agent when needed. scopesentry additionally
 // declares `mcps: ScopeSentry`, which only takes effect once it's made visible and

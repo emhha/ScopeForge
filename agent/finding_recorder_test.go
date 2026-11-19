@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/evidence"
 )
@@ -32,12 +34,12 @@ func TestReportFindingOptionalTrafficWithoutCapture(t *testing.T) {
 	notices := 0
 	ts.notifyFinding = func(int64, string) { notices++ }
 	for _, refs := range []string{"", `,"traffic_refs":[]`, `,"traffic_refs":null`} {
-		res, err := ts.addFinding().Call(t.Context(), json.RawMessage(`{"vulnclass":"TCP","severity":"low","summary":"verified TCP fixture","evidence":"command output proves the finding"`+refs+`}`), nil)
-		if err != nil || !strings.HasPrefix(res.Flatten(), "finding recorded: ") {
-			t.Fatalf("optional traffic rejected: %v %s", err, res.Flatten())
+		res, err := ts.addFinding().Call(t.Context(), json.RawMessage(`{"vulnclass":"TCP","severity":"low","summary":"verified TCP fixture","evidence":"command output proves the finding"`+refs+`}`))
+		if err != nil || !strings.HasPrefix(toolkit.TextOf(res), "finding recorded: ") {
+			t.Fatalf("optional traffic rejected: %v %s", err, toolkit.TextOf(res))
 		}
 		var out db.RecordedFinding
-		if err := json.Unmarshal([]byte(strings.SplitN(res.Flatten(), "\n", 2)[1]), &out); err != nil {
+		if err := json.Unmarshal([]byte(strings.SplitN(toolkit.TextOf(res), "\n", 2)[1]), &out); err != nil {
 			t.Fatal(err)
 		}
 		f, err := d.GetFinding(out.FindingID)
@@ -69,11 +71,11 @@ func TestReportFindingAtomicContract(t *testing.T) {
 	ts.notifyFinding = func(int64, string) { notices++ }
 	call := func(body string) string {
 		t.Helper()
-		res, err := ts.addFinding().Call(t.Context(), json.RawMessage(body), nil)
+		res, err := ts.addFinding().Call(t.Context(), json.RawMessage(body))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return res.Flatten()
+		return toolkit.TextOf(res)
 	}
 	ts.SetFindingRecorder(failingFindingRecorder{})
 	if got := call(`{"vulnclass":"TEST","summary":"fail","severity":"low","traffic_refs":[{"traffic_id":"x"}]}`); !strings.Contains(got, "persistence failed") {

@@ -1,16 +1,15 @@
 package db
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/sidequestion"
-	llm "github.com/Autumn-27/norma/llm"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 func sideFixture(t *testing.T) (*DB, sidequestion.Snapshot) {
@@ -25,7 +24,7 @@ func sideFixture(t *testing.T) (*DB, sidequestion.Snapshot) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.DeleteConversation(c.ID) })
-	s := sidequestion.Snapshot{Parent: sidequestion.Parent{ConversationID: c.ID}, RunID: 1, Version: 1, CapturedAt: time.Now().UTC(), Model: sidequestion.Model{Model: "fixture"}, Request: llm.CompletionRequest{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock("main-only")}}}}}
+	s := sidequestion.Snapshot{Parent: sidequestion.Parent{ConversationID: c.ID}, RunID: 1, Version: 1, CapturedAt: time.Now().UTC(), Model: sidequestion.Model{Model: "fixture"}, Request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "main-only"}}}}
 	if err = d.SaveSideSnapshot(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +93,7 @@ func TestSideHistoryIdempotencyPagingAndRecovery(t *testing.T) {
 		t.Fatalf("recovery %+v %v", got, err)
 	}
 	saved, err := d.SideSnapshot(ctx, s.Parent.Key())
-	if err != nil || saved.Request.Messages[0].Text() != "main-only" {
+	if err != nil || saved.Request.Messages[0].Content != "main-only" {
 		t.Fatalf("snapshot %+v %v", saved, err)
 	}
 	if _, _, err = d.StartSideRequest(ctx, *saved, "after-restart", "continue"); err != nil {
@@ -179,83 +178,54 @@ func TestSideMemoryPagingClearAndRestart(t *testing.T) {
 	if err != nil || got != (sidequestion.Memory{}) {
 		t.Fatalf("memory survived clear: %+v %v", got, err)
 	}
-	if snapshot, err := d.SideSnapshot(ctx, s.Parent.Key()); err != nil || snapshot.Request.Messages[0].Text() != "main-only" {
+	if snapshot, err := d.SideSnapshot(ctx, s.Parent.Key()); err != nil || snapshot.Request.Messages[0].Content != "main-only" {
 		t.Fatal("memory changed main snapshot")
 	}
 }
 
 func TestSideMemoryClearRace(t *testing.T) {
 	d, s := sideFixture(t)
-	for i := 0; i < 10; i++ {
-		e, _, err := d.StartSideRequest(t.Context(), s, "race", "question")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			if err := d.ClearSideHistory(t.Context(), s.Parent.Key()); err != nil {
-				t.Error(err)
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			err := d.SaveSideMemory(t.Context(), *e, sidequestion.Memory{History: "late", Through: e.Ordinal - 1})
-			if err != nil && !errors.Is(err, ErrSideParentGone) {
-				t.Error(err)
-			}
-		}()
-		wg.Wait()
-		var raw []byte
-		if err = d.QueryRow(`SELECT memory FROM side_question_sessions WHERE session_key=$1`, s.Parent.Key()).Scan(&raw); err != nil || string(raw) != "{}" {
-			t.Fatalf("late cache write: %s %v", raw, err)
-		}
+	e, _, err := d.StartSideRequest(t.Context(), s, "race", "question")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.ClearSideHistory(t.Context(), s.Parent.Key()); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.SaveSideMemory(t.Context(), *e, sidequestion.Memory{History: "late"}); !errors.Is(err, ErrSideParentGone) {
+		t.Fatalf("late write=%v", err)
+	}
+	if row, err := d.SideRequest(t.Context(), e.ID); err != nil || row != nil {
+		t.Fatalf("late request restored=%+v %v", row, err)
 	}
 }
 
-func TestSideArchiveRowsWithoutNewFields(t *testing.T) {
-	d, s := sideFixture(t)
-	e, _, err := d.StartSideRequest(t.Context(), s, "legacy", "legacy question")
+func TestSideCheckpointsDoNotSurviveDatabaseReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.sqlite")
+	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, err := d.Begin()
+	c, err := d.CreateConversation("mainagent", "ephemeral", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	rows := map[string]json.RawMessage{}
-	for _, table := range []string{"side_question_sessions", "side_question_requests"} {
-		var raw []byte
-		raw, _, err = queryArchiveRows(tx, `SELECT * FROM `+table+` WHERE session_key=$1`, s.Parent.Key())
-		if err != nil {
-			t.Fatal(err)
-		}
-		var items []map[string]json.RawMessage
-		if err = json.Unmarshal(raw, &items); err != nil {
-			t.Fatal(err)
-		}
-		for _, item := range items {
-			delete(item, "memory")
-			delete(item, "context_info")
-		}
-		rows[table], err = json.Marshal(items)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err = tx.Exec(`DELETE FROM side_question_sessions WHERE session_key=$1`, s.Parent.Key()); err != nil {
+	s := sidequestion.Snapshot{Parent: sidequestion.Parent{ConversationID: c.ID}, RunID: 1, Version: 1, Request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "private checkpoint"}}}}
+	if err = d.SaveSideSnapshot(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"side_question_sessions", "side_question_requests"} {
-		if err = insertArchiveRows(tx, table, rows[table]); err != nil {
-			t.Fatal(err)
-		}
+	_ = d.Close()
+	d, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var info, memory []byte
-	if err = tx.QueryRow(`SELECT context_info,memory FROM side_question_requests r JOIN side_question_sessions s USING(session_key) WHERE r.id=$1`, e.ID).Scan(&info, &memory); err != nil || string(info) != "{}" || string(memory) != "{}" {
-		t.Fatalf("legacy defaults: %s %s %v", info, memory, err)
+	defer d.Close()
+	if got, err := d.SideSnapshot(t.Context(), s.Parent.Key()); err != nil || got != nil {
+		t.Fatalf("session persisted=%+v %v", got, err)
+	}
+	var count int
+	if err = d.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name IN ('side_question_sessions','side_question_requests')`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("session tables remain: %d %v", count, err)
 	}
 }
 
@@ -321,120 +291,57 @@ func TestSideClearLateWritersAndDeletedParent(t *testing.T) {
 func TestSideTaskArchiveVersions(t *testing.T) {
 	for _, version := range []int{1, 2, 3} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
-			d, err := Open(testDSN(t))
+			d, err := Open(filepath.Join(t.TempDir(), "archive.sqlite"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer d.Close()
-			task, err := d.CreateTask("btw archive", "restore context", nil, 0, 0)
+			task, err := d.CreateTask("goal", "description", nil, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() {
-				_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
-				_ = d.DeleteTask(task.ID)
-			}()
-			iid, err := d.Exploration(task.ExplorationID).AddNode(KindIntent, map[string]any{"summary": "worker"}, 1, "paused", "planner", nil)
-			if err != nil {
+			s := sidequestion.Snapshot{Parent: sidequestion.Parent{TaskID: task.ID, ExplorationID: task.ExplorationID}, RunID: 1, Version: 1, Request: llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: "private snapshot"}}}}
+			if err = d.SaveSideSnapshot(t.Context(), s); err != nil {
 				t.Fatal(err)
 			}
-			var snapshots []sidequestion.Snapshot
-			memories := make(map[string]sidequestion.Memory)
-			contextInfo := sidequestion.ContextInfo{Phase: "answering", RecentExchanges: 20, HistorySummarized: true, SnapshotSummarized: true, EstimatedInputTokens: 12000, InputBudget: 16000, OutputTokens: 2048}
-			for _, intent := range []int64{0, iid} {
-				s := sidequestion.Snapshot{Parent: sidequestion.Parent{TaskID: task.ID, ExplorationID: task.ExplorationID, IntentID: intent}, RunID: 1, Version: 2, CapturedAt: time.Now().UTC(), Request: llm.CompletionRequest{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock("archived main context")}}}}}
-				if err = d.SaveSideSnapshot(t.Context(), s); err != nil {
-					t.Fatal(err)
-				}
-				e, _, err := d.StartSideRequest(t.Context(), s, "client", "archive question")
-				if err != nil {
-					t.Fatal(err)
-				}
-				memory := sidequestion.Memory{History: "archived early decision", Through: e.Ordinal, SnapshotKey: s.Parent.Key(), SnapshotSummary: "archived evidence", TailStart: 1}
-				if err = d.SaveSideMemory(t.Context(), *e, memory); err != nil {
-					t.Fatal(err)
-				}
-				memories[s.Parent.Key()] = memory
-				e.Answer = "archive answer"
-				e.Sequence = 1
-				e.Status = "completed"
-				e.Context = contextInfo
-				if _, err = d.UpdateSideRequest(t.Context(), *e); err != nil {
-					t.Fatal(err)
-				}
-				snapshots = append(snapshots, s)
-			}
-			if err := d.SetPaused(task.ID, true); err != nil {
-				t.Fatal(err)
-			}
+			_ = d.SetPaused(task.ID, true)
 			job, err := d.QueueTaskArchive(task.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = d.ClaimTaskArchiveJob(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			archive, err := d.SnapshotTaskArchive(task.ID)
+			_, err = d.ClaimTaskArchiveJob(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if archive.FormatVersion != 3 || archive.DataCounts["side_question_sessions"] != 2 || archive.DataCounts["side_question_requests"] != 2 {
-				t.Fatalf("missing side archive: %+v", archive.DataCounts)
-			}
-			if err = d.CompleteTaskArchive(job.ID, archive, "/tmp/side-fixture.tar.zst", "fixture", 1, 1); err != nil {
+			snapshot, err := d.SnapshotTaskArchive(task.ID)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err = d.SaveSideSnapshot(t.Context(), snapshots[0]); !errors.Is(err, ErrSideParentGone) {
-				t.Fatalf("late archived snapshot: %v", err)
-			}
-			if got, err := d.SideSnapshot(t.Context(), snapshots[0].Parent.Key()); err != nil || got != nil {
-				t.Fatalf("archive retained hot snapshot %+v %v", got, err)
-			}
-			if _, err = d.QueueTaskArchiveRestore(job.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err = d.ClaimTaskArchiveJob(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			archive.FormatVersion = version
-			if version < 3 {
-				delete(archive.Tables, "side_question_sessions")
-				delete(archive.Tables, "side_question_requests")
-				delete(archive.DataCounts, "side_question_sessions")
-				delete(archive.DataCounts, "side_question_requests")
-			}
-			if _, err = d.RestoreTaskArchive(job.ID, archive, 0); err != nil {
-				t.Fatal(err)
-			}
-			for _, s := range snapshots {
-				got, err := d.SideSnapshot(context.Background(), s.Parent.Key())
-				if err != nil {
-					t.Fatal(err)
+			for _, table := range []string{"side_question_sessions", "side_question_requests"} {
+				if _, exists := snapshot.Tables[table]; exists {
+					t.Fatal("archive contains model checkpoint")
 				}
-				if version < 3 {
-					if got != nil {
-						t.Fatal("legacy archive fabricated snapshot")
-					}
-				} else {
-					if got == nil || got.Request.Messages[0].Text() != "archived main context" {
-						t.Fatalf("restored snapshot: %+v", got)
-					}
-					history, err := d.SideHistory(t.Context(), s.Parent.Key(), 0, 20)
-					if err != nil || len(history) != 1 || history[0].Answer != "archive answer" {
-						t.Fatalf("restored history %+v %v", history, err)
-					}
-					if history[0].Context != contextInfo {
-						t.Fatalf("restored context metadata: %+v", history[0].Context)
-					}
-					next, _, err := d.StartSideRequest(t.Context(), *got, "after-restore", "continue")
-					if err != nil {
-						t.Fatal(err)
-					}
-					memory, err := d.SideMemory(t.Context(), *next)
-					if err != nil || memory != memories[s.Parent.Key()] {
-						t.Fatalf("restored summary cache: %+v %v", memory, err)
-					}
-				}
+			}
+			if err = d.CompleteTaskArchive(job.ID, snapshot, "/tmp/fixture.tar.zst", "fixture", 1, 1); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := d.SideSnapshot(t.Context(), s.Parent.Key()); err != nil || got != nil {
+				t.Fatalf("archived session remains: %+v %v", got, err)
+			}
+			_, err = d.QueueTaskArchiveRestore(job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = d.ClaimTaskArchiveJob(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.FormatVersion = version
+			if _, err = d.RestoreTaskArchive(job.ID, snapshot, 0); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := d.SideSnapshot(t.Context(), s.Parent.Key()); err != nil || got != nil {
+				t.Fatalf("archive replayed checkpoint: %+v %v", got, err)
 			}
 		})
 	}

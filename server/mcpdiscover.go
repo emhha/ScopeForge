@@ -8,15 +8,14 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/mcphttp"
-	"github.com/Autumn-27/norma/mcp"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // mcpClient is the shared surface of a connected MCP server (stdio, Streamable HTTP,
 // or legacy SSE),
 // so tools/list and cleanup are handled uniformly regardless of transport.
 type mcpClient interface {
-	Tools(context.Context) ([]actool.CoreTool, error)
+	Tools(context.Context) ([]actool.CallableTool, error)
 	Close() error
 }
 
@@ -27,7 +26,7 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 		if m.Command == "" {
 			return nil, fmt.Errorf("stdio 传输缺少命令")
 		}
-		return mcp.NewStdioClient(ctx, m.Name, m.Command, jsonStrMap(m.Env), jsonStrSlice(m.Args)...)
+		return mcphttp.NewStdio(ctx, m.Name, m.Command, jsonStrSlice(m.Args), jsonStrMap(m.Env))
 	case "http":
 		if m.URL == "" {
 			return nil, fmt.Errorf("http 传输缺少 URL")
@@ -58,7 +57,7 @@ func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error
 	}
 	tools := make([]db.MCPTool, 0, len(ts))
 	for _, t := range ts {
-		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description()})
+		tools = append(tools, db.MCPTool{Name: t.Declaration().Name, Description: t.Declaration().Description})
 	}
 	if err := s.m.pg.SaveMCPTools(m.ID, tools); err != nil {
 		return err

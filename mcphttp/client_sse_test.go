@@ -97,10 +97,10 @@ func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) != 1 || !strings.Contains(tools[0].Name(), "echo") {
+	if len(tools) != 1 || !strings.Contains(tools[0].Declaration().Name, "echo") {
 		t.Fatalf("unexpected tools: %#v", tools)
 	}
-	got, err := c.Call(ctx, "echo", map[string]any{"value": "x"})
+	got, err := c.Call(ctx, "echo", nil)
 	if err != nil || got != "ok" {
 		t.Fatalf("Call() = %q, %v", got, err)
 	}

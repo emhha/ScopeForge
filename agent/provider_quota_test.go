@@ -9,7 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/modelutil"
+
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -110,18 +112,11 @@ func TestProviderDoesNotRetryExplicitQuota429(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	provider, err := ConfigFrom("openai", "test-model", upstream.URL, "test-key", "").NewProvider()
+	provider, err := ConfigFrom("openai", "test-model", upstream.URL, "test-key", "").NewModel()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var streamErr error
-	for _, err := range provider.Stream(context.Background(), llm.CompletionRequest{
-		Messages: []llm.Message{llm.UserText("ping")},
-	}) {
-		if err != nil {
-			streamErr = err
-		}
-	}
+	_, _, _, streamErr := modelutil.Complete(context.Background(), provider, llm.Request{Messages: []llm.Message{modelutil.User("ping")}})
 	if streamErr == nil || !IsQuotaExhaustedMessage(streamErr.Error()) {
 		t.Fatalf("expected explicit quota error, got %v", streamErr)
 	}

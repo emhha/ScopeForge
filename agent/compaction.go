@@ -26,14 +26,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/modelutil"
+
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/Autumn-27/artex/sessionctx"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 // Compactor performs background cold-node compaction for many explorations.
 type Compactor struct {
-	prov     llm.Provider
+	prov     llm.Model
 	model    string
 	params   coldParams
 	n, m     int           // minor / major thresholds (§7 N=20, M=8)
@@ -47,7 +49,7 @@ type Compactor struct {
 
 // NewCompactor builds a compactor. prov/model are used for the §4 body LLM call
 // (same model the agent runs on, per §4). A nil Compactor is a safe no-op.
-func NewCompactor(prov llm.Provider, model string) *Compactor {
+func NewCompactor(prov llm.Model, model string) *Compactor {
 	return &Compactor{
 		prov:     prov,
 		model:    model,
@@ -86,12 +88,12 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 		defer c.finish(ts.ID())
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.maxDur)
 		defer cancel()
-		// 压缩是裸 provider 调用（compress 里直接 prov.Complete），不经过 agentcore
+		// 图摘要通过原生模型的一次性调用生成，不经过 Runner
 		// 的会话循环，所以 ctx 上没有 session id；按 session-id 头做提示缓存/粘性
 		// 路由的网关（opencode zen 缺 x-opencode-session 直接 400）就收不到该头。
 		// 这里补一个按探索稳定的 id：同一探索的所有压缩请求共享它，既能带上头，
 		// 也让 llmrec 能把这次调用的 token 归因回该探索（此前记不到）。
-		bg = transcript.WithSessionID(bg, fmt.Sprintf("exp%d-compactor", ts.ID()))
+		bg = sessionctx.WithID(bg, fmt.Sprintf("exp%d-compactor", ts.ID()))
 		if needMajor {
 			c.major(bg, ts)
 		} else {
@@ -512,17 +514,13 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 // compress runs the §4 body LLM call on one block. Uses the same model the agent
 // runs on; thinking disabled (a pure summarization step).
 func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByID map[int64]*db.Node) (string, error) {
-	req := llm.CompletionRequest{
-		System:    []string{compressionSystemPrompt},
-		Messages:  []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID))},
-		MaxTokens: 1500,
-		Thinking:  "disabled",
-	}
-	msg, _, _, err := c.prov.Complete(ctx, req)
+	maxTokens := 1500
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleSystem, Content: compressionSystemPrompt}, modelutil.User(buildCompressionInput(g, b, nodeByID))}, GenerationConfig: llm.GenerationConfig{MaxTokens: &maxTokens}}
+	msg, _, _, err := modelutil.Complete(ctx, c.prov, req)
 	if err != nil {
 		return "", err
 	}
-	body := strings.TrimSpace(msg.Text())
+	body := strings.TrimSpace(msg.Content)
 	if body == "" {
 		return "", fmt.Errorf("empty body from model")
 	}

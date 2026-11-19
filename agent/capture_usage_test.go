@@ -3,110 +3,64 @@ package agent
 import (
 	"context"
 	"errors"
-	"iter"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/artex/internal/modeltest"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-type captureUsageProvider struct {
-	stream func(context.Context, func(llm.StreamEvent, error) bool)
-}
-
-func (p captureUsageProvider) Stream(ctx context.Context, _ llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) { p.stream(ctx, yield) }
-}
-
-func (p captureUsageProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	acc := llm.NewAccumulator()
-	for ev, err := range p.Stream(ctx, req) {
-		if err != nil {
-			return llm.Message{}, "", llm.Usage{}, err
-		}
-		acc.Add(ev)
-	}
-	return acc.Message(), acc.StopReason, acc.Usage, nil
-}
-
 func TestCaptureRunPersistsUsageOnProviderFailure(t *testing.T) {
-	wantErr := errors.New("provider failed after reporting usage")
-	provider := captureUsageProvider{stream: func(_ context.Context, yield func(llm.StreamEvent, error) bool) {
-		// 遵守迭代器协议:yield 返回 false 后立即停止,不再调用它。
-		if !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 11, CacheReadTokens: 3}}, nil) {
-			return
-		}
-		if !yield(llm.StreamEvent{Type: llm.SETextDelta, Text: "partial"}, nil) {
-			return
-		}
-		if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, Usage: llm.Usage{OutputTokens: 7, CacheWriteTokens: 2}}, nil) {
-			return
-		}
-		yield(llm.StreamEvent{}, wantErr)
-	}}
-
-	var activities []db.Activity
-	_, _, err := captureRun(context.Background(), agentcore.Options{Provider: provider, MaxTurns: 1}, "test", func(a db.Activity) {
-		activities = append(activities, a)
+	mdl := modeltest.Func(func(context.Context, *model.Request) (<-chan *model.Response, error) {
+		ev := modeltest.Text("partial")
+		ev.Usage = &model.Usage{PromptTokens: 11, CompletionTokens: 7, PromptTokensDetails: model.PromptTokensDetails{CachedTokens: 3, CacheCreationTokens: 2}}
+		return modeltest.Responses(ev, modeltest.Failure(errors.New("provider failed"))), nil
 	})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("captureRun error=%v, want %v", err, wantErr)
+	var records []db.Activity
+	_, _, err := captureRun(t.Context(), RunConfig{Model: mdl, MaxTurns: 1, DisableHostTools: true}, "test", func(a db.Activity) { records = append(records, a) })
+	if err == nil || !strings.Contains(err.Error(), "provider failed") {
+		t.Fatalf("error=%v", err)
 	}
-	assertCapturedResultUsage(t, activities, 11, 7, 3, 2)
+	assertCapturedResultUsage(t, records, 11, 7, 3, 2)
 }
-
 func TestCaptureRunPersistsUsageOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
 	started := make(chan struct{})
-	provider := captureUsageProvider{stream: func(ctx context.Context, yield func(llm.StreamEvent, error) bool) {
-		// 遵守迭代器协议:yield 返回 false 后立即停止,不再调用它。
-		if !yield(llm.StreamEvent{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 13, CacheReadTokens: 5}}, nil) {
-			return
-		}
-		if !yield(llm.StreamEvent{Type: llm.SETextDelta, Text: "partial"}, nil) {
-			return
-		}
-		if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, Usage: llm.Usage{OutputTokens: 9, CacheWriteTokens: 4}}, nil) {
-			return
-		}
-		close(started)
-		<-ctx.Done()
-		yield(llm.StreamEvent{}, ctx.Err())
-	}}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	var activities []db.Activity
+	mdl := modeltest.Func(func(ctx context.Context, _ *model.Request) (<-chan *model.Response, error) {
+		out := make(chan *model.Response)
+		go func() {
+			defer close(out)
+			ev := modeltest.Text("partial")
+			ev.Usage = &model.Usage{PromptTokens: 13, CompletionTokens: 9, PromptTokensDetails: model.PromptTokensDetails{CachedTokens: 5, CacheCreationTokens: 4}}
+			out <- ev
+			close(started)
+			<-ctx.Done()
+		}()
+		return out, nil
+	})
+	var records []db.Activity
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := captureRun(ctx, agentcore.Options{Provider: provider, MaxTurns: 1}, "test", func(a db.Activity) {
-			activities = append(activities, a)
-		})
+		_, _, err := captureRun(ctx, RunConfig{Model: mdl, DisableHostTools: true}, "test", func(a db.Activity) { records = append(records, a) })
 		done <- err
 	}()
 	<-started
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("captureRun error=%v, want context canceled", err)
+		t.Fatalf("error=%v", err)
 	}
-	assertCapturedResultUsage(t, activities, 13, 9, 5, 4)
+	assertCapturedResultUsage(t, records, 13, 9, 5, 4)
 }
-
-func assertCapturedResultUsage(t *testing.T, activities []db.Activity, input, output, read, write int) {
+func assertCapturedResultUsage(t *testing.T, records []db.Activity, i, o, r, w int) {
 	t.Helper()
-	results := 0
-	for _, activity := range activities {
-		if activity.Kind != "result" {
-			continue
-		}
-		results++
-		if activity.InputTokens == nil || *activity.InputTokens != input ||
-			activity.OutputTokens == nil || *activity.OutputTokens != output ||
-			activity.CacheReadTokens == nil || *activity.CacheReadTokens != read ||
-			activity.CacheWriteTokens == nil || *activity.CacheWriteTokens != write {
-			t.Fatalf("result usage=%+v, want input=%d output=%d read=%d write=%d", activity, input, output, read, write)
+	var last *db.Activity
+	for index := range records {
+		if records[index].Kind == "result" {
+			last = &records[index]
 		}
 	}
-	if results != 1 {
-		t.Fatalf("result activity count=%d, activities=%+v", results, activities)
+	if last == nil || last.InputTokens == nil || *last.InputTokens != i || *last.OutputTokens != o || *last.CacheReadTokens != r || *last.CacheWriteTokens != w {
+		t.Fatalf("result=%+v expected %d/%d/%d/%d", last, i, o, r, w)
 	}
 }

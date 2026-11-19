@@ -3,7 +3,7 @@ package agent
 import (
 	"strings"
 
-	"github.com/Autumn-27/norma/harness"
+	"github.com/Autumn-27/artex/runstate"
 )
 
 // 收尾提示词(wrap-up / settlement prompt):当 agent 因【步数耗尽(MaxTurns)】或
@@ -91,8 +91,8 @@ func resolveWrapupTurns(agentKey string) int {
 // turn budget are admin-editable per agent; disabled tools are code-owned policy so
 // a user can't edit away the "stop probing" guardrail. Resolved fresh each run
 // (reads DB live), so edits apply on the next run without a restart.
-func wrapupSettlement(agentKey string, disabledTools []string) *harness.Settlement {
-	return &harness.Settlement{
+func wrapupSettlement(agentKey string, disabledTools []string) *runstate.Wrapup {
+	return &runstate.Wrapup{
 		Prompt:        resolveWrapup(agentKey),
 		DisabledTools: disabledTools,
 		MaxTurns:      resolveWrapupTurns(agentKey),
@@ -153,18 +153,18 @@ func resolveTaskTimeoutTurns(agentKey string) int {
 //   - clamped=false → 任务还早：两种 reason 都用 per-run 词（即退化为 wrapupSettlement）。
 //
 // 交给 harness 的 PromptByReason 在收尾时按【实际】reason 现场挑，无 build 时错配。
-func wrapupSettlementForTask(agentKey string, disabledTools []string, clamped bool) *harness.Settlement {
+func wrapupSettlementForTask(agentKey string, disabledTools []string, clamped bool) *runstate.Wrapup {
 	perRun := resolveWrapup(agentKey)
-	st := &harness.Settlement{
+	st := &runstate.Wrapup{
 		Prompt:        perRun, // 兜底(也是非 clamped 时两种 reason 的取值)
 		DisabledTools: disabledTools,
 		MaxTurns:      resolveWrapupTurns(agentKey),
 	}
 	if clamped {
 		if tt := resolveTaskTimeoutWrapup(agentKey); tt != "" {
-			st.PromptByReason = map[harness.TerminalReason]string{
-				harness.ReasonTimeout:  tt,     // 任务到点
-				harness.ReasonMaxTurns: perRun, // 步数先耗尽、任务还剩时间
+			st.PromptByReason = map[runstate.Reason]string{
+				runstate.ReasonTimeout:  tt,     // 任务到点
+				runstate.ReasonMaxTurns: perRun, // 步数先耗尽、任务还剩时间
 			}
 			st.MaxTurns = resolveTaskTimeoutTurns(agentKey)
 		}

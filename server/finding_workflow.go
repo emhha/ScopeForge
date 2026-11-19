@@ -8,10 +8,12 @@ import (
 	"log"
 	"strconv"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/traffic"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 func (s *Server) seedFindingWorkflowTools() {
@@ -142,30 +144,30 @@ func (s *Server) agentFindingTrafficAccess(ctx context.Context, id int64, write 
 	return nil
 }
 
-func (s *Server) toolBindFindingTraffic() actool.CoreTool {
+func (s *Server) toolBindFindingTraffic() actool.CallableTool {
 	return wrTool("bind_finding_traffic", "为已登记漏洞补绑经核实的真实 HTTP 流量。finding_id 使用独立漏洞记录 ID；不要传探索节点 ID。同批引用全部成功或全部失败，重复引用不覆盖已有说明。补绑会使已有报告标记待更新；不要为补包重新探测或重复创建漏洞。",
 		objSchema(map[string]any{"finding_id": strParam("独立漏洞记录 ID，从 list_task_findings / get_task_node_detail 的 finding_id 字段读取"), "traffic_refs": agent.HintTrafficSchema()}, "finding_id", "traffic_refs"),
-		func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
 			if !s.m.pg.GetBool(settingAgentTrafficBinding, false) {
-				return actool.Errorf("Agent 自动绑定流量已关闭；请在系统设置开启，或使用页面人工绑定。"), nil
+				return toolkit.Error("Agent 自动绑定流量已关闭；请在系统设置开启，或使用页面人工绑定。"), nil
 			}
 			var args struct {
 				FindingID json.RawMessage `json:"finding_id"`
 				Refs      []db.TrafficRef `json:"traffic_refs"`
 			}
 			if err := json.Unmarshal(raw, &args); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			id := parseProfileID(args.FindingID)
 			if err := s.agentFindingTrafficAccess(ctx, id, true); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			if len(args.Refs) == 0 {
-				return actool.Errorf("补绑需要至少一条已核实的 traffic_refs；无流量无需调用此工具"), nil
+				return toolkit.Error("补绑需要至少一条已核实的 traffic_refs；无流量无需调用此工具"), nil
 			}
 			list, err := s.evidenceStore().Bind(ctx, id, args.Refs)
 			if err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			return jsonResult(trafficSummary(list))
 		})

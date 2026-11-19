@@ -13,10 +13,12 @@ import (
 	"strconv"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/evidence"
-	actool "github.com/Autumn-27/norma/tool"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 func (s *Server) evidenceStore() *evidence.Store {
@@ -34,7 +36,7 @@ func (s *Server) seedFindingTrafficTools() {
 	for _, key := range []string{"report_finding", "update_finding_report"} {
 		var schema any
 		if key == "update_finding_report" {
-			schema = s.toolUpdateFindingReport().InputSchema()
+			schema = toolkit.SchemaMap(s.toolUpdateFindingReport().Declaration().InputSchema)
 		} else {
 			for _, seed := range agent.BuiltinToolSeeds() {
 				if seed.Key == key {
@@ -365,10 +367,10 @@ func (s *Server) getFindingTrafficBody(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, preview)
 }
 
-func (s *Server) toolGetFindingTraffic() actool.CoreTool {
+func (s *Server) toolGetFindingTraffic() actool.CallableTool {
 	return roTool("get_finding_traffic", "读取漏洞已绑定的真实流量证据，不依赖捕获开关。finding_id 使用 report_finding JSON 返回的独立漏洞记录 ID（不是第一行的探索节点 ID）。先不传 binding_id 获取清单及 version；空清单是正常情况，TCP 等非 HTTP 漏洞或未采集时仍可依据文字/命令证据编写报告，不强制绑定。有绑定时按 binding_id、side(request/response)、offset 分段读取正文。写报告时将读取的 version 作为 evidence_version 传给 update_finding_report，后者 finding_id 仍使用探索节点 ID。",
 		objSchema(map[string]any{"finding_id": strParam("独立漏洞记录 ID"), "binding_id": strParam("清单里的绑定 ID，省略则返回清单"), "side": strParam("request 或 response，默认 response"), "offset": map[string]any{"type": "integer"}, "length": map[string]any{"type": "integer"}}, "finding_id"),
-		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
 			var a struct {
 				FindingID      json.RawMessage `json:"finding_id"`
 				BindingID      json.RawMessage `json:"binding_id"`
@@ -376,16 +378,16 @@ func (s *Server) toolGetFindingTraffic() actool.CoreTool {
 				Offset, Length int64
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			id, bid := parseProfileID(a.FindingID), parseProfileID(a.BindingID)
 			if err := s.agentFindingTrafficAccess(ctx, id, false); err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			if len(a.BindingID) == 0 {
 				list, err := s.m.pg.GetFindingTraffic(ctx, id)
 				if err != nil {
-					return actool.Errorf(err.Error()), nil
+					return toolkit.Error(err.Error()), nil
 				}
 				return jsonResult(trafficSummary(list))
 			}
@@ -407,7 +409,7 @@ func (s *Server) toolGetFindingTraffic() actool.CoreTool {
 				return nil
 			})
 			if err != nil {
-				return actool.Errorf(err.Error()), nil
+				return toolkit.Error(err.Error()), nil
 			}
 			return jsonResult(result)
 		})

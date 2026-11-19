@@ -23,10 +23,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/toolkit"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/skill"
+	"github.com/Autumn-27/artex/skillcatalog"
 )
 
 // validSkillName checks the agentskills.io name constraints, widened so a skill can
@@ -828,11 +829,11 @@ func (s *Server) pgResetTool(w http.ResponseWriter, r *http.Request) {
 	// orchestration/platform tools (auto agent) — default-bind to "auto".
 	autoAgents, _ := json.Marshal([]string{"auto"})
 	for _, t := range append(s.orchestrationTools(), s.platformTools()...) {
-		if t.Name() != key {
+		if t.Declaration().Name != key {
 			continue
 		}
-		schema, _ := json.Marshal(t.InputSchema())
-		if err := pg.UpsertToolForce(t.Name(), t.Description(), schema, autoAgents); err != nil {
+		schema, _ := json.Marshal(toolkit.SchemaMap(t.Declaration().InputSchema))
+		if err := pg.UpsertToolForce(t.Declaration().Name, t.Declaration().Description, schema, autoAgents); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -974,8 +975,8 @@ type skillFileNode struct {
 
 func (s *Server) fsListSkills(w http.ResponseWriter, r *http.Request) {
 	_ = os.MkdirAll(s.skillDir, 0o755)
-	allReg, _ := skill.LoadDir(s.skillDir)
-	metaByDir := map[string]skill.Skill{}
+	allReg, _ := skillcatalog.Load(s.skillDir)
+	metaByDir := map[string]skillcatalog.Entry{}
 	if allReg != nil {
 		for _, sk := range allReg.List() {
 			if sk.Dir != "" {
@@ -1815,7 +1816,7 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if p.MaxTokens < 0 {
 		p.MaxTokens = 0
 	}
-	if p.Format != "openai" || p.MaxTokensField != llm.MaxTokensFieldCompletion {
+	if p.Format != "openai" || p.MaxTokensField != "max_completion_tokens" {
 		p.MaxTokensField = ""
 	}
 	id, err := pg.SaveProfile(&p)

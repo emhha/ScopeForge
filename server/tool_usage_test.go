@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/artex/toolkit"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -25,18 +25,15 @@ func (r *recordingToolUsage) InsertToolUsage(row *db.ToolUsage) error {
 
 func TestMeterToolRecordsAttributionAndDelegates(t *testing.T) {
 	calls := 0
-	base := actool.Build(actool.Spec{
-		Name: "record_fact",
-		Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
-			calls++
-			return actool.Result{}, nil
-		},
+	base := toolkit.New("record_fact", "", nil, func(context.Context, json.RawMessage) (toolkit.Output, error) {
+		calls++
+		return toolkit.Output{}, nil
 	})
 	recorder := &recordingToolUsage{}
 	ri := agent.RunInfo{TaskID: 42, ExplorationID: 8, IntentID: 9, SessionID: "session-1"}
 	wrapped := meterTool(base, recorder, "record_fact", "worker", ri)
 
-	if _, err := wrapped.Call(context.Background(), json.RawMessage(`{"secret":"not persisted"}`), nil); err != nil {
+	if _, err := wrapped.Call(context.Background(), json.RawMessage(`{"secret":"not persisted"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
@@ -54,17 +51,14 @@ func TestMeterToolRecordsAttributionAndDelegates(t *testing.T) {
 
 func TestMeterToolFailureDoesNotBreakInvocation(t *testing.T) {
 	calls := 0
-	base := actool.Build(actool.Spec{
-		Name: "list_facts",
-		Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
-			calls++
-			return actool.Result{}, nil
-		},
+	base := toolkit.New("list_facts", "", nil, func(context.Context, json.RawMessage) (toolkit.Output, error) {
+		calls++
+		return toolkit.Output{}, nil
 	})
 	recorder := &recordingToolUsage{err: errors.New("ledger unavailable")}
 	wrapped := meterTool(base, recorder, "list_facts", "worker", agent.RunInfo{})
 
-	if _, err := wrapped.Call(context.Background(), nil, nil); err != nil {
+	if _, err := wrapped.Call(context.Background(), nil); err != nil {
 		t.Fatalf("metering error leaked into tool call: %v", err)
 	}
 	if calls != 1 {

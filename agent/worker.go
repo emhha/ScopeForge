@@ -10,14 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/session"
+
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/norma/agentcore"
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	actool "github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/Autumn-27/artex/runstate"
+	llm "trpc.group/trpc-go/trpc-agent-go/model"
+	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // Worker is an LLM work agent (docs §4.4): it claims ONE intent, completes it
@@ -29,7 +28,7 @@ import (
 // agent (planner/worker/main). Enabled=false leaves the web_search tool off.
 // Backend is "ddgs" (no key), "brave-free" (BraveKey required), "tavily"
 // (TavilyKey required), or "deepseek" (DeepSeek* required, filled from the
-// active LLM profile). It maps directly onto agentcore.Options.
+// active LLM profile). It maps directly onto RunConfig.
 // Proxy is a dedicated egress proxy for the search request (http/https/socks5),
 // independent of the traffic-recording MITM proxy — set it when the search endpoint
 // is only reachable via a VPN/SOCKS proxy. Empty = direct.
@@ -53,23 +52,23 @@ type WebSearchOpts struct {
 
 type Worker struct {
 	findingRecorder FindingRecorder
-	prov            llm.Provider
+	prov            llm.Model
 	model           string
 	workDir         string
 	proxyAddr       string
-	proxyCACert     string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
-	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
-	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
-	window          int               // context window in tokens (for compaction)
-	windowFn        func() int        // optional dynamic task-chain minimum
-	maxTurns        int               // max agent turns per run (0 = unlimited)
+	proxyCACert     string          // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	webSearch       WebSearchOpts   // web_search tool backend selection (off by default)
+	sessions        session.Service // raw LLM conversation persistence (nil = off)
+	window          int             // context window in tokens (for compaction)
+	windowFn        func() int      // optional dynamic task-chain minimum
+	maxTurns        int             // max agent turns per run (0 = unlimited)
 	// runTimeout is the wall-clock budget for the main exploration of one intent
 	// (0 = unlimited). When it fires, the run is cut and a settlement round is
 	// forced so already-identified facts get written back instead of being lost.
 	runTimeout time.Duration
 	// extraTools are host-provided tools (e.g. traffic query, oast) appended to
 	// the worker's graph write-back tools.
-	extraTools []actool.CoreTool
+	extraTools []actool.CallableTool
 	// injectConstraints resolves whether this task's operation constraints get
 	// injected into the worker system prompt. Read per run so the settings toggle
 	// takes effect without rebuilding the agent. nil = inject (default).
@@ -78,16 +77,14 @@ type Worker struct {
 	// path. Read per run so a profile/task toggle takes effect without rebuilding
 	// the agent. nil = streaming (default).
 	nonStreamingFn func() bool
-	// noaEnabledFn resolves whether this run uses the experimental noa context-
 	// compression mechanism. Read per run, like nonStreaming. nil = off (built-in
 	// compaction).
-	noaEnabledFn func() bool
 	// maxTokensFn resolves the per-reply output cap in tokens, on the same
 	// per-run basis. nil or 0 = send no cap and let the endpoint decide.
 	maxTokensFn func() int
 }
 
-// WorkerSessionID returns the stable transcript key used by a worker intent.
+// WorkerSessionID returns the stable in-memory session key used by a worker intent.
 // Worker slots are reusable, so the intent id (rather than work#N) is the
 // session identity. Keep this helper public so the Worker message API and UI
 // can refer to exactly the conversation that will be resumed.
@@ -104,7 +101,7 @@ func workerChatMarker(requestID string) string {
 func hasWorkerChatMessage(messages []llm.Message, requestID string) bool {
 	marker := workerChatMarker(requestID)
 	for _, message := range messages {
-		if message.Role == llm.RoleUser && strings.Contains(message.Text(), marker) {
+		if message.Role == llm.RoleUser && strings.Contains(message.Content, marker) {
 			return true
 		}
 	}
@@ -118,10 +115,8 @@ func (w *Worker) SetNonStreaming(fn func() bool) { w.nonStreamingFn = fn }
 
 func (w *Worker) nonStreaming() bool { return w.nonStreamingFn != nil && w.nonStreamingFn() }
 
-// SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
 // context-compression mechanism. nil/unset = off (built-in compaction). Read per
 // run so the settings toggle takes effect without rebuilding the agent.
-func (w *Worker) SetNoaEnabled(fn func() bool) { w.noaEnabledFn = fn }
 
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
@@ -153,26 +148,13 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 // plain-text one-liner (which becomes this run's displayed result).
 const settleWrapUpPrompt = "你即将因预算耗尽被终止。不要再运行任何命令/探测。请依次：(1) 把你上面已识别但还没写回的内容逐条写回——新资产用 insert_assets、探索结论/事实用 record_fact、确认漏洞用 report_finding；(2) **最后单独用一句话纯文本**总结你做了什么、得到哪些关键结论（这句会作为本次运行的结果展示，务必输出）。"
 
-func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int, extra ...actool.CoreTool) *Worker {
-	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
+func NewWorker(prov llm.Model, model, workDir string, sessions session.Service, window, maxTurns int, extra ...actool.CallableTool) *Worker {
+	return &Worker{prov: prov, model: model, workDir: workDir, sessions: sessions, window: window, maxTurns: maxTurns, extraTools: extra}
 }
 
 // defaultToolsExcept returns actool.DefaultTools() minus the named tools (by
-// CoreTool.Name()). Used to trim SDK default tools an agent shouldn't have.
-func defaultToolsExcept(exclude ...string) []actool.CoreTool {
-	drop := make(map[string]bool, len(exclude))
-	for _, n := range exclude {
-		drop[n] = true
-	}
-	all := actool.DefaultTools()
-	out := make([]actool.CoreTool, 0, len(all))
-	for _, t := range all {
-		if !drop[t.Name()] {
-			out = append(out, t)
-		}
-	}
-	return out
-}
+// CoreTool.Declaration().Name). Used to trim SDK default tools an agent shouldn't have.
+func defaultToolsExcept(exclude ...string) []actool.CallableTool { return nil }
 
 func (w *Worker) SetCompactionWindowResolver(fn func() int) { w.windowFn = fn }
 
@@ -346,19 +328,19 @@ func renderWorkerGraphOverview(data map[string]any) string {
 // max_turns) and a per-kind breakdown of what was written back (so an intent that
 // explored but persisted nothing isn't mistaken for done, and the engine can log
 // facts/assets/findings separately instead of lumping them under "facts").
-func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string)) (harness.TerminalReason, WriteCounts, error) {
+func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks *actool.Callbacks, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string)) (runstate.Reason, WriteCounts, error) {
 	return w.execute(ctx, name, taskID, as, ts, intent, hooks, emit, enr, notifyFinding, "", "")
 }
 
 // ExecuteWithMessage runs the next turn in the same intent conversation with a
 // human-authored message. The HTTP handler does not edit the transcript;
-// agentcore records the message as a normal user turn when this Worker starts.
+// The native Runner records the message as a normal user turn when this Worker starts.
 // This keeps Worker continuation identical to the regular agent chat flow.
-func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
+func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks *actool.Callbacks, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (runstate.Reason, WriteCounts, error) {
 	return w.execute(ctx, name, taskID, as, ts, intent, hooks, emit, enr, notifyFinding, strings.TrimSpace(requestID), strings.TrimSpace(message))
 }
 
-func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
+func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks *actool.Callbacks, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (runstate.Reason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -418,7 +400,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		}
 	}
 	sysBody += "\n\n开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。"
-	system, boundary := deferredSystem(sysBody, def)
+	system := []string{sysBody + def.FindingGuidance}
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, w.runTimeout)
@@ -426,14 +408,15 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if tc.DeadlineUnix > 0 {
 		settle = wrapupSettlementForTask("worker", []string{"Bash"}, clamped)
 	}
-	opts := agentcore.Options{
-		Provider:        w.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
+	opts := RunConfig{
+		Model:        w.prov,
+		Instructions: system,
+
+		Tools:            tools,
+		AgentOptions:     def.AgentOptions,
+		AugmentCallbacks: def.Callbacks,
+		InteractiveShell: def.InteractiveShell,
+
 		// WebFetch 走记录代理，其 HTTP 与 curl 一样被留痕；载入代理 CA 让经 MITM
 		// 重签的 HTTPS 证书能【正常校验通过】（而非关掉校验）。proxy 空则直连。
 		EnableWebFetch: true,
@@ -463,16 +446,15 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// large tool output spills to cmd-output/ with a head + pointer (SDK tool.Capture);
 		// full output preserved on disk. 截断上限用 SDK 默认(30000 字符)。
 		ToolOutputDir: cmdOutDir(runDir),
-		Compaction:    compactionConfig(w.compactionWindow()), // long tool-heavy runs stay within the window
-		Todos:         actool.NewTodoStore(),                  // 会话级临时待办（TodoWrite），纯规划用，退出即丢
-		NonStreaming:  w.nonStreaming(),                       // 该 profile 选非流式时走 Provider.Complete
-		MaxTokens:     w.maxTokens(),                          // 0 = 不发上限,由服务端默认值决定
+
+		NonStreaming: w.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
+		MaxTokens:    w.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
 	}
 	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
 		opts.Hooks = hooks
 	}
-	if w.tx != nil { // persist raw LLM conversation; one file per worked intent
-		opts.Transcript = w.tx
+	if w.sessions != nil { // Continue the shared in-memory session.
+		opts.Sessions = w.sessions
 		opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)
 	}
 	intentID := intent.ID
@@ -490,32 +472,25 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		input = "开始执行 system 里领到的意图：只做它、只产生事实、assets、finding、做完即停。"
 	}
 
-	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	noaSession := WorkerSessionID(ts.ID(), intent.ID)
-	enableNoa(&opts, w.noaEnabledFn, w.workDir, noaSession, noaWarn(noaSession))
 	ctx = attachSideCapture(ctx, &opts)
-	s := agentcore.NewSession(opts)
+	s := newTurn(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
 
 	// Resume prior conversation if this intent was paused/blocked/exhausted and is
-	// being re-run. The transcript ID is deterministic per intent, so if a prior
+	// being re-run. The session ID is deterministic per intent, so if a live
 	// session exists the worker continues from where it left off instead of
 	// restarting from scratch.
 	alreadyRecorded := false
-	if w.tx != nil {
-		_ = s.Resume(opts.SessionID)
-		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.Messages(), requestID)
-		if len(s.Messages()) > 0 && message == "" {
-			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
+	if w.sessions != nil {
+		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.History(ctx), requestID)
+		if len(s.History(ctx)) > 0 && message == "" {
 			input = "继续执行。"
-		} else if len(s.Messages()) > 0 {
-			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
 		}
 	}
 	if message != "" {
 		if alreadyRecorded {
 			input = "继续执行上一次人工对话输入的新意图。不要重复已经完成的动作。"
-		} else if len(s.Messages()) > 0 {
+		} else if len(s.History(ctx)) > 0 {
 			input = workerChatMarker(requestID) + "\n【人工对话输入的新意图】\n" + message +
 				"\n\n请立即按这条人工输入执行，完成后再根据上下文决定原任务是否需要继续。"
 		} else {

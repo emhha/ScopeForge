@@ -39,8 +39,8 @@ func TestTaskArchivePackageFilesRoundTrip(t *testing.T) {
 	if _, err := os.Stat(taskFile); !os.IsNotExist(err) {
 		t.Fatalf("task file still hot after staging: %v", err)
 	}
-	if _, err := os.Stat(transcriptFile); !os.IsNotExist(err) {
-		t.Fatalf("task transcript still hot after staging: %v", err)
+	if _, err := os.Stat(transcriptFile); err != nil {
+		t.Fatalf("legacy checkpoint should not participate in archive: %v", err)
 	}
 	if _, err := os.Stat(unrelatedTranscript); err != nil {
 		t.Fatalf("unrelated transcript was staged: %v", err)
@@ -76,14 +76,24 @@ func TestTaskArchivePackageFilesRoundTrip(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(extracted, filepath.FromSlash(pgdb.TaskArchiveLLMRecordsPath))); err != nil || !bytes.Equal(got, streamBody) {
 		t.Fatalf("streamed LLM archive payload=%q err=%v", got, err)
 	}
+	legacy := filepath.Join(extracted, "files", "transcripts", "exp73-main.jsonl")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("legacy checkpoint"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	installed, err := installTaskArchiveFiles(dataDir, extracted, taskID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(dataDir, "transcripts", "exp73-main.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("archive restored model checkpoint: %v", err)
+	}
 	if err := installed.commit(); err != nil {
 		t.Fatal(err)
 	}
-	for path, want := range map[string]string{taskFile: "task evidence", transcriptFile: "transcript"} {
+	for path, want := range map[string]string{taskFile: "task evidence"} {
 		got, err := os.ReadFile(path)
 		if err != nil || string(got) != want {
 			t.Fatalf("restored %s = %q, %v; want %q", path, got, err, want)
@@ -151,8 +161,8 @@ func TestTaskArchiveStageJournalRollsBackInterruptedMoves(t *testing.T) {
 	if err := json.Unmarshal(raw, &journal); err != nil {
 		t.Fatal(err)
 	}
-	if len(journal.Moves) != 2 {
-		t.Fatalf("journal moves=%d, want 2", len(journal.Moves))
+	if len(journal.Moves) != 1 {
+		t.Fatalf("journal moves=%d, want workspace only", len(journal.Moves))
 	}
 	recovered := &taskArchiveFileStage{root: stage.root, payload: stage.payload, journal: journal}
 	if err := recovered.rollback(); err != nil {

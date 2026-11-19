@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/norma/llm"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 // Memory is independent of the main snapshot. Through is a persisted ordinal,
@@ -51,7 +51,7 @@ type contextBuilder struct {
 	memory   Memory
 	recent   []Exchange
 	info     ContextInfo
-	usage    llm.Usage
+	usage    model.Usage
 	calls    int
 	window   int
 	onUpdate func(Answer, ContextInfo)
@@ -90,7 +90,7 @@ func (b *contextBuilder) summarize(ctx context.Context, prior, text string) (str
 		if b.calls >= 12 {
 			return "", errors.New("旁路上下文整理已达到本次处理上限，请缩小问题范围后重试")
 		}
-		overhead := EstimateInputTokens(llm.CompletionRequest{System: []string{summaryInstruction}, Messages: []llm.Message{llm.UserText("[此前摘要]\n" + prior + "\n[新材料片段]\n")}})
+		overhead := EstimateInputTokens(summaryRequest(prior, ""))
 		chunkBytes := min(32000, b.window-2048-overhead-512) * 3
 		if chunkBytes < 1024 {
 			return "", ErrContextBudget
@@ -100,16 +100,14 @@ func (b *contextBuilder) summarize(ctx context.Context, prior, text string) (str
 			n--
 		}
 		part := text[:n]
-		req := llm.CompletionRequest{
-			System: []string{summaryInstruction}, Thinking: "disabled", MaxTokens: 2048,
-			Messages: []llm.Message{llm.UserText("[此前摘要]\n" + prior + "\n[新材料片段]\n" + part)},
-		}
-		if EstimateInputTokens(req)+req.MaxTokens+512 > b.window {
+		req := summaryRequest(prior, part)
+		if EstimateInputTokens(req)+maxTokens(req)+512 > b.window {
 			return "", ErrContextBudget
 		}
 		b.calls++
-		msg, stop, usage, err := b.service.Provider.Complete(ctx, req)
-		b.usage.Add(usage)
+		answer, err := b.service.Answer(ctx, req, false, nil)
+		stop := answer.FinishReason
+		addUsage(&b.usage, answer.Usage)
 		b.progress(b.info.Phase)
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -117,11 +115,11 @@ func (b *contextBuilder) summarize(ctx context.Context, prior, text string) (str
 		if err != nil {
 			return "", fmt.Errorf("旁路摘要失败：%w", err)
 		}
-		result := strings.TrimSpace(msg.Text())
-		if result == "" || stop == "max_tokens" || stop == "length" || len(msg.ToolUses()) > 0 {
+		result := strings.TrimSpace(answer.Text)
+		if result == "" || stop == "max_tokens" || stop == "length" || answer.ToolUse {
 			return "", errors.New("旁路摘要未完整生成，请重试")
 		}
-		if EstimateInputTokens(llm.CompletionRequest{Messages: []llm.Message{llm.UserText(result)}}) > 2200 {
+		if EstimateInputTokens(model.Request{Messages: []model.Message{userText(result)}}) > 2200 {
 			return "", errors.New("旁路摘要未缩减到预算内，请重试")
 		}
 		prior, text = result, text[n:]
@@ -182,18 +180,16 @@ func (b *contextBuilder) loadHistory(ctx context.Context) error {
 
 // Group boundaries never bisect a tool call/result exchange. A huge newest
 // group is summarized as a whole instead of leaving an orphan result behind.
-func messageGroups(messages []llm.Message) [][]llm.Message {
-	var groups [][]llm.Message
+func messageGroups(messages []model.Message) [][]model.Message {
+	var groups [][]model.Message
 	pending := map[string]bool{}
 	start := 0
 	for i, m := range messages {
-		for _, block := range m.Content {
-			if block.Type == llm.BlockToolUse {
-				pending[block.ID] = true
-			}
-			if block.Type == llm.BlockToolResult {
-				delete(pending, block.ToolUseID)
-			}
+		for _, call := range m.ToolCalls {
+			pending[call.ID] = true
+		}
+		if m.Role == model.RoleTool {
+			delete(pending, m.ToolID)
 		}
 		if len(pending) == 0 {
 			groups = append(groups, messages[start:i+1])
@@ -206,16 +202,16 @@ func messageGroups(messages []llm.Message) [][]llm.Message {
 	return groups
 }
 
-func snapshotSummaryMessages(summary string, tail []llm.Message) []llm.Message {
-	return append([]llm.Message{llm.UserText("[当前主上下文的早期摘要；摘要可能省略细节，不足以判断时请明确说明]\n" + summary)}, tail...)
+func snapshotSummaryMessages(summary string, tail []model.Message) []model.Message {
+	return append([]model.Message{userText("[当前主上下文的早期摘要；摘要可能省略细节，不足以判断时请明确说明]\n" + summary)}, tail...)
 }
 
-func (b *contextBuilder) compactSnapshot(ctx context.Context, base []llm.Message, keepTokens int, key string) ([]llm.Message, error) {
+func (b *contextBuilder) compactSnapshot(ctx context.Context, base []model.Message, keepTokens int, key string) ([]model.Message, error) {
 	b.progress("compressing_snapshot")
 	groups := messageGroups(base)
 	start, used := len(base), 0
 	for i := len(groups) - 1; i >= 0; i-- {
-		cost := EstimateInputTokens(llm.CompletionRequest{Messages: groups[i]})
+		cost := EstimateInputTokens(model.Request{Messages: groups[i]})
 		if used+cost > keepTokens {
 			break
 		}
@@ -234,7 +230,7 @@ func (b *contextBuilder) compactSnapshot(ctx context.Context, base []llm.Message
 		return snapshotSummaryMessages(b.memory.SnapshotSummary, base[start:]), nil
 	}
 	// Serialize only the portion being summarized. The retained suffix stays
-	// in norma's structured message representation, including signed thinking.
+	// in Reasonix's native message representation, including signed thinking.
 	data, err := json.Marshal(base[:start])
 	if err != nil {
 		return nil, err
@@ -251,24 +247,24 @@ func (b *contextBuilder) compactSnapshot(ctx context.Context, base []llm.Message
 	return snapshotSummaryMessages(summary, base[start:]), nil
 }
 
-func (b *contextBuilder) prepare(ctx context.Context, snapshot Snapshot, question string, options ContextOptions, force bool) (llm.CompletionRequest, error) {
+func (b *contextBuilder) prepare(ctx context.Context, snapshot Snapshot, question string, options ContextOptions, force bool) (model.Request, error) {
 	req, err := CloneRequest(snapshot.Request)
 	if err != nil {
 		return req, err
 	}
-	req.MaxTokens = outputBudget(req, options.OutputTokens)
-	base := llm.MessagesForAPI(req.Messages)
-	limit := inputBudget(snapshot, req.MaxTokens)
+	req.MaxTokens = tokenLimit(outputBudget(req, options.OutputTokens))
+	base := evidenceMessages(req.Messages)
+	limit := inputBudget(snapshot, maxTokens(req))
 	if force {
 		limit /= 2
 	}
-	b.info.InputBudget, b.info.OutputTokens = limit, req.MaxTokens
+	b.info.InputBudget, b.info.OutputTokens = limit, maxTokens(req)
 	// Reserve a bounded history allowance, so long side conversations cannot
 	// crowd all primary evidence out. Both count and token limits are enforced.
 	historyLimit := min(16000, max(0, limit/4))
 	count, cost := 0, 0
 	for i := len(b.recent) - 1; i >= 0; i-- {
-		cost += EstimateInputTokens(llm.CompletionRequest{Messages: exchangeMessages(b.recent[i])})
+		cost += EstimateInputTokens(model.Request{Messages: exchangeMessages(b.recent[i])})
 		if cost > historyLimit {
 			count = i + 1
 			break
@@ -317,17 +313,14 @@ func (b *contextBuilder) prepare(ctx context.Context, snapshot Snapshot, questio
 	return req, nil
 }
 
+// Recovery requires machine-readable evidence, never prose that mentions a
+// limit. Adapters which discard the API code cannot safely trigger a replay.
 func isContextOverflow(err error) bool {
-	if err == nil {
+	var response *model.ResponseError
+	if !errors.As(err, &response) || response.Code == nil {
 		return false
 	}
-	text := strings.ToLower(err.Error())
-	for _, marker := range []string{"context_length_exceeded", "maximum context length", "context window", "prompt is too long", "input is too long", "context length exceeded"} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
+	return *response.Code == "context_length_exceeded" || *response.Code == "context_window_exceeded"
 }
 
 // Respond owns preparation and at most one overflow recovery. No tools, main
@@ -338,14 +331,14 @@ func (s SideQuestionService) Respond(ctx context.Context, snapshot Snapshot, que
 		window = 200000
 	}
 	b := &contextBuilder{service: s, replay: replay, memory: replay.Memory, window: window, onUpdate: update}
-	defer func() { info = b.info; out.Usage.Add(b.usage) }()
+	defer func() { info = b.info; addUsage(&out.Usage, b.usage) }()
 	b.progress("preparing")
 	if err = b.loadHistory(ctx); err != nil {
 		return
 	}
 	previousSize := 0
 	for attempt := 0; attempt < 2; attempt++ {
-		var req llm.CompletionRequest
+		var req model.Request
 		req, err = b.prepare(ctx, snapshot, question, options, attempt > 0)
 		if err != nil {
 			return
@@ -357,7 +350,7 @@ func (s SideQuestionService) Respond(ctx context.Context, snapshot Snapshot, que
 		previousSize = EstimateInputTokens(req)
 		b.progress("answering")
 		out, err = s.Answer(ctx, req, snapshot.Model.Streaming, func(a Answer) {
-			a.Usage.Add(b.usage)
+			addUsage(&a.Usage, b.usage)
 			if update != nil {
 				update(a, b.info)
 			}
@@ -365,10 +358,21 @@ func (s SideQuestionService) Respond(ctx context.Context, snapshot Snapshot, que
 		if attempt > 0 || out.Text != "" || out.ToolUse || !isContextOverflow(err) || ctx.Err() != nil {
 			return
 		}
-		b.usage.Add(out.Usage)
+		addUsage(&b.usage, out.Usage)
 		out = Answer{}
 		b.info.OverflowRetried = true
 		b.progress("retrying")
 	}
 	return
+}
+
+func summaryRequest(prior, part string) model.Request {
+	return model.Request{GenerationConfig: model.GenerationConfig{MaxTokens: tokenLimit(2048)}, Messages: []model.Message{
+		{Role: model.RoleSystem, Content: summaryInstruction},
+		userText("[此前摘要]\n" + prior + "\n[新材料片段]\n" + part),
+	}}
+}
+
+func isSummary(req model.Request) bool {
+	return len(req.Messages) > 0 && req.Messages[0].Role == model.RoleSystem && req.Messages[0].Content == summaryInstruction
 }
