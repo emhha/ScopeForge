@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/discovery"
-	"github.com/Autumn-27/artex/toolkit"
-	"github.com/Autumn-27/artex/traffic"
 	sdkhttp "github.com/emhha/netloom/nethttp"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/discovery"
+	"github.com/emhha/scopeforge/toolkit"
+	"github.com/emhha/scopeforge/traffic"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 )
 
 // TestSkillTools functionally exercises create_skill + update_skill_file against a

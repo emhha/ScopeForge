@@ -7,12 +7,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/modelutil"
-	"github.com/Autumn-27/artex/runstate"
-	"github.com/Autumn-27/artex/sessionctx"
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/modelutil"
+	"github.com/emhha/scopeforge/runstate"
+	"github.com/emhha/scopeforge/sessionctx"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 

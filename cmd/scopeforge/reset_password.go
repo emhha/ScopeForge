@@ -3,8 +3,8 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/Autumn-27/artex/config"
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/config"
+	"github.com/emhha/scopeforge/db"
 	"golang.org/x/crypto/bcrypt"
 	"io"
 	"os"
@@ -46,6 +46,6 @@ func resetAdministratorPassword(dataDir string, input io.Reader) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Println("已重置 ARTEX 管理员密码，无需重启服务。")
+	fmt.Println("已重置 ScopeForge 管理员密码，无需重启服务。")
 	return 0
 }

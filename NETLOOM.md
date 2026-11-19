@@ -46,6 +46,6 @@ Make 的 Go 命令通过 `scripts/go-netloom.sh` 临时设置 Git URL 映射与�
 - `search_mapping`：`query` 为域名或 IP；`provider` 为 `all`、`fofa`、`hunter` 或 `quake`；`limit` 为 1–200，默认 20；复杂查询须指定单源并设置 `native=true`。
 - 测绘结果是候选资产，可通过现有 `insert_assets` 工具登记；不自动创建任务或登记资产。
 - Key 不出现在配置读取结果或工具输出中。留空保持现有 Key，清除 Key 时同时停用数据源。配置持久化沿用项目设置存储。
-- 可用 `ARTEX_FOFA_KEY`、`ARTEX_FOFA_EMAIL`、`ARTEX_HUNTER_KEY`、`ARTEX_QUAKE_KEY` 提供环境凭据。数据库保存的非空值优先；环境凭据不会因保存其他配置而写入数据库。未显式保存配置时，存在环境 Key 的源自动启用。
+- 可用 `SCOPEFORGE_FOFA_KEY`、`SCOPEFORGE_FOFA_EMAIL`、`SCOPEFORGE_HUNTER_KEY`、`SCOPEFORGE_QUAKE_KEY` 提供环境凭据。数据库保存的非空值优先；环境凭据不会因保存其他配置而写入数据库。未显式保存配置时，存在环境 Key 的源自动启用。
 
 三个工具默认绑定 `auto`、`pentest`、`worker`、`mainagent`、`planner`，可在工具管理中调整绑定或停用。

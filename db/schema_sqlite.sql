@@ -1,4 +1,4 @@
--- ARTEX SQLite schema. JSON_TEXT has TEXT affinity so JSON numbers retain their
+-- ScopeForge SQLite schema. JSON_TEXT has TEXT affinity so JSON numbers retain their
 -- precision. Indexed task_asset_links serves hot task/asset membership queries.
 -- The opener applies this schema atomically and records its version.
 

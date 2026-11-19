@@ -1,5 +1,5 @@
 // Package agent wires real LLM-driven planner and work agents (on top of the
-// agent-core SDK) to the dual SQLite graph. See docs/ARTEX-架构设计.md
+// agent-core SDK) to the dual SQLite graph. See docs/ScopeForge-架构设计.md
 // §4.3 (planner) and §4.4 (work agent).
 //
 // Provider configuration is read from the environment so the system runs with
@@ -23,9 +23,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/artex/modelutil"
-	"github.com/Autumn-27/artex/sessionctx"
+	"github.com/emhha/scopeforge/llmrec"
+	"github.com/emhha/scopeforge/modelutil"
+	"github.com/emhha/scopeforge/sessionctx"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 
@@ -128,13 +128,13 @@ func (c Config) CompactionWindow() int {
 
 // FromEnv resolves the LLM provider config:
 //
-//	ARTEX_LLM_PROVIDER = anthropic|openai (default: inferred from keys)
-//	ARTEX_LLM_MODEL    = model id        (default: per provider)
-//	ARTEX_LLM_BASE_URL = endpoint        (optional)
-//	ARTEX_LLM_PROXY    = proxy URL        (optional; http/https/socks5)
+//	SCOPEFORGE_LLM_PROVIDER = anthropic|openai (default: inferred from keys)
+//	SCOPEFORGE_LLM_MODEL    = model id        (default: per provider)
+//	SCOPEFORGE_LLM_BASE_URL = endpoint        (optional)
+//	SCOPEFORGE_LLM_PROXY    = proxy URL        (optional; http/https/socks5)
 //	ANTHROPIC_API_KEY / OPENAI_API_KEY         = credentials
 func FromEnv() (Config, bool) {
-	prov := os.Getenv("ARTEX_LLM_PROVIDER")
+	prov := os.Getenv("SCOPEFORGE_LLM_PROVIDER")
 	anthKey := os.Getenv("ANTHROPIC_API_KEY")
 	oaiKey := os.Getenv("OPENAI_API_KEY")
 
@@ -150,11 +150,11 @@ func FromEnv() (Config, bool) {
 	}
 
 	c := Config{
-		BaseURL: os.Getenv("ARTEX_LLM_BASE_URL"),
-		Model:   os.Getenv("ARTEX_LLM_MODEL"),
-		Proxy:   strings.TrimSpace(os.Getenv("ARTEX_LLM_PROXY")),
-		// 默认流式;ARTEX_LLM_STREAM=false/0/off 显式关闭走非流式。
-		Stream: !isFalsy(os.Getenv("ARTEX_LLM_STREAM")),
+		BaseURL: os.Getenv("SCOPEFORGE_LLM_BASE_URL"),
+		Model:   os.Getenv("SCOPEFORGE_LLM_MODEL"),
+		Proxy:   strings.TrimSpace(os.Getenv("SCOPEFORGE_LLM_PROXY")),
+		// 默认流式;SCOPEFORGE_LLM_STREAM=false/0/off 显式关闭走非流式。
+		Stream: !isFalsy(os.Getenv("SCOPEFORGE_LLM_STREAM")),
 	}
 	switch prov {
 	case "openai":

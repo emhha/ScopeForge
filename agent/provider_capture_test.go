@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/llmrec"
+	"github.com/emhha/scopeforge/llmrec"
 )
 
 // the request body internally and decodes the SSE response before the recorder

@@ -2,7 +2,7 @@
 
 ## 开发流程与 Git 检查点
 
-1. 在 `refactor/native-trpc-sqlite` 分支实施；保留用户原有脚本删除，不把这些删除纳入迁移提交。原始差异备份在 `/tmp/scopeforge-before-trpc.patch`。
+1. 在 `refactor/native-trpc-sqlite` 分支实施；初期保留用户原有脚本删除，不把这些删除纳入运行时迁移提交。原始差异备份在 `/tmp/scopeforge-before-trpc.patch`。
 2. Make 构建入口与迁移计划：`0c04675`、`7ee58d4`。
 3. SQLite 业务数据、配置、归档与并发事务：`cf8dca8`。
 4. 原生 tRPC 运行时与内存 session：`bdce1ee`，包含模型、工具、审批、计费和生命周期测试。
@@ -11,7 +11,7 @@
 ## 已完成的实现
 
 - [x] Make：默认构建内嵌前端程序；后端、前端、开发、测试、清理入口；复用前端产物交叉编译与 zip 打包。发布工作流使用相同 Make 目标。
-- [x] SQLite：删除 PostgreSQL 驱动、DDL 和专有查询；配置为数据库文件。默认 `-data/artex.sqlite`，`ARTEX_DB_PATH` 优先，配置内相对路径相对配置文件解析。旧 PostgreSQL 配置显式拒绝，已有数据不自动导入。
+- [x] SQLite：删除 PostgreSQL 驱动、DDL 和专有查询；配置为数据库文件。默认 `-data/scopeforge.sqlite`，`SCOPEFORGE_DB_PATH` 优先，配置内相对路径相对配置文件解析。旧 PostgreSQL 配置显式拒绝，已有数据不自动导入。
 - [x] 并发与数据：modernc SQLite，WAL、外键、busy_timeout、FULL 同步；读池和单写连接，写事务 `BEGIN IMMEDIATE`。数组使用 JSON，IP/CIDR 使用 `net/netip`，归档在 Go 中投影和还原。数据库测试必须使用临时 SQLite，初始化失败不跳过。
 - [x] 原生运行：删除 norma 模块和运行时，不提供兼容层或本地替代模块。角色直接使用原生 `model.Model`、`tool.CallableTool`、`LLMAgent` 和 `Runner`；业务配置与审计适配保持在应用边界。删除旧 noa 后端、API 和 UI 设置。
 - [x] 模型与工具：原生 OpenAI Chat、Responses、Anthropic；保留代理、配额识别、输出前重试与供应商切换。输出后不重放。原生 hostexec、file、todo、skills 与 MCP 工具，业务工具实现原生接口。工具回调先补默认参数并校验 schema，再审批，再执行；保留拦截审计和用量统计。
@@ -71,4 +71,20 @@ SQLite 实现移植并适配自本机同源项目提交 `3f7e686`；保持当前
 - `make release`、`make build-embedded VERSION=dev`、`make package VERSION=dev`：通过。
 - Linux amd64 实际启动：内嵌首页、health、管理员初始化、鉴权 API、重启后登录及正常退出全部通过；SQLite header、schema v2、完整性和无 session 表检查通过。
 - linux/arm64、darwin/amd64、darwin/arm64、windows/amd64：`CGO_ENABLED=0` 内嵌前端交叉编译通过。其他平台未在本机执行运行验证。
-- 代码及模块中无旧 SDK 依赖或运行入口；配置文件不提交，生成物不提交，原有脚本删除保持未暂存。
+- 代码及模块中无旧 SDK 依赖或运行入口；配置文件不提交，生成物不提交，初期原有脚本删除保持未暂存；后续集成提交保留并提交这些删除。
+
+## 网络工具与命名收尾（2026-11-19）
+
+- `3e7b214` 保存 netloom 原生 HTTP、MITM 与 FOFA/Hunter/Quake 测绘工具、测绘配置界面，以及每 Agent LLM 选择、设置项清理和 dist 构建规则。
+- 正式模块路径改为 `github.com/emhha/scopeforge`；命令为 `cmd/scopeforge`，产物为 `dist/scopeforge`；环境变量统一使用 `SCOPEFORGE_`，管理员用户名为 `ScopeForge`。旧环境变量、登录 Cookie 和命令不提供别名，部署时应同步更新并重新登录。
+- `make build` 生成当前系统产物；`make build all` 生成 Linux、Windows、macOS 的 amd64/arm64 六种内嵌前端产物。
+- netloom 获取方式、证书、工具与设置边界详见 [NETLOOM.md](NETLOOM.md)。内存 session 和 Memory/Knowledge 留位策略保持本说明中的定义。
+- main 分支的 Reasonix 迁移与当前原生 tRPC 方案冲突。集成采用当前经测试的 tRPC/SQLite/netloom 树，保留双方 Git 历史；不带回 Reasonix vendor、运行时兼容层或会话文件持久化。
+
+### 收尾验证
+
+- 全量 `make test`、`go vet ./...`、依赖校验通过；traffic、netrequest、discovery、server 的竞态检查通过。
+- `make build` 与 `make build all` 通过，生成当前系统程序和六种跨平台程序；非 Linux 平台仅验证交叉编译。
+- 实际 Linux 程序验证内嵌 ScopeForge 界面、初始化、管理员登录、测绘配置鉴权、SQLite 完整性、重启后登录和正常退出。
+- 原生 netloom 本地集成覆盖 HTTP/HTTPS、CA 重载、上游代理、重定向、压缩、取消、流量证据与三个测绘源；未使用真实供应商 Key 发起计费查询。
+- 浏览器验证每 Agent 独立模型选择、保存失败回退、编辑器同步，以及测绘 Key 保存/保留/清除；当前界面与 13 张产品截图使用 ScopeForge 标识。

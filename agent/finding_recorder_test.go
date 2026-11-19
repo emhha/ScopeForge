@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/evidence"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/evidence"
 )
 
 type failingFindingRecorder struct{}

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/db"
 )
 
 // testDB opens a DB connection, skipping if PG is unavailable.

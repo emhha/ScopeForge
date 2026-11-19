@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -25,7 +25,7 @@ func names(tools []actool.CallableTool) map[string]actool.CallableTool {
 // catalog, ToolResolve keeps record_fact for worker but drops it for planner (not
 // bound), and an edited description + injected default flow through.
 func TestWireTools(t *testing.T) {
-	pg, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
+	pg, err := db.Open(filepath.Join(t.TempDir(), "scopeforge.sqlite"))
 	if err != nil {
 		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}

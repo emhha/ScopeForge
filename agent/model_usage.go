@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/Autumn-27/artex/modelutil"
+	"github.com/emhha/scopeforge/modelutil"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 

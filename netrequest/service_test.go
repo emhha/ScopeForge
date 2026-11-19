@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/internal/nettest"
-	"github.com/Autumn-27/artex/traffic"
 	sdkhttp "github.com/emhha/netloom/nethttp"
+	"github.com/emhha/scopeforge/internal/nettest"
+	"github.com/emhha/scopeforge/traffic"
 )
 
 func TestNativeHTTPRedirectValidationAndSingleCapturePerHop(t *testing.T) {

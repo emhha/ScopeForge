@@ -4,9 +4,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/llmpool"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/llmpool"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 

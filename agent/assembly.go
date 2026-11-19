@@ -6,7 +6,7 @@ import (
 	"log"
 	"runtime/debug"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"

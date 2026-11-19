@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/internal/modeltest"
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/internal/modeltest"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )

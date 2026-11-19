@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/db"
 )
 
 func fixtureService(t *testing.T) (*Service, *db.DB) {
@@ -97,7 +97,7 @@ func ptr[T any](v T) *T { return &v }
 func TestMappingSettingsPreserveSecretsAndDoNotPersistEnvironmentKeys(t *testing.T) {
 	const envKey = "env-only-fixture"
 	const storedKey = "stored-key-fixture"
-	t.Setenv("ARTEX_FOFA_KEY", envKey)
+	t.Setenv("SCOPEFORGE_FOFA_KEY", envKey)
 	service, d := fixtureService(t)
 	views, err := service.Sources()
 	if err != nil {

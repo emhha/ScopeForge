@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -248,7 +248,7 @@ func (c *Client) initialize(ctx context.Context) error {
 	if _, err := c.call(ctx, "initialize", map[string]any{
 		"protocolVersion": version,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "artex", "version": "0.2"},
+		"clientInfo":      map[string]any{"name": "scopeforge", "version": "0.2"},
 	}); err != nil {
 		return err
 	}

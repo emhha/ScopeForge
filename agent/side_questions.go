@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/sidequestion"
+	"github.com/emhha/scopeforge/sidequestion"
 )
 
 func attachSideCapture(ctx context.Context, opts *RunConfig) context.Context {

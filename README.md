@@ -1,11 +1,8 @@
 <div align="center">
 
-# ARTEX
+# ScopeForge
 
 AI 自主渗透测试系统（Go 后端 + Vite 前端）
-
-
-🌐 **在线 Demo**： [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/)
 
 </div>
 
@@ -13,7 +10,7 @@ AI 自主渗透测试系统（Go 后端 + Vite 前端）
 
 ## 截图预览
 
-> 完整交互见[在线 Demo](https://artex-demo.vercel.app/)。
+> 可运行 `make dev-web` 体验本地演示界面。
 
 | 仪表盘（总览 / Token 消耗 / 活动流） | 任务列表 |
 | :---: | :---: |
@@ -49,7 +46,7 @@ AI 自主渗透测试系统（Go 后端 + Vite 前端）
 ## 审批记录详情
 
 全局「审批记录」、任务内「拦截审批」及对话中的审批卡片均支持展开查看详情。展示结构参考
-[AegisHook 的审批详情组件](https://github.com/RuoJi6/AegisHook/blob/main/web/src/components/CallDetail.vue)，沿用 ARTEX 的组件和主题：
+[AegisHook 的审批详情组件](https://github.com/RuoJi6/AegisHook/blob/main/web/src/components/CallDetail.vue)，沿用 ScopeForge 的组件和主题：
 
 
 ## 资产同步（ScopeSentry）
@@ -58,7 +55,7 @@ AI 自主渗透测试系统（Go 后端 + Vite 前端）
 
 - 在「**资产同步**」页填 ScopeSentry 的地址与 API Key，接入数据源；
 - 按**项目**或**任务**维度选择要同步的目标与资产类型（域名 / 子域 / IP / 端口 / 站点 / 端点…）；
-- 一键导入并按公司资产范围归并，直接进入 ARTEX 的资产图供 agent 探索使用。
+- 一键导入并按公司资产范围归并，直接进入 ScopeForge 的资产图供 agent 探索使用。
 
 ---
 
@@ -67,7 +64,7 @@ AI 自主渗透测试系统（Go 后端 + Vite 前端）
 需要 Go 1.26.3+、Node.js 22.22+、npm 和 GNU Make。
 
 ```sh
-make build           # 当前系统：./dist/artex（Windows 为 artex.exe）
+make build           # 当前系统：./dist/scopeforge（Windows 为 scopeforge.exe）
 make build all       # Linux、Windows、macOS，各构建 amd64 / arm64
 make build-backend   # 只构建后端，适合配合前端开发服务
 make run             # 开发运行后端，可加 ARGS="-addr :8787"
@@ -79,17 +76,17 @@ make clean           # 清理产物
 `make` 与 `make build` 等价。`make build all`（也可用 `make all` 或 `make build-all`）只构建一次前端，然后生成：
 
 ```text
-dist/artex-linux-amd64
-dist/artex-linux-arm64
-dist/artex-windows-amd64.exe
-dist/artex-windows-arm64.exe
-dist/artex-darwin-amd64
-dist/artex-darwin-arm64
+dist/scopeforge-linux-amd64
+dist/scopeforge-linux-arm64
+dist/scopeforge-windows-amd64.exe
+dist/scopeforge-windows-arm64.exe
+dist/scopeforge-darwin-amd64
+dist/scopeforge-darwin-arm64
 ```
 
 单独交叉编译可用 `make build GOOS=windows GOARCH=amd64`。`darwin` 表示 macOS。
 
-可通过 `VERSION=v1.0.0`、`BINARY=dist/custom-artex`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite，模型会话仅保存在进程内存中；实现与后续扩展方案见 [迁移说明](MIGRATION_PLAN.md)。
+可通过 `VERSION=v1.0.0`、`BINARY=dist/custom-scopeforge`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite，模型会话仅保存在进程内存中；实现与后续扩展方案见 [迁移说明](MIGRATION_PLAN.md)。
 
 ## 安装
 
@@ -98,17 +95,17 @@ dist/artex-darwin-arm64
 ```sh
 cp config.example.json config.json
 make
-./dist/artex
+./dist/scopeforge
 ```
 
 打开 **http://localhost:8787**，首次进入 `/setup` 设置管理员密码。
-数据库默认保存到 `-data` 目录下的 `artex.sqlite`；`ARTEX_DB_PATH` 可以指定文件位置，`database.path` 中的相对路径以配置文件所在目录为基准。
+数据库默认保存到 `-data` 目录下的 `scopeforge.sqlite`；`SCOPEFORGE_DB_PATH` 可以指定文件位置，`database.path` 中的相对路径以配置文件所在目录为基准。
 已有 PostgreSQL 数据不会自动导入；旧数据库配置会明确报错，避免误建空库。
 
 需要重置管理员密码时：
 
 ```sh
-printf '%s\n' '新的密码' | ./dist/artex -reset-password
+printf '%s\n' '新的密码' | ./dist/scopeforge -reset-password
 ```
 
 远程 MCP 支持 Streamable HTTP 与旧版 SSE；服务配置仍通过应用内管理页面维护。
@@ -124,40 +121,40 @@ printf '%s\n' '新的密码' | ./dist/artex -reset-password
 ```sh
 git pull
 make
-./dist/artex
+./dist/scopeforge
 ```
 
-也可从 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载对应平台的 zip，停止旧进程后替换二进制，按需合并技能目录，保留本地配置和数据。
+也可从 [Releases](https://github.com/emhha/scopeforge/releases) 下载对应平台的 zip，停止旧进程后替换二进制，按需合并技能目录，保留本地配置和数据。
 
-发布流程使用 `make package VERSION=vX.Y.Z GOOS=linux GOARCH=amd64`，打包前先运行 `make embed-web`。压缩包命名为 `artex-X.Y.Z-linux-amd64.zip`，包含内嵌前端的二进制、配置示例和技能。当前仓库通过 Make 构建与发布，不再提供旧安装、启动或 Docker 构建脚本。
+发布流程使用 `make package VERSION=vX.Y.Z GOOS=linux GOARCH=amd64`，打包前先运行 `make embed-web`。压缩包命名为 `scopeforge-X.Y.Z-linux-amd64.zip`，包含内嵌前端的二进制、配置示例和技能。当前仓库通过 Make 构建与发布，不再提供旧安装、启动或 Docker 构建脚本。
 
 ---
 
 ## 配置
 
-**数据库**（`config.json`，或用环境变量 `ARTEX_DB_PATH` 覆盖）：
+**数据库**（`config.json`，或用环境变量 `SCOPEFORGE_DB_PATH` 覆盖）：
 
 ```json
 {
   "database": {
     "driver": "sqlite",
-    "path": "data/artex.sqlite"
+    "path": "data/scopeforge.sqlite"
   }
 }
 ```
 
-不设置 `path` 时使用 `-data` 目录下的 `artex.sqlite`。数据库启用 WAL、外键和忙等待，使用单写连接协调并发写入。数据库文件应放在本地磁盘。
+不设置 `path` 时使用 `-data` 目录下的 `scopeforge.sqlite`。数据库启用 WAL、外键和忙等待，使用单写连接协调并发写入。数据库文件应放在本地磁盘。
 
 **会话**：原生 Runner 会话、摘要、待办及旁路问答 checkpoint 使用内存服务，保留期为 24 小时，重启后清空；删除任务或对话时同步清理。任务、聊天展示记录、审批、活动和用量属于业务审计数据，仍保存在 SQLite，不用于还原模型上下文。Memory 和 Knowledge 当前不启用，预留方案见 [迁移说明](MIGRATION_PLAN.md)。
 
 **LLM**：`export ANTHROPIC_API_KEY=sk-...`（或 `OPENAI_API_KEY`），也可在 UI 的「LLM 配置」页填写。
-可选：`ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`。
+可选：`SCOPEFORGE_LLM_PROVIDER` / `SCOPEFORGE_LLM_MODEL` / `SCOPEFORGE_LLM_BASE_URL` / `SCOPEFORGE_LLM_PROXY`。
 
 **各 Agent 的 LLM**：先在「LLM 配置」中添加模型配置，再到「Agent」页逐个选择；例如目标拆解选择 DeepSeek，规划者选择 GPT。选择后自动保存，各 Agent 互不覆盖；未指定时跟随任务/会话，再回退全局激活配置。
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
-**常用参数**：`./artex -addr :8787 -proxy 127.0.0.1:8788`（`-addr` 前端+API，`-proxy` 流量录制代理；传 `-proxy ""` 禁用代理）。
+**常用参数**：`./scopeforge -addr :8787 -proxy 127.0.0.1:8788`（`-addr` 前端+API，`-proxy` 流量录制代理；传 `-proxy ""` 禁用代理）。
 
 ### 反向代理部署（HTTPS / 只开放 443）
 
@@ -217,7 +214,7 @@ server {
 
 ## 系统技术架构
 
-ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Vite 前端）+ SQLite，agent 通过 [tRPC-Agent-Go](https://github.com/trpc-group/trpc-agent-go) 原生 `LLMAgent` / `Runner`、`model.Model`、`tool.CallableTool` 和内存 session 服务运行。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
+ScopeForge 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Vite 前端）+ SQLite，agent 通过 [tRPC-Agent-Go](https://github.com/trpc-group/trpc-agent-go) 原生 `LLMAgent` / `Runner`、`model.Model`、`tool.CallableTool` 和内存 session 服务运行。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
 
 ### 总体分层
 
@@ -381,7 +378,7 @@ flowchart TB
   R3["第 3 轮（②产出 fact）　派意图③"] --> T3
 ```
 
-于是攻击链在“事件驱动 + 无状态会话”的环境下依然**稳定推进、不重复、不错序**——这是 ARTEX 能自主走完多步利用链的关键。
+于是攻击链在“事件驱动 + 无状态会话”的环境下依然**稳定推进、不重复、不错序**——这是 ScopeForge 能自主走完多步利用链的关键。
 
 ---
 
@@ -396,6 +393,10 @@ flowchart TB
 </div>
 
 ---
+## Netloom 网络工具
+
+`http_request`、全局 MITM 录制代理与 FOFA / Hunter / Quake 测绘均原生调用 `github.com/emhha/netloom`。网络测绘仅供 Agent 调用；API Key 等配置在系统设置中管理。依赖镜像、CA 和使用方式见 [Netloom 接入说明](NETLOOM.md)。
+
 ## 参考
 
 https://github.com/oritera/Cairn
@@ -411,7 +412,7 @@ https://github.com/oritera/Cairn
 
 > ⚠️ **重要提示**：开源协议本身不限制软件的使用用途。以下的「使用限制」与「免责声明」是作者对使用者的额外约定与郑重声明，请务必遵守。
 
-**ARTEX 仅供个人学习、代码研究与本地技术验证使用，不得用于对任何线上系统或网站发起实际测试。**
+**ScopeForge 仅供个人学习、代码研究与本地技术验证使用，不得用于对任何线上系统或网站发起实际测试。**
 
 ### 允许使用范围
 

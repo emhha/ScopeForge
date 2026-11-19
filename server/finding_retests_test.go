@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/internal/modeltest"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/internal/modeltest"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -38,7 +38,7 @@ func (p *retestProvider) GenerateContent(ctx context.Context, req *llm.Request) 
 
 func newRetestServer(t *testing.T) (*Server, int64) {
 	t.Helper()
-	pg, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
+	pg, err := db.Open(filepath.Join(t.TempDir(), "scopeforge.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

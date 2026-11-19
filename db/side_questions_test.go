@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/sidequestion"
+	"github.com/emhha/scopeforge/sidequestion"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 

@@ -7,11 +7,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "artex-db-sqlite-")
+	dir, err := os.MkdirTemp("", "scopeforge-db-sqlite-")
 	if err != nil {
 		panic(err)
 	}
-	os.Setenv("ARTEX_DB_PATH", filepath.Join(dir, "test.sqlite"))
+	os.Setenv("SCOPEFORGE_DB_PATH", filepath.Join(dir, "test.sqlite"))
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

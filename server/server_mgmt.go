@@ -23,11 +23,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/skillcatalog"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/skillcatalog"
 )
 
 // validSkillName checks the agentskills.io name constraints, widened so a skill can

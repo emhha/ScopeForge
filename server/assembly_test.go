@@ -8,8 +8,8 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
 )
 
 // hasSkillTool reports whether the packed tool set contains the Skill meta-tool.
@@ -28,7 +28,7 @@ func hasSkillTool(options []llmagent.Option) bool {
 // ToolAugment hook. Skills live on disk under skillDir; visibility is a per-agent
 // (agent × skill_name) row keyed by the skill's directory name.
 func TestAssembleVisibleSkill(t *testing.T) {
-	pg, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
+	pg, err := db.Open(filepath.Join(t.TempDir(), "scopeforge.sqlite"))
 	if err != nil {
 		t.Fatalf("SQLite unavailable (%v) — skipping", err)
 	}

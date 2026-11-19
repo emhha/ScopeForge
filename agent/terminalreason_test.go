@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/runstate"
+	"github.com/emhha/scopeforge/runstate"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 

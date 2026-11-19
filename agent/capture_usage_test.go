@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/internal/modeltest"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/internal/modeltest"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 

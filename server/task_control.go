@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
 )
 
 const maxBatchControlIDs = 100

@@ -6,10 +6,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
 )
 
 type recordingToolUsage struct {

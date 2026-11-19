@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/intercept"
 )
 
 func TestInterceptDetailHTTP(t *testing.T) {
-	d, err := db.Open(filepath.Join(t.TempDir(), "artex.sqlite"))
+	d, err := db.Open(filepath.Join(t.TempDir(), "scopeforge.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

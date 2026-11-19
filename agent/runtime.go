@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/runstate"
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/runstate"
+	"github.com/emhha/scopeforge/toolkit"
 	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -73,7 +73,7 @@ func newTurn(config RunConfig) *turn {
 	if id == "" {
 		id = uuid.NewString()
 	}
-	return &turn{config: config, service: svc, key: session.Key{AppName: "artex", UserID: "operator", SessionID: id}, owned: owned}
+	return &turn{config: config, service: svc, key: session.Key{AppName: "scopeforge", UserID: "operator", SessionID: id}, owned: owned}
 }
 func (t *turn) History(ctx context.Context) []model.Message {
 	sess, err := t.service.GetSession(ctx, t.key)
@@ -188,7 +188,7 @@ func (t *turn) Run(ctx context.Context, input string, settling bool) (<-chan *ev
 	if cfg.Knowledge != nil {
 		opts = append(opts, llmagent.WithKnowledge(cfg.Knowledge))
 	}
-	ag := llmagent.New("artex", opts...)
+	ag := llmagent.New("scopeforge", opts...)
 	ropts := []runner.Option{runner.WithSessionService(t.service)}
 	if cfg.Memory != nil {
 		ropts = append(ropts, runner.WithMemoryService(cfg.Memory))

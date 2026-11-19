@@ -214,7 +214,7 @@ func openSQLite(path string) (*DB, error) {
 }
 
 const sqliteSchemaVersion = 2
-const sqliteApplicationID = 0x41525458 // ARTX
+const sqliteApplicationID = 0x41525458 // Stable SQLite format identifier; retained for existing databases.
 func initializeSQLite(writer *sql.DB) error {
 	tx, err := writer.Begin()
 	if err != nil {

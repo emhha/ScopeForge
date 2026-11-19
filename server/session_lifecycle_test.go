@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Autumn-27/artex/agent"
+	"github.com/emhha/scopeforge/agent"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
@@ -13,13 +13,13 @@ func TestNativeSessionDeletionKeepsOtherConversations(t *testing.T) {
 	defer service.Close()
 	m := &Manager{sessions: service}
 	for _, id := range []string{"conv-1", "conv-2", "exp3-worker-i9", "exp4-main"} {
-		if _, err := service.CreateSession(t.Context(), session.Key{AppName: "artex", UserID: "operator", SessionID: id}, nil); err != nil {
+		if _, err := service.CreateSession(t.Context(), session.Key{AppName: "scopeforge", UserID: "operator", SessionID: id}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	m.forgetConversationSession(1)
 	m.forgetTaskSessions(3, 3)
-	items, err := service.ListSessions(context.Background(), session.UserKey{AppName: "artex", UserID: "operator"})
+	items, err := service.ListSessions(context.Background(), session.UserKey{AppName: "scopeforge", UserID: "operator"})
 	if err != nil || len(items) != 2 {
 		t.Fatalf("remaining=%d error=%v", len(items), err)
 	}

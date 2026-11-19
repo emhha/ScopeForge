@@ -72,7 +72,7 @@ func isGoRunDir(dir string) bool {
 }
 
 // Path returns the config file path. Resolution order:
-//  1. env ARTEX_CONFIG (explicit override)
+//  1. env SCOPEFORGE_CONFIG (explicit override)
 //  2. ./config.json in the current working directory (running from the project
 //     dir — robust no matter where `go run` placed the temp/cached binary)
 //  3. config.json next to the executable (a distributed binary keeps it beside)
@@ -80,7 +80,7 @@ func isGoRunDir(dir string) bool {
 // The first existing file wins. If none exist, the CWD path is returned so the
 // "not found" message points at the project dir the user most likely expected.
 func Path() string {
-	if v := strings.TrimSpace(os.Getenv("ARTEX_CONFIG")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("SCOPEFORGE_CONFIG")); v != "" {
 		return v
 	}
 	var candidates []string
@@ -110,12 +110,12 @@ func Load() Config {
 
 // SkillDir returns the skill root directory with precedence:
 //
-//	env ARTEX_SKILL_DIR  >  config file (skill_dir)  >  BaseDir()/skills
+//	env SCOPEFORGE_SKILL_DIR  >  config file (skill_dir)  >  BaseDir()/skills
 //
 // The directory is created if it does not exist.
 func SkillDir() string {
 	var d string
-	if v := strings.TrimSpace(os.Getenv("ARTEX_SKILL_DIR")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("SCOPEFORGE_SKILL_DIR")); v != "" {
 		d = v
 	} else if v := strings.TrimSpace(Load().SkillDir); v != "" {
 		d = v
@@ -129,8 +129,8 @@ func SkillDir() string {
 // SQLitePath resolves a local database file. Default storage follows the data
 // directory; relative configured paths are relative to the config file.
 func SQLitePath(dataDir string) (path, source string, err error) {
-	if value := strings.TrimSpace(os.Getenv("ARTEX_DB_PATH")); value != "" {
-		return value, "环境变量 ARTEX_DB_PATH", nil
+	if value := strings.TrimSpace(os.Getenv("SCOPEFORGE_DB_PATH")); value != "" {
+		return value, "环境变量 SCOPEFORGE_DB_PATH", nil
 	}
 	var loaded Config
 	raw, readErr := os.ReadFile(Path())
@@ -155,11 +155,11 @@ func SQLitePath(dataDir string) (path, source string, err error) {
 		return path, "配置文件 " + Path() + " (database.path)", nil
 	}
 
-	if database.DSN != "" || database.Host != "" || database.DBName != "" || database.User != "" || os.Getenv("ARTEX_PG_DSN") != "" {
-		return "", "", fmt.Errorf("不支持 PostgreSQL 配置；请使用 SQLite，并通过 database.path 或 ARTEX_DB_PATH 指定数据库文件")
+	if database.DSN != "" || database.Host != "" || database.DBName != "" || database.User != "" || os.Getenv("SCOPEFORGE_PG_DSN") != "" {
+		return "", "", fmt.Errorf("不支持 PostgreSQL 配置；请使用 SQLite，并通过 database.path 或 SCOPEFORGE_DB_PATH 指定数据库文件")
 	}
 	if dataDir == "" {
 		dataDir = filepath.Join(BaseDir(), "data")
 	}
-	return filepath.Join(dataDir, "artex.sqlite"), "默认本地 SQLite", nil
+	return filepath.Join(dataDir, "scopeforge.sqlite"), "默认本地 SQLite", nil
 }

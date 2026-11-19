@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 
-	"github.com/Autumn-27/artex/llmrec"
+	"github.com/emhha/scopeforge/llmrec"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 

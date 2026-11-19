@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/traffic"
 	"github.com/emhha/netloom/httpclient"
 	"github.com/emhha/netloom/mapping"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/traffic"
 )
 
 var providers = []string{"fofa", "hunter", "quake"}
@@ -79,17 +79,17 @@ func (s *Service) load(id string) (Source, error) {
 	if exists {
 		err = json.Unmarshal([]byte(raw), &c)
 	}
-	if !exists && strings.TrimSpace(os.Getenv("ARTEX_"+strings.ToUpper(id)+"_KEY")) != "" {
+	if !exists && strings.TrimSpace(os.Getenv("SCOPEFORGE_"+strings.ToUpper(id)+"_KEY")) != "" {
 		c.Enabled = true
 	}
 	return c, err
 }
 func withEnvironment(id string, c Source) Source {
 	if c.Key == "" {
-		c.Key = strings.TrimSpace(os.Getenv("ARTEX_" + strings.ToUpper(id) + "_KEY"))
+		c.Key = strings.TrimSpace(os.Getenv("SCOPEFORGE_" + strings.ToUpper(id) + "_KEY"))
 	}
 	if id == "fofa" && c.Email == "" {
-		c.Email = strings.TrimSpace(os.Getenv("ARTEX_FOFA_EMAIL"))
+		c.Email = strings.TrimSpace(os.Getenv("SCOPEFORGE_FOFA_EMAIL"))
 	}
 	return c
 }

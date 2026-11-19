@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/traffic"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/traffic"
 )
 
 func evidenceFixture(t *testing.T) (*Store, db.RecordFindingInput, string) {
 	t.Helper()
-	dsn := os.Getenv("ARTEX_DB_PATH")
+	dsn := os.Getenv("SCOPEFORGE_DB_PATH")
 	pg, err := db.Open(dsn)
 	if err != nil {
 		t.Fatal(err)

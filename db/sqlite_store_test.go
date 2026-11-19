@@ -167,8 +167,8 @@ func TestSQLiteAssetMergePreservesNullAndLearnedService(t *testing.T) {
 
 func TestSQLiteFileURIWindowsDriveAndEscaping(t *testing.T) {
 	for _, test := range []struct{ path, want string }{
-		{"C:/Users/Test/data/artex.sqlite", "file:///C:/Users/Test/data/artex.sqlite"},
-		{"/home/test/data/artex.sqlite", "file:///home/test/data/artex.sqlite"},
+		{"C:/Users/Test/data/scopeforge.sqlite", "file:///C:/Users/Test/data/scopeforge.sqlite"},
+		{"/home/test/data/scopeforge.sqlite", "file:///home/test/data/scopeforge.sqlite"},
 		{"/home/test/data/a b?.sqlite", "file:///home/test/data/a%20b%3F.sqlite"},
 	} {
 		if got := sqliteFileURI(test.path); got != test.want {

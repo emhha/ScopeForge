@@ -1,9 +1,9 @@
 {
-  "_comment": "复制为 config.json，或使用 ARTEX_CONFIG 指定路径。省略 database 时默认存入 data/artex.sqlite。",
+  "_comment": "复制为 config.json，或使用 SCOPEFORGE_CONFIG 指定路径。省略 database 时默认存入 data/scopeforge.sqlite。",
   "database": {
     "driver": "sqlite",
-    "path": "data/artex.sqlite"
+    "path": "data/scopeforge.sqlite"
   },
-  "_comment_database": "ARTEX_DB_PATH 优先于 database.path。配置中的相对路径相对于 config.json。仅支持 SQLite，不提供 PostgreSQL 导入工具。",
+  "_comment_database": "SCOPEFORGE_DB_PATH 优先于 database.path。配置中的相对路径相对于 config.json。仅支持 SQLite，不提供 PostgreSQL 导入工具。",
   "skill_dir": ""
 }

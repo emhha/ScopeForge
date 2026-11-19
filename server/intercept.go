@@ -10,11 +10,11 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/guard"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/artex/modelutil"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/guard"
+	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/llmrec"
+	"github.com/emhha/scopeforge/modelutil"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 

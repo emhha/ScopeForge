@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 )
 
 // TestBuiltinToolSeeds ensures the catalog builds from a nil-store ToolSet without

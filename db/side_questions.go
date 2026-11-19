@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Autumn-27/artex/sidequestion"
+	"github.com/emhha/scopeforge/sidequestion"
 	"github.com/google/uuid"
 )
 

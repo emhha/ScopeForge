@@ -13,10 +13,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/internal/modeltest"
-	"github.com/Autumn-27/artex/internal/nettest"
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/internal/modeltest"
+	"github.com/emhha/scopeforge/internal/nettest"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 

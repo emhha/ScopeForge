@@ -6,8 +6,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 

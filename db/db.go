@@ -1,4 +1,4 @@
-// Package db owns ARTEX business metadata in a local SQLite database.
+// Package db owns ScopeForge business metadata in a local SQLite database.
 // 它打开连接、应用 schema、并 seed 内置 agent 与变量目录。
 package db
 
@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Autumn-27/artex/config"
+	"github.com/emhha/scopeforge/config"
 )
 
 //go:embed schema_sqlite.sql

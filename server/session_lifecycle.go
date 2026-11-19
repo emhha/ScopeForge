@@ -16,14 +16,14 @@ func (m *Manager) forgetSessions(match func(string) bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	items, err := m.sessions.ListSessions(ctx, session.UserKey{AppName: "artex", UserID: "operator"}, session.WithListSessionOnlyMeta())
+	items, err := m.sessions.ListSessions(ctx, session.UserKey{AppName: "scopeforge", UserID: "operator"}, session.WithListSessionOnlyMeta())
 	if err != nil {
 		log.Printf("[session] list cleanup: %v", err)
 		return
 	}
 	for _, item := range items {
 		if match(item.ID) {
-			if err := m.sessions.DeleteSession(ctx, session.Key{AppName: "artex", UserID: "operator", SessionID: item.ID}); err != nil {
+			if err := m.sessions.DeleteSession(ctx, session.Key{AppName: "scopeforge", UserID: "operator", SessionID: item.ID}); err != nil {
 				log.Printf("[session] delete cleanup: %v", err)
 			}
 		}

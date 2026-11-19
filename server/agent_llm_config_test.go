@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/db"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 

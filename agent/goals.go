@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/sessionctx"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/sessionctx"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )

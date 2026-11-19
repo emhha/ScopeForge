@@ -7,12 +7,12 @@ import (
 	"log"
 	"strings"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/skillcatalog"
-	"github.com/Autumn-27/artex/traffic"
+	"github.com/emhha/scopeforge/agent"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/skillcatalog"
+	"github.com/emhha/scopeforge/traffic"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )

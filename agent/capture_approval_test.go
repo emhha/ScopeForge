@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/guard"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/internal/modeltest"
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/guard"
+	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/internal/modeltest"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )

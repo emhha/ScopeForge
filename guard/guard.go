@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -85,7 +85,7 @@ func (g *Guard) before(ctx context.Context, args *tool.BeforeToolArgs) (*tool.Be
 	return nil, nil
 }
 func systemBlockMessage(reason string) string {
-	return "【ARTEX 平台管控·非目标防御】此调用被平台拦截。原因：" + reason + "。此操作被禁止。"
+	return "【ScopeForge 平台管控·非目标防御】此调用被平台拦截。原因：" + reason + "。此操作被禁止。"
 }
 
 var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit|429|captcha|denied)\b`)

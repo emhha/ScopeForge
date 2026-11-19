@@ -26,10 +26,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/artex/modelutil"
+	"github.com/emhha/scopeforge/modelutil"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/sessionctx"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/sessionctx"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 

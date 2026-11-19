@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Autumn-27/artex/internal/modeltest"
-	"github.com/Autumn-27/artex/sidequestion"
+	"github.com/emhha/scopeforge/internal/modeltest"
+	"github.com/emhha/scopeforge/sidequestion"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 )

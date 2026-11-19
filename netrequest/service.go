@@ -9,10 +9,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/traffic"
 	"github.com/emhha/netloom"
 	sdkhttp "github.com/emhha/netloom/nethttp"
 	"github.com/emhha/netloom/passive"
+	"github.com/emhha/scopeforge/traffic"
 )
 
 type Service struct {

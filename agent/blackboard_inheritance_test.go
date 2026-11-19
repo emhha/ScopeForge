@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/db"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 

@@ -36,10 +36,10 @@ func Validate(schema *tool.Schema, args []byte) error {
 		compiler := jsonschema.NewCompiler()
 		compiler.DefaultDraft(jsonschema.Draft2020)
 		compiler.UseLoader(noExternalSchemas{})
-		if err = compiler.AddResource("https://artex.invalid/tool.json", document); err != nil {
+		if err = compiler.AddResource("https://scopeforge.invalid/tool.json", document); err != nil {
 			return err
 		}
-		compiled, err := compiler.Compile("https://artex.invalid/tool.json")
+		compiled, err := compiler.Compile("https://scopeforge.invalid/tool.json")
 		if err != nil {
 			return err
 		}

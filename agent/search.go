@@ -10,8 +10,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/Autumn-27/artex/modelutil"
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/modelutil"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/duckduckgo"

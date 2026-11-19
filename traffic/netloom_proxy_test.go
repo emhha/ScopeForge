@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/internal/nettest"
+	"github.com/emhha/scopeforge/internal/nettest"
 )
 
 func startNetloomProxy(t *testing.T) *Traffic {

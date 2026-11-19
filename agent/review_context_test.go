@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/guard"
-	"github.com/Autumn-27/artex/intercept"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/guard"
+	"github.com/emhha/scopeforge/intercept"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 

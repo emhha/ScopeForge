@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/db"
 	"golang.org/x/crypto/bcrypt"
 	"path/filepath"
 	"strings"
@@ -10,9 +10,9 @@ import (
 
 func TestSQLiteAdministratorPasswordReset(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "artex.sqlite")
-	t.Setenv("ARTEX_DB_PATH", path)
-	t.Setenv("ARTEX_CONFIG", filepath.Join(dir, "missing.json"))
+	path := filepath.Join(dir, "scopeforge.sqlite")
+	t.Setenv("SCOPEFORGE_DB_PATH", path)
+	t.Setenv("SCOPEFORGE_CONFIG", filepath.Join(dir, "missing.json"))
 	store, err := db.Open(path)
 	if err != nil {
 		t.Fatal(err)

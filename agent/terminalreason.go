@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/modelutil"
+	"github.com/emhha/scopeforge/modelutil"
 
-	"github.com/Autumn-27/artex/runstate"
+	"github.com/emhha/scopeforge/runstate"
 )
 
 // runTrace retains the latest tool call so an interrupted run can identify the

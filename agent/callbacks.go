@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 

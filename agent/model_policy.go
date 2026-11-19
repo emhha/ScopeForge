@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Autumn-27/artex/llmpool"
+	"github.com/emhha/scopeforge/llmpool"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 

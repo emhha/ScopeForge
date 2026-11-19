@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/emhha/scopeforge/db"
 )
 
 const maxWorkerMessageBytes = 64 << 10

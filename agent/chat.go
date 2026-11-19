@@ -8,9 +8,9 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/guard"
-	"github.com/Autumn-27/artex/intercept"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/guard"
+	"github.com/emhha/scopeforge/intercept"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )

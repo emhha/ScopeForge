@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/internal/modeltest"
+	"github.com/emhha/scopeforge/internal/modeltest"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/intercept"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 )
 

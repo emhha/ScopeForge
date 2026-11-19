@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/toolkit"
+	"github.com/emhha/scopeforge/toolkit"
 )
 
 // The server-level ToolSet behind buildDomainReg carries a nil ExplorationStore,

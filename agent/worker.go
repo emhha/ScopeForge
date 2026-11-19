@@ -12,9 +12,9 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/runstate"
+	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/runstate"
 	llm "trpc.group/trpc-go/trpc-agent-go/model"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -92,7 +92,7 @@ func WorkerSessionID(explorationID, intentID int64) string {
 	return fmt.Sprintf("exp%d-worker-i%d", explorationID, intentID)
 }
 
-const workerChatMarkerPrefix = "<!-- ARTEX_WORKER_CHAT:"
+const workerChatMarkerPrefix = "<!-- SCOPEFORGE_WORKER_CHAT:"
 
 func workerChatMarker(requestID string) string {
 	return workerChatMarkerPrefix + requestID + " -->"
