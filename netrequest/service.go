@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -30,6 +31,7 @@ func New(proxy func() string) (*Service, error) {
 func (s *Service) Close() error { return s.engine.Close() }
 
 type Output struct {
+	Method           string                `json:"method"`
 	URL              string                `json:"url"`
 	Status           int                   `json:"status_code"`
 	Headers          http.Header           `json:"headers"`
@@ -42,6 +44,13 @@ type Output struct {
 	ExchangeIDs      []string              `json:"exchange_ids"`
 	Redirects        []netloom.RedirectHop `json:"redirects"`
 	ResponseTimeMS   int64                 `json:"response_time_ms"`
+	Hops             []ResponseHop         `json:"-"`
+}
+
+// ResponseHop retains native request/response metadata for optional verbose output.
+type ResponseHop struct {
+	URL, Method string
+	Response    *netloom.Response
 }
 
 func (s *Service) Do(ctx context.Context, in sdkhttp.RequestInput, store *traffic.Traffic, validate func(context.Context, string) error) (*Output, error) {
@@ -63,25 +72,28 @@ func (s *Service) Do(ctx context.Context, in sdkhttp.RequestInput, store *traffi
 	}
 	sender := &captureSender{engine: s.engine, store: store, ids: []string{}}
 	exchange, err := netloom.Do(ctx, sender, req, netloom.RedirectPolicy{Follow: in.FollowRedirects, MaxHops: in.MaxRedirects, ValidateURL: validate})
-	if err != nil {
+	if exchange == nil || exchange.Response == nil {
 		return nil, err
 	}
 	r := exchange.Response
 	preview, previewTruncated, decodeErr := passive.DecodeBody(r.Body, r.Header.Get("Content-Encoding"), 16384)
 	previewError := ""
-	if decodeErr != nil {
+	rawPreview := decodeErr != nil && (len(preview) == 0 || strings.Contains(r.Header.Get("Content-Encoding"), ","))
+	if rawPreview {
 		preview = r.Body
 		if len(preview) > 16384 {
 			preview = preview[:16384]
 		}
+	}
+	if decodeErr != nil {
 		previewError = decodeErr.Error()
 		previewTruncated = true
 	}
 	encoding, body := "utf8", string(preview)
-	if !utf8.Valid(preview) || decodeErr != nil {
+	if !utf8.Valid(preview) || rawPreview {
 		encoding, body = "base64", base64.StdEncoding.EncodeToString(preview)
 	}
-	return &Output{URL: exchange.Request.URL, Status: r.StatusCode, Headers: http.Header(r.Header), Body: body, BodyEncoding: encoding, BodyBytes: len(r.Body), PreviewTruncated: previewTruncated, PreviewError: previewError, Complete: !r.BodyTruncated, ExchangeIDs: sender.ids, Redirects: exchange.Hops, ResponseTimeMS: r.ResponseTime.Milliseconds()}, nil
+	return &Output{Method: exchange.Request.Method, URL: exchange.Request.URL, Status: r.StatusCode, Headers: http.Header(r.Header), Body: body, BodyEncoding: encoding, BodyBytes: len(r.Body), PreviewTruncated: previewTruncated, PreviewError: previewError, Complete: !r.BodyTruncated && r.Error == nil, ExchangeIDs: sender.ids, Redirects: exchange.Hops, ResponseTimeMS: r.TotalTime.Milliseconds(), Hops: sender.hops}, err
 }
 
 // Native Do owns redirects and sensitive-header policy; this sender only persists each exchange.
@@ -89,14 +101,20 @@ type captureSender struct {
 	engine *netloom.Engine
 	store  *traffic.Traffic
 	ids    []string
+	hops   []ResponseHop
 }
 
 func (s *captureSender) Send(ctx context.Context, req *netloom.Request) (*netloom.Response, error) {
 	response, err := s.engine.Send(ctx, req)
+	if response != nil {
+		metadata := *response
+		metadata.Body = nil // verbose output never retains every redirect's body
+		s.hops = append(s.hops, ResponseHop{URL: req.URL, Method: req.Method, Response: &metadata})
+	}
 	if response != nil && s.store != nil {
 		id, captureErr := s.store.Record(traffic.Capture{URL: req.URL, Method: req.Method, Proto: response.HTTPVersion, RequestHeaders: http.Header(response.RequestHeaders), RequestBody: req.Body, StatusCode: response.StatusCode, ResponseHeaders: http.Header(response.Header), ResponseBody: response.Body, Complete: err == nil && !response.BodyTruncated})
 		if captureErr != nil {
-			return response, captureErr
+			return response, errors.Join(err, captureErr)
 		}
 		s.ids = append(s.ids, id)
 	}

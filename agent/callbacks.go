@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/emhha/scopeforge/toolkit"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -25,6 +26,21 @@ func (t *turn) callbacks() *tool.Callbacks {
 		if extra != nil {
 			callbacks.BeforeTool = append(callbacks.BeforeTool, extra.BeforeTool...)
 			callbacks.AfterTool = append(callbacks.AfterTool, extra.AfterTool...)
+			if extra.ToolResultMessages != nil {
+				previous, next := callbacks.ToolResultMessages, extra.ToolResultMessages
+				callbacks.RegisterToolResultMessages(func(ctx context.Context, in *tool.ToolResultMessagesInput) (any, error) {
+					if previous != nil {
+						messages, err := previous(ctx, in)
+						if list, ok := messages.([]model.Message); ok && len(list) == 0 {
+							messages = nil
+						}
+						if messages != nil || err != nil {
+							return messages, err
+						}
+					}
+					return next(ctx, in)
+				})
+			}
 		}
 	}
 	return callbacks

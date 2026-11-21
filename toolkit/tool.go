@@ -57,7 +57,9 @@ func Failed(v any) bool {
 }
 func FailedJSON(text string) bool {
 	var value map[string]any
-	if json.Unmarshal([]byte(text), &value) == nil {
+	// HTTP output starts with JSON metadata and then a literal response body.
+	// Inspect only the first object; response text must never change tool status.
+	if json.NewDecoder(strings.NewReader(text)).Decode(&value) == nil {
 		return Failed(value)
 	}
 	return strings.HasPrefix(text, "Error:") || strings.HasPrefix(text, "Error executing")
