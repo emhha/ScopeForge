@@ -16,6 +16,13 @@ func (m *Manager) forgetSessions(match func(string) bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	m.forgetSessionsMatching(ctx, match)
+}
+
+func (m *Manager) forgetSessionsMatching(ctx context.Context, match func(string) bool) {
+	if m.sessions == nil {
+		return
+	}
 	items, err := m.sessions.ListSessions(ctx, session.UserKey{AppName: "scopeforge", UserID: "operator"}, session.WithListSessionOnlyMeta())
 	if err != nil {
 		log.Printf("[session] list cleanup: %v", err)

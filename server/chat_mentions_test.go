@@ -52,14 +52,14 @@ func TestChatMentionPagination(t *testing.T) {
 		t.Cleanup(func() { _, _ = pg.DeleteFinding(id) })
 	}
 	var companyID, assetID int64
-	if err := pg.QueryRow(`INSERT INTO companies(name,nkey) VALUES($1,$1) RETURNING id`, query).Scan(&companyID); err != nil {
+	if err := pg.QueryRow(`INSERT INTO companies(name,nkey) VALUES(?1,?1) RETURNING id`, query).Scan(&companyID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM companies WHERE id=$1`, companyID) })
-	if err := pg.QueryRow(`INSERT INTO assets(type,app_name,bundle_id) VALUES('app',$1,$1) RETURNING id`, query).Scan(&assetID); err != nil {
+	t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM companies WHERE id=?1`, companyID) })
+	if err := pg.QueryRow(`INSERT INTO assets(type,app_name,bundle_id) VALUES('app',?1,?1) RETURNING id`, query).Scan(&assetID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM assets WHERE id=$1`, assetID) })
+	t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM assets WHERE id=?1`, assetID) })
 	cursor := ""
 	seen := map[string]bool{}
 	for pageNum := 0; ; pageNum++ {
@@ -229,8 +229,8 @@ func TestChatMentionCatalogAndContext(t *testing.T) {
 	if err := pg.QueryRow(`INSERT INTO companies(name,nkey) VALUES('引用测试公司','mention-test-company') RETURNING id`).Scan(&cid); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM companies WHERE id=$1`, cid) })
-	if _, err := pg.Exec(`INSERT INTO company_scope(company_id,kind,domain,raw) VALUES($1,'domain','mention.example','mention.example')`, cid); err != nil {
+	t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM companies WHERE id=?1`, cid) })
+	if _, err := pg.Exec(`INSERT INTO company_scope(company_id,kind,domain,raw) VALUES(?1,'domain','mention.example','mention.example')`, cid); err != nil {
 		t.Fatal(err)
 	}
 	var refs strings.Builder
@@ -238,11 +238,11 @@ func TestChatMentionCatalogAndContext(t *testing.T) {
 	for _, kind := range []string{"root_domain", "subdomain", "ip", "app", "service", "endpoint"} {
 		var id int64
 		if err := pg.QueryRow(`INSERT INTO assets(type,company_id,domain,ip,app_name,url,method,extra)
-          VALUES($1,$2,$3,'192.0.2.81','引用测试应用',$4,'GET','{"note":"参数和扩展信息"}') RETURNING id`,
+          VALUES(?1,?2,?3,'192.0.2.81','引用测试应用',?4,'GET','{"note":"参数和扩展信息"}') RETURNING id`,
 			kind, cid, kind+".mention.example", "https://"+kind+".mention.example/path").Scan(&id); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM assets WHERE id=$1`, id) })
+		t.Cleanup(func() { _, _ = pg.Exec(`DELETE FROM assets WHERE id=?1`, id) })
 		label := ""
 		for name, value := range chatMentionKinds {
 			if value == kind {
@@ -263,7 +263,7 @@ func TestChatMentionCatalogAndContext(t *testing.T) {
 			}
 		}
 	}
-	if _, err := pg.Exec(`UPDATE findings SET report='完整报告内容',summary='最新摘要' WHERE id=$1`, fid); err != nil {
+	if _, err := pg.Exec(`UPDATE findings SET report='完整报告内容',summary='最新摘要' WHERE id=?1`, fid); err != nil {
 		t.Fatal(err)
 	}
 	msg, err := composeChatMentionMessage(pg, refs.String())
@@ -313,7 +313,7 @@ func TestChatMentionConversationReceivesServerDetails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { waitRetestIdle(t, s); _, _ = s.m.pg.Exec(`DELETE FROM conversations WHERE id=$1`, c.ID) })
+	t.Cleanup(func() { waitRetestIdle(t, s); _, _ = s.m.pg.Exec(`DELETE FROM conversations WHERE id=?1`, c.ID) })
 	message := fmt.Sprintf("请查看 @[漏洞#%d 示例]", fid)
 	body, _ := json.Marshal(map[string]any{"message": message})
 	w := retestRequest(s.pgSendConversationMessage, http.MethodPost, c.ID, string(body))

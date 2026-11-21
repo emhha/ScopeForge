@@ -264,7 +264,7 @@ type whereBuilder struct {
 
 func (b *whereBuilder) next(v any) string {
 	b.args = append(b.args, v)
-	return fmt.Sprintf("$%d", b.base+len(b.args))
+	return fmt.Sprintf("?%d", b.base+len(b.args))
 }
 
 func (b *whereBuilder) build(node *astNode) (string, error) {
@@ -491,11 +491,11 @@ func (s *AssetStore) CountDSL(dsl, typ string, taskID int64) (int, error) {
 	}
 	if typ != "" {
 		args = append(args, typ)
-		where += fmt.Sprintf(" AND type = $%d", len(args))
+		where += fmt.Sprintf(" AND type = ?%d", len(args))
 	}
 	if taskID > 0 {
 		args = append(args, taskID)
-		where += fmt.Sprintf(" AND $%d IN (SELECT value FROM json_each(task_ids))", len(args))
+		where += fmt.Sprintf(" AND ?%d IN (SELECT value FROM json_each(task_ids))", len(args))
 	}
 	var n int
 	err = s.db.QueryRow("SELECT count(*) FROM assets WHERE "+where, args...).Scan(&n)
@@ -523,15 +523,15 @@ func (s *AssetStore) QueryDSL(dsl, typ string, taskID int64, limit, offset int) 
 	}
 	if typ != "" {
 		args = append(args, typ)
-		where += fmt.Sprintf(" AND type = $%d", len(args))
+		where += fmt.Sprintf(" AND type = ?%d", len(args))
 	}
 	if taskID > 0 {
 		args = append(args, taskID)
-		where += fmt.Sprintf(" AND $%d IN (SELECT value FROM json_each(task_ids))", len(args))
+		where += fmt.Sprintf(" AND ?%d IN (SELECT value FROM json_each(task_ids))", len(args))
 	}
 	args = append(args, limit, offset)
 	q := assetSelectCols + " WHERE " + where +
-		fmt.Sprintf(" ORDER BY last_seen DESC, id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+		fmt.Sprintf(" ORDER BY last_seen DESC, id DESC LIMIT ?%d OFFSET ?%d", len(args)-1, len(args))
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -579,12 +579,12 @@ func (s *AssetStore) QueryDSLInScope(dsl, typ string, taskID int64, limit, offse
 	args = append(args, dslArgs...)
 	if typ != "" {
 		args = append(args, typ)
-		where += fmt.Sprintf(" AND type = $%d", len(args))
+		where += fmt.Sprintf(" AND type = ?%d", len(args))
 	}
 	where += " AND id IN (SELECT id FROM target)"
 	args = append(args, limit, offset)
 	q := `WITH ` + scopeTargetCTE + ` ` + assetSelectCols + " WHERE " + where +
-		fmt.Sprintf(" ORDER BY last_seen DESC, id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+		fmt.Sprintf(" ORDER BY last_seen DESC, id DESC LIMIT ?%d OFFSET ?%d", len(args)-1, len(args))
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -615,7 +615,7 @@ func (s *AssetStore) GetByIDsInScope(taskID int64, ids []int64) ([]*Asset, error
 	args = append(args, taskID) // $1 reserved for scopeTargetCTE
 	placeholders := make([]string, len(ids))
 	for i, id := range ids {
-		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		placeholders[i] = fmt.Sprintf("?%d", i+2)
 		args = append(args, id)
 	}
 	q := `WITH ` + scopeTargetCTE + ` ` + assetSelectCols +

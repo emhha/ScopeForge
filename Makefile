@@ -25,18 +25,13 @@ endif
 
 all: build-all
 
-build-all: embed-web
-	@set -e; \
-	for target in $(BUILD_TARGETS); do \
-		build_os=$${target%/*}; build_arch=$${target#*/}; build_ext=; \
-		if [ "$$build_os" = windows ]; then build_ext=.exe; fi; \
-		$(MAKE) build-embedded GOOS="$$build_os" GOARCH="$$build_arch" \
-			BINARY="dist/scopeforge-$$build_os-$$build_arch$$build_ext"; \
-	done
+# CGO requires a compiler for every target. Check all of them before building.
+build-all:
+	GO='$(GO)' NPM='$(NPM)' VERSION='$(VERSION)' ./scripts/build-all.sh $(BUILD_TARGETS)
 
 build-backend:
 	mkdir -p $(dir $(BINARY))
-	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) CGO_ENABLED=0 $(GO_RUN) build -trimpath -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/scopeforge
+	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) CGO_ENABLED=1 $(GO_RUN) build -trimpath -tags sqlite_fts5 -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/scopeforge
 
 web/node_modules/.scopeforge-deps: web/package.json web/package-lock.json
 	cd web && HUSKY=0 $(NPM) ci --no-audit --no-fund
@@ -53,7 +48,7 @@ embed-web: build-web
 build-embedded:
 	test -f server/webui/dist/index.html
 	mkdir -p $(dir $(BINARY))
-	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) CGO_ENABLED=0 $(GO_RUN) build -trimpath -tags embedui -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/scopeforge
+	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) CGO_ENABLED=1 $(GO_RUN) build -trimpath -tags 'embedui sqlite_fts5' -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/scopeforge
 
 release: embed-web
 	$(MAKE) build-embedded
@@ -65,6 +60,7 @@ package:
 	mkdir -p '$(PACKAGE_DIR)'
 	$(MAKE) build-embedded BINARY='$(PACKAGE_DIR)/scopeforge$(EXE)'
 	cp config.example.json README.md MEMORY_KNOWLEDGE.md LICENSE '$(PACKAGE_DIR)/'
+	cp server/modelcatalog/LICENSE '$(PACKAGE_DIR)/models.dev-LICENSE'
 	cp -R skills '$(PACKAGE_DIR)/skills'
 	@if [ '$(SEMANTIC_PACKAGE)' = 1 ]; then \
 		python3 -c 'import json; c=json.load(open("dist/semantic/catalog.json")); assert c["platform"] == "$(TARGET_OS)/$(TARGET_ARCH)", "semantic component platform mismatch"'; \
@@ -75,7 +71,7 @@ package:
 	cd dist && zip -qr '$(PACKAGE_NAME).zip' '$(PACKAGE_NAME)'
 
 # Optional native component: build on the target platform with a C compiler.
-# The default portable main binary never downloads or loads these dependencies.
+# The main binary does not download or load the optional inference runtime.
 semantic-component:
 	python3 scripts/package-semantic.py --go '$(GO)'
 
@@ -86,7 +82,7 @@ package-with-semantic: semantic-component embed-web
 	$(MAKE) package SEMANTIC_PACKAGE=1
 
 run:
-	$(GO_RUN) run ./cmd/scopeforge $(ARGS)
+	CGO_ENABLED=1 $(GO_RUN) run -tags sqlite_fts5 ./cmd/scopeforge $(ARGS)
 
 dev-web: web/node_modules/.scopeforge-deps
 	cd web && $(NPM) run dev
@@ -94,7 +90,7 @@ dev-web: web/node_modules/.scopeforge-deps
 test: test-go test-web
 
 test-go:
-	$(GO_RUN) test ./...
+	CGO_ENABLED=1 $(GO_RUN) test -tags sqlite_fts5 ./...
 
 test-web: web/node_modules/.scopeforge-deps
 	cd web && $(NPM) run typecheck && node --test $(patsubst web/%,%,$(WEB_TESTS))
@@ -108,7 +104,7 @@ clean:
 
 help:
 	@echo 'make build      构建当前系统程序到 dist/scopeforge（Windows 为 scopeforge.exe）'
-	@echo 'make build all  构建 Linux / Windows / macOS 的 amd64、arm64 到 dist/'
+	@echo 'make build all  构建全部平台，需提前配置各目标的 C 编译器（见 README）'
 	@echo 'make release    构建内嵌前端程序到 dist/scopeforge'
 	@echo 'make package    用已构建前端打包 zip（支持 GOOS / GOARCH / VERSION）'
 	@echo 'make package-with-semantic  打包含可选本地语义组件的当前平台发行包'

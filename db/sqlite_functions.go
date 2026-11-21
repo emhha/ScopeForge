@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"modernc.org/sqlite"
+	sqlite3 "github.com/mattn/go-sqlite3"
 )
 
 func decodeJSON(value driver.Value) any {
@@ -117,13 +118,43 @@ func prefix(v driver.Value) (netip.Prefix, bool) {
 	}
 	return netip.Prefix{}, false
 }
+
+const BusinessSQLiteDriver = "scopeforge-sqlite3"
+
 func init() {
+	sql.Register(BusinessSQLiteDriver, &sqlite3.SQLiteDriver{ConnectHook: registerBusinessFunctions})
+}
+
+// These functions belong to the business schema. Register them on every business
+// connection using mattn's API; native tRPC stores use the ordinary sqlite3 driver.
+func registerBusinessFunctions(conn *sqlite3.SQLiteConn) error {
+	var registrationErr error
 	scalar := func(name string, n int, fn func([]driver.Value) (driver.Value, error)) {
-		sqlite.MustRegisterDeterministicScalarFunction(name, int32(n), func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) { return fn(args) })
+		if registrationErr != nil {
+			return
+		}
+		var impl any
+		switch n {
+		case 1:
+			impl = func(a any) (any, error) { return fn([]driver.Value{a}) }
+		case 2:
+			impl = func(a, b any) (any, error) { return fn([]driver.Value{a, b}) }
+		default:
+			impl = func(args ...any) (any, error) {
+				if n >= 0 && len(args) != n {
+					return nil, fmt.Errorf("%s requires %d arguments", name, n)
+				}
+				values := make([]driver.Value, len(args))
+				for i, v := range args {
+					values[i] = v
+				}
+				return fn(values)
+			}
+		}
+		registrationErr = conn.RegisterFunc(name, impl, true)
 	}
-	sqlite.MustRegisterScalarFunction("utc_now", 0, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
-		return time.Now().UTC().Format("2006-01-02 15:04:05.000000000"), nil
-	})
+	registrationErr = conn.RegisterFunc("utc_now", func() string { return time.Now().UTC().Format("2006-01-02 15:04:05.000000000") }, false)
+
 	scalar("regexp", 2, func(a []driver.Value) (driver.Value, error) {
 		if a[0] == nil || a[1] == nil {
 			return int64(0), nil
@@ -274,7 +305,10 @@ func init() {
 		q, valid := prefix(a[1])
 		return boolValue(ok && valid && p.Bits() <= q.Bits() && p.Contains(q.Addr())), nil
 	})
+
+	return registrationErr
 }
+
 func boolValue(v bool) int64 {
 	if v {
 		return 1

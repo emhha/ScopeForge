@@ -93,7 +93,7 @@ func targetHTTPGuidance(tools []actool.CallableTool) string {
 	if !hasTool(tools, "http_request") {
 		return ""
 	}
-	text := "\n\n**目标 HTTP 请求**：向目标发送 HTTP/HTTPS 请求时优先使用 http_request，由 netloom 处理请求、TLS、重定向及流量采集。不要通过 Bash 的 curl/wget、WebFetch 或临时 HTTP 脚本绕过该入口。浏览器交互和需要专用协议的工具仍使用相应工具。根据 status_code、headers、body、body_encoding 判断下一步；HTTP 4xx/5xx 也是有效响应。body_preview_truncated 只表示展示截断，complete=false 表示本地采集不完整，不能据此推断服务端响应不完整。流量捕获启用时每跳返回 exchange_ids；捕获关闭时仍可请求，但不产生流量记录。"
+	text := "\n\n**目标 HTTP 请求**：向目标发送 HTTP/HTTPS 请求时优先使用 http_request，由 netloom 处理请求、TLS、重定向及流量采集。不要通过 Bash 的 curl/wget、WebFetch 或临时 HTTP 脚本绕过该入口。浏览器交互和需要专用协议的工具仍使用相应工具。每次调用填写一个完整的 url。返回的首行 JSON 包含 status_code 等元信息，空行之后是正文预览；body_encoding=base64 表示正文以 Base64 编码。需要查看请求头或响应头时设置 verbose=true。HTTP 4xx/5xx 也是有效响应。body_preview_truncated 只表示展示截断，complete=false 表示采集不完整。流量捕获启用时每跳返回 exchange_ids；捕获关闭时仍可请求，但不产生流量记录。"
 	if hasTool(tools, "traffic_get") {
 		text += "预览不足时用 traffic_get(id=exchange_id) 读取已采集内容；已有内容足够时无需再查，也不要仅为补证据重复请求。"
 	}

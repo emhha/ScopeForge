@@ -31,7 +31,7 @@ func (d *DB) KnowledgeDocuments() ([]KnowledgeDocument, error) {
 	return out, rows.Err()
 }
 func (d *DB) AddKnowledgeDocument(v KnowledgeDocument) error {
-	_, err := d.Exec(`INSERT INTO knowledge_documents(id,name,sha256,size) VALUES($1,$2,$3,$4)`, v.ID, v.Name, v.SHA256, v.Size)
+	_, err := d.Exec(`INSERT INTO knowledge_documents(id,name,sha256,size) VALUES(?1,?2,?3,?4)`, v.ID, v.Name, v.SHA256, v.Size)
 	return err
 }
 func (d *DB) SetKnowledgeDocumentStatus(id, status, message string, chunks int) error {
@@ -40,10 +40,10 @@ func (d *DB) SetKnowledgeDocumentStatus(id, status, message string, chunks int) 
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE knowledge_documents SET status=$2,error=$3,chunks=$4 WHERE id=$1`, id, status, message, chunks); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_documents SET status=?2,error=?3,chunks=?4 WHERE id=?1`, id, status, message, chunks); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status=$2,error=$3 WHERE document_id=$1 AND status NOT IN ('cancelled','duplicate')`, id, status, message); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status=?2,error=?3 WHERE document_id=?1 AND status NOT IN ('cancelled','duplicate')`, id, status, message); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -54,10 +54,10 @@ func (d *DB) DeleteKnowledgeDocument(id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status='deleted' WHERE document_id=$1`, id); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status='deleted' WHERE document_id=?1`, id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`DELETE FROM knowledge_documents WHERE id=$1`, id); err != nil {
+	if _, err = tx.Exec(`DELETE FROM knowledge_documents WHERE id=?1`, id); err != nil {
 		return err
 	}
 	return tx.Commit()

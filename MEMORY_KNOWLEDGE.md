@@ -49,7 +49,7 @@ SQLite 保存权威数据：原生 memory/sqlite 的记忆原文、任务身份�
 
 共享 Retrieval 服务由 Manager 独立管理配置、组件、Embedding 缓存和生命周期。知识库及记忆是它的消费者，关闭知识库不会关闭共享检索服务。旧 knowledge_embedding 配置自动迁移，旧模型与数据文件继续使用，无需重新下载。
 
-主程序保持 CGO_ENABLED=0。可选 Go 组件单独以 CGO_ENABLED=1 构建，集成 SQLiteVec 和 tokenizer，通过动态库加载 ONNX Runtime 1.24.1。运行客户不需要 Python、Rust、Go、C 编译器或 GPU。
+主程序与可选 Go 组件均以 CGO_ENABLED=1 构建，SQLite 驱动统一为 mattn/go-sqlite3。主程序需要 sqlite_fts5 构建标签（Make 已配置）。可选 Go 组件集成 SQLiteVec 和 tokenizer，通过动态库加载 ONNX Runtime 1.24.1。运行客户不需要 Python、Rust、Go、C 编译器或 GPU。
 
 安装清单固定平台、模型 revision、字节长度和 SHA256。先校验及自检，再激活安装目录；安装失败不覆盖当前安装。安装自检会短暂加载模型验证推理，结束后立即退出，不等于启用常驻推理。支持在线下载和离线 ZIP 导入，拒绝不匹配的平台。首次安装须有组件所需空间加 128 MiB 余量。
 

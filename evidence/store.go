@@ -129,7 +129,7 @@ func (s *Store) StageFindingsExport(ctx context.Context, findings []*db.DBFindin
 			f.TrafficCount = len(list.Bindings)
 			f.EvidenceVersion = list.Version
 			f.ReportEvidenceVersion = list.ReportVersion
-			if err = tx.QueryRow(`SELECT report FROM findings WHERE id=$1`, f.ID).Scan(&f.Report); err != nil {
+			if err = tx.QueryRow(`SELECT report FROM findings WHERE id=?1`, f.ID).Scan(&f.Report); err != nil {
 				return err
 			}
 			for _, b := range list.Bindings {
@@ -351,11 +351,11 @@ func (s *Store) WithInstalledSnapshots(ctx context.Context, snapshots []db.Traff
 func (s *Store) Collect(ctx context.Context, now time.Time) error {
 	return s.DB.WithEvidenceFilesLock(ctx, func() error {
 		return s.DB.WithEvidenceTx(ctx, func(tx *db.Tx) error {
-			if _, err := tx.Exec(`UPDATE traffic_evidence_snapshots AS s SET unreferenced_at=$1
+			if _, err := tx.Exec(`UPDATE traffic_evidence_snapshots AS s SET unreferenced_at=?1
 WHERE unreferenced_at IS NULL AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`, now); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`DELETE FROM traffic_evidence_snapshots AS s WHERE unreferenced_at<$1
+			if _, err := tx.Exec(`DELETE FROM traffic_evidence_snapshots AS s WHERE unreferenced_at<?1
 AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`, now.Add(-24*time.Hour)); err != nil {
 				return err
 			}

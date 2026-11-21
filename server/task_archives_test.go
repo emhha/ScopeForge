@@ -26,7 +26,7 @@ func TestTaskArchiveAPIQueueListAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = m.pg.Exec(`DELETE FROM task_archives WHERE task_id=$1`, taskID)
+		_, _ = m.pg.Exec(`DELETE FROM task_archives WHERE task_id=?1`, taskID)
 		_ = m.pg.DeleteTask(taskID)
 	}()
 

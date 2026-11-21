@@ -56,7 +56,11 @@ function SystemPromptDetail({ prompt }: { prompt: string | undefined }) {
   return <DetailText title="系统提示词（实际请求）" text={prompt} />;
 }
 
-function EventDetail({ record, getDetail, chat = false }: {
+function EventDetail({
+  record,
+  getDetail,
+  chat = false,
+}: {
   record: TrajectoryRecord;
   getDetail: (seq: number) => Promise<string>;
   chat?: boolean;
@@ -87,15 +91,23 @@ function EventDetail({ record, getDetail, chat = false }: {
   }, [event.seq, resultSeq, getDetail, retry, model]);
   return (
     <div className="space-y-3 bg-muted/30 p-3 text-xs">
-      {!chat && <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
-        <span>记录 #{event.seq}</span>
-        <span>{event.ts}</span>
-        {event.tool_use_id && <span className="break-all">调用 {event.tool_use_id}</span>}
-        {event.inherited && <span>继承自任务 {event.source_task_id}</span>}
-      </div>}
-      {model && (chat ? (
-        <p className="text-muted-foreground">{model.profile_name} · {model.model} · 输入 {model.input_tokens ?? "—"} / 输出 {model.output_tokens ?? "—"} tokens</p>
-      ) : <DetailText title="实际模型请求记录" text={JSON.stringify(model)} />)}
+      {!chat && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+          <span>记录 #{event.seq}</span>
+          <span>{event.ts}</span>
+          {event.tool_use_id && <span className="break-all">调用 {event.tool_use_id}</span>}
+          {event.inherited && <span>继承自任务 {event.source_task_id}</span>}
+        </div>
+      )}
+      {model &&
+        (chat ? (
+          <p className="text-muted-foreground">
+            {model.profile_name} · {model.model} · 输入 {model.input_tokens ?? "—"} / 输出 {model.output_tokens ?? "—"}{" "}
+            tokens
+          </p>
+        ) : (
+          <DetailText title="实际模型请求记录" text={JSON.stringify(model)} />
+        ))}
       {state.error ? (
         <div role="alert" className="text-destructive">
           详情加载失败：{state.error}{" "}
@@ -105,7 +117,7 @@ function EventDetail({ record, getDetail, chat = false }: {
         </div>
       ) : state.input === undefined ? (
         <p role="status">加载详情…</p>
-      ) : model ? (
+      ) : event.kind === "model_call" ? (
         <SystemPromptDetail prompt={systemPrompt} />
       ) : chat && event.kind === "thinking" ? (
         <Markdown text={state.input || event.detail || event.summary} />
@@ -165,9 +177,15 @@ export function ConversationStep({
   }, [focused]);
   const event = record.event;
   const model = event.metadata?.llm_call;
-  const Icon = event.kind === "tool_use" || event.kind === "tool_result"
-    ? Wrench : event.kind === "thinking" ? BrainIcon : ListIcon;
-  const status = { done: "已完成", error: "错误", interrupted: "已中断", pending: "等待结果", recorded: "已记录" }[record.status];
+  const Icon =
+    event.kind === "tool_use" || event.kind === "tool_result"
+      ? Wrench
+      : event.kind === "thinking"
+        ? BrainIcon
+        : ListIcon;
+  const status = { done: "已完成", error: "错误", interrupted: "已中断", pending: "等待结果", recorded: "已记录" }[
+    record.status
+  ];
   return (
     <Collapsible
       open={open}
@@ -178,15 +196,19 @@ export function ConversationStep({
       className={`min-w-0 ${focused ? "rounded-md bg-primary/5" : ""}`}
     >
       <CollapsibleTrigger className="flex w-full min-w-0 items-center gap-2 rounded-md py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50">
-        {open ? <ChevronDown className="mt-0.5 size-3 shrink-0" /> : <ChevronRight className="mt-0.5 size-3 shrink-0" />}
+        {open ? (
+          <ChevronDown className="mt-0.5 size-3 shrink-0" />
+        ) : (
+          <ChevronRight className="mt-0.5 size-3 shrink-0" />
+        )}
         <Icon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate">
           {model ? `模型请求 · ${model.model} · 系统提示词` : event.tool || EVENT_LABELS[event.kind] || event.kind}
           {!model && event.summary && <span className="ml-2 opacity-70">{event.summary}</span>}
         </span>
-        {(record.status === "error" || record.status === "pending" || record.status === "interrupted") &&
-          <span className={`shrink-0 ${record.status === "error" ? "text-destructive" : ""}`}>{status}</span>}
-
+        {(record.status === "error" || record.status === "pending" || record.status === "interrupted") && (
+          <span className={`shrink-0 ${record.status === "error" ? "text-destructive" : ""}`}>{status}</span>
+        )}
       </CollapsibleTrigger>
       <CollapsibleContent>{open && <EventDetail record={record} getDetail={getDetail} chat />}</CollapsibleContent>
     </Collapsible>
@@ -362,7 +384,13 @@ export function TrajectoryView({
             const record = filtered[row.index];
             const e = record.event;
             const model = e.metadata?.llm_call;
-            const status = { done: "已完成", error: "错误", interrupted: "已中断", pending: "等待结果", recorded: "已记录" }[record.status];
+            const status = {
+              done: "已完成",
+              error: "错误",
+              interrupted: "已中断",
+              pending: "等待结果",
+              recorded: "已记录",
+            }[record.status];
             return (
               <tr
                 key={record.id}

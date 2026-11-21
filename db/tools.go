@@ -37,7 +37,7 @@ func (d *DB) SeedTool(key, desc string, schema, agents json.RawMessage) error {
 	}
 	_, err := d.Exec(`
 INSERT INTO tools(key, system, description, schema, agents, enabled)
-VALUES ($1, true, $2, $3, $4, true)
+VALUES (?1, true, ?2, ?3, ?4, true)
 ON CONFLICT (key) DO NOTHING`, key, desc, schema, agents)
 	return err
 }
@@ -47,7 +47,7 @@ ON CONFLICT (key) DO NOTHING`, key, desc, schema, agents)
 // default toolset on existing DBs.
 func (d *DB) AddAgentToToolBinding(agentKey string, keys []string) error {
 	for _, k := range keys {
-		if _, err := d.Exec(`UPDATE tools SET agents = json_array_add(agents,$1) WHERE key=$2 AND NOT json_contains(agents,json_array($1))`, agentKey, k); err != nil {
+		if _, err := d.Exec(`UPDATE tools SET agents = json_array_add(agents,?1) WHERE key=?2 AND NOT json_contains(agents,json_array(?1))`, agentKey, k); err != nil {
 			return err
 		}
 	}
@@ -58,7 +58,7 @@ func (d *DB) AddAgentToToolBinding(agentKey string, keys []string) error {
 // JSONB array — called when a custom agent is deleted so no tool keeps a dangling
 // binding. Uses jsonb `-` (remove array element) guarded by `?` (membership).
 func (d *DB) RemoveAgentFromToolBindings(agentKey string) error {
-	_, err := d.Exec(`UPDATE tools SET agents = json_array_remove(agents,$1) WHERE json_contains(agents,json_array($1))`, agentKey)
+	_, err := d.Exec(`UPDATE tools SET agents = json_array_remove(agents,?1) WHERE json_contains(agents,json_array(?1))`, agentKey)
 	return err
 }
 
@@ -66,7 +66,7 @@ func (d *DB) RemoveAgentFromToolBindings(agentKey string) error {
 // used by one-time migrations that change a tool's default binding on existing DBs
 // (SeedTool is first-insert-only, so a changed default never reaches a seeded row).
 func (d *DB) RemoveAgentFromTool(agentKey, toolKey string) error {
-	_, err := d.Exec(`UPDATE tools SET agents = json_array_remove(agents,$1) WHERE key=$2 AND json_contains(agents,json_array($1))`, agentKey, toolKey)
+	_, err := d.Exec(`UPDATE tools SET agents = json_array_remove(agents,?1) WHERE key=?2 AND json_contains(agents,json_array(?1))`, agentKey, toolKey)
 	return err
 }
 
@@ -82,7 +82,7 @@ func (d *DB) UpsertToolForce(key, desc string, schema, agents json.RawMessage) e
 	}
 	_, err := d.Exec(`
 INSERT INTO tools(key, system, description, schema, agents, enabled)
-VALUES ($1, true, $2, $3, $4, true)
+VALUES (?1, true, ?2, ?3, ?4, true)
 ON CONFLICT (key) DO UPDATE
   SET description = EXCLUDED.description,
       schema      = EXCLUDED.schema,
@@ -100,7 +100,7 @@ func (d *DB) RefreshToolDefaults(key, desc string, schema json.RawMessage) error
 	if len(schema) == 0 {
 		schema = json.RawMessage("{}")
 	}
-	_, err := d.Exec(`UPDATE tools SET description=$2, schema=$3, updated_at=utc_now() WHERE key=$1 AND system`, key, desc, schema)
+	_, err := d.Exec(`UPDATE tools SET description=?2, schema=?3, updated_at=utc_now() WHERE key=?1 AND system`, key, desc, schema)
 	return err
 }
 
@@ -139,7 +139,7 @@ func (d *DB) ListTools() ([]*Tool, error) {
 
 // GetTool fetches one tool row (nil if absent).
 func (d *DB) GetTool(key string) (*Tool, error) {
-	row := d.QueryRow(`SELECT `+toolCols+` FROM tools WHERE key=$1`, key)
+	row := d.QueryRow(`SELECT `+toolCols+` FROM tools WHERE key=?1`, key)
 	t, err := scanTool(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -164,7 +164,7 @@ func (d *DB) CreateCustomTool(t *Tool) error {
 	}
 	_, err := d.Exec(`
 INSERT INTO tools(key, system, description, schema, agents, enabled, kind, exec, deferred)
-VALUES ($1, false, $2, $3, $4, $5, $6, $7, $8)`,
+VALUES (?1, false, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
 		t.Key, t.Description, schema, agents, t.Enabled, t.Kind, exec, t.Deferred)
 	return err
 }
@@ -185,15 +185,15 @@ func (d *DB) UpdateCustomTool(t *Tool) error {
 		agents = json.RawMessage("[]")
 	}
 	_, err := d.Exec(`
-UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5, kind=$6, exec=$7, deferred=$8
-WHERE key=$1 AND system=false`,
+UPDATE tools SET description=?2, schema=?3, agents=?4, enabled=?5, kind=?6, exec=?7, deferred=?8
+WHERE key=?1 AND system=false`,
 		t.Key, t.Description, schema, agents, t.Enabled, t.Kind, exec, t.Deferred)
 	return err
 }
 
 // DeleteCustomTool removes a custom tool (system=false only; built-ins protected).
 func (d *DB) DeleteCustomTool(key string) error {
-	_, err := d.Exec(`DELETE FROM tools WHERE key=$1 AND system=false`, key)
+	_, err := d.Exec(`DELETE FROM tools WHERE key=?1 AND system=false`, key)
 	return err
 }
 
@@ -226,7 +226,7 @@ func (d *DB) UpdateTool(key, desc string, schema, agents json.RawMessage, enable
 		agents = json.RawMessage("[]")
 	}
 	_, err := d.Exec(`
-UPDATE tools SET description=$2, schema=$3, agents=$4, enabled=$5 WHERE key=$1`,
+UPDATE tools SET description=?2, schema=?3, agents=?4, enabled=?5 WHERE key=?1`,
 		key, desc, schema, agents, enabled)
 	return err
 }

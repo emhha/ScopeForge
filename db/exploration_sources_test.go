@@ -16,7 +16,7 @@ func TestInheritedActivityReadsRequireTerminalIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID) })
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM explorations WHERE id=?1`, expID) })
 	store := d.Exploration(expID)
 	intentID, err := store.AddIntent(map[string]any{"summary": "source work"}, 1, nil, "planner")
 	if err != nil {

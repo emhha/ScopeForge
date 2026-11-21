@@ -23,7 +23,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=?1`, id) })
 
 	// Keyed single-row load (profileColsKey).
 	p, err := d.ProfileByID(id)
@@ -88,7 +88,7 @@ func TestProfileMaxTokensDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=?1`, id) })
 
 	p, err := d.ProfileByID(id)
 	if err != nil || p == nil {

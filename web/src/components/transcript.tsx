@@ -20,7 +20,12 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ApprovalDetail } from "@/components/approval-records";
 import type { Activity, InterceptPending } from "@/lib/types";
-import { projectStandardChat, projectTrajectory, type ChatNode, type TrajectoryRecord } from "@/features/conversation/projections";
+import {
+  projectStandardChat,
+  projectTrajectory,
+  type ChatNode,
+  type TrajectoryRecord,
+} from "@/features/conversation/projections";
 import { ConversationStep } from "@/features/conversation/trajectory-view";
 
 // useInView latches true when the ref'd element first comes within `rootMargin` of
@@ -376,7 +381,14 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
   );
 }
 
-function ProcessSummary({ node, records, memory, focusedSeq, getDetail, onReading }: {
+function ProcessSummary({
+  node,
+  records,
+  memory,
+  focusedSeq,
+  getDetail,
+  onReading,
+}: {
   node: Extract<ChatNode, { kind: "process" }>;
   records: TrajectoryRecord[];
   memory: ViewMemory;
@@ -386,22 +398,33 @@ function ProcessSummary({ node, records, memory, focusedSeq, getDetail, onReadin
 }) {
   const events = new Set(node.events);
   const steps = records.filter((record) => events.has(record.event));
-  const focused = focusedSeq != null && steps.some((record) => record.event.seq === focusedSeq || record.result?.seq === focusedSeq);
-  const memoryKey = `process:${node.id}`;
+  const focused =
+    focusedSeq != null && steps.some((record) => record.event.seq === focusedSeq || record.result?.seq === focusedSeq);
+  const memoryKey = node.settled ? `process-end:${node.events.at(-1)?.seq}` : `process:${node.id}`;
   const [open, setOpen] = React.useState(memory.expanded[memoryKey] ?? false);
+  React.useEffect(() => {
+    memory.expanded[memoryKey] = open;
+    persistViewMemory(memory);
+  }, [memory, memoryKey, open]);
   React.useEffect(() => {
     if (focused) setOpen(true);
   }, [focused]);
-  const tools = steps.filter((record) => record.event.kind === "tool_use" || record.event.kind === "tool_result").length;
+  const tools = steps.filter(
+    (record) => record.event.kind === "tool_use" || record.event.kind === "tool_result",
+  ).length;
   const thinking = node.events.filter((event) => event.kind === "thinking").length;
   const errors = steps.filter((record) => record.status === "error").length;
   if (steps.length === 0) return null;
   return (
-    <Collapsible open={open} onOpenChange={(value) => {
-      setOpen(value);
-      memory.expanded[memoryKey] = value;
-      onReading();
-    }} className="my-2 min-w-0">
+    <Collapsible
+      open={open}
+      onOpenChange={(value) => {
+        setOpen(value);
+        memory.expanded[memoryKey] = value;
+        onReading();
+      }}
+      className="my-2 min-w-0"
+    >
       <CollapsibleTrigger className="flex w-full min-w-0 items-center gap-2 py-1.5 text-left text-xs text-muted-foreground hover:text-foreground">
         {open ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
         <span>{node.settled ? "已完成的执行过程" : "执行过程"}</span>
@@ -410,28 +433,32 @@ function ProcessSummary({ node, records, memory, focusedSeq, getDetail, onReadin
         {errors > 0 && <span className="text-destructive">· {errors} 个错误</span>}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        {open && <div className="ml-1.5 min-w-0 border-l pl-3">
-          {steps.map((record) => (
-            <div key={record.id} data-activity-seq={record.event.seq} data-result-seq={record.result?.seq}>
-              <ConversationStep
-                record={record}
-                getDetail={getDetail}
-                focused={focusedSeq != null && (record.event.seq === focusedSeq || record.result?.seq === focusedSeq)}
-                initiallyOpen={memory.expanded[record.id] ?? false}
-                onOpenChange={(value) => {
-                  memory.expanded[record.id] = value;
-                  onReading();
-                }}
-              />
-            </div>
-          ))}
-        </div>}
+        {open && (
+          <div className="ml-1.5 min-w-0 border-l pl-3">
+            {steps.map((record) => (
+              <div key={record.id} data-activity-seq={record.event.seq} data-result-seq={record.result?.seq}>
+                <ConversationStep
+                  record={record}
+                  getDetail={getDetail}
+                  focused={focusedSeq != null && (record.event.seq === focusedSeq || record.result?.seq === focusedSeq)}
+                  initiallyOpen={memory.expanded[record.id] ?? false}
+                  onOpenChange={(value) => {
+                    memory.expanded[record.id] = value;
+                    persistViewMemory(memory);
+                    onReading();
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
 type ViewMemory = {
+  scope: string;
   position?: number;
   following?: boolean;
   expanded: Record<string, boolean>;
@@ -439,11 +466,51 @@ type ViewMemory = {
 // Retain only presentation state, never conversation bodies, for recent sessions.
 const viewMemories = new Map<string, ViewMemory>();
 function viewMemory(scope: string): ViewMemory {
-  const memory = viewMemories.get(scope) ?? { expanded: {} };
+  let memory = viewMemories.get(scope);
+  if (!memory) {
+    memory = { scope, expanded: {} };
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(`scopeforge.view.v1:${scope}`) ?? "null");
+      if (stored && typeof stored.expanded === "object" && stored.expanded) {
+        memory.expanded = Object.fromEntries(
+          Object.entries(stored.expanded)
+            .filter(([key, value]) => key.length < 1024 && typeof value === "boolean")
+            .slice(-300),
+        ) as Record<string, boolean>;
+        if (typeof stored.following === "boolean") memory.following = stored.following;
+        if (Number.isFinite(stored.position) && stored.position >= 0) memory.position = stored.position;
+      }
+    } catch {
+      /* Unavailable browser storage does not hide the transcript. */
+    }
+  }
   viewMemories.delete(scope);
   viewMemories.set(scope, memory);
   if (viewMemories.size > 50) viewMemories.delete(viewMemories.keys().next().value!);
   return memory;
+}
+
+function persistViewMemory(memory: ViewMemory) {
+  try {
+    const prefix = "scopeforge.view.v1:";
+    const recent = JSON.parse(sessionStorage.getItem(prefix + "recent") ?? "[]");
+    const scopes = [
+      ...(Array.isArray(recent) ? recent.filter((value) => typeof value === "string" && value !== memory.scope) : []),
+      memory.scope,
+    ];
+    for (const scope of scopes.slice(0, -50)) sessionStorage.removeItem(prefix + scope);
+    sessionStorage.setItem(prefix + "recent", JSON.stringify(scopes.slice(-50)));
+    sessionStorage.setItem(
+      prefix + memory.scope,
+      JSON.stringify({
+        position: memory.position,
+        following: memory.following,
+        expanded: Object.fromEntries(Object.entries(memory.expanded).slice(-300)),
+      }),
+    );
+  } catch {
+    /* Storage limits only affect presentation preferences. */
+  }
 }
 
 interface TranscriptProps {
@@ -526,6 +593,7 @@ function TranscriptBody({
     const viewport = getViewport();
     if (viewport) memory.position = viewport.scrollTop;
     memory.following = followingRef.current;
+    persistViewMemory(memory);
   }, [getViewport, memory]);
   const focusAvailable = focusedSeq != null && activity.some((event) => event.seq === focusedSeq);
   React.useEffect(() => {
@@ -533,8 +601,9 @@ function TranscriptBody({
     pause();
     const frame = requestAnimationFrame(() => {
       const elements = root.current?.querySelectorAll<HTMLElement>("[data-activity-seq]");
-      const target = Array.from(elements ?? []).find((element) =>
-        element.dataset.activitySeq === String(focusedSeq) || element.dataset.resultSeq === String(focusedSeq),
+      const target = Array.from(elements ?? []).find(
+        (element) =>
+          element.dataset.activitySeq === String(focusedSeq) || element.dataset.resultSeq === String(focusedSeq),
       );
       target?.scrollIntoView({ block: "center" });
     });
@@ -552,9 +621,11 @@ function TranscriptBody({
       if (atBottom) setUnread(0);
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pagehide", savePosition);
     return () => {
       savePosition();
       viewport.removeEventListener("scroll", onScroll);
+      window.removeEventListener("pagehide", savePosition);
     };
   }, [getViewport, memory, savePosition]);
   React.useEffect(() => {
@@ -596,10 +667,18 @@ function TranscriptBody({
     <div ref={root} className="relative min-w-0" data-conversation-view="chat">
       <div className="min-w-0" data-testid="standard-chat-view">
         {nodes.map((node) => {
-          if (node.kind === "process") return (
-            <ProcessSummary key={node.id} node={node} records={records} memory={memory}
-              focusedSeq={focusedSeq} getDetail={getDetail} onReading={pause} />
-          );
+          if (node.kind === "process")
+            return (
+              <ProcessSummary
+                key={node.id}
+                node={node}
+                records={records}
+                memory={memory}
+                focusedSeq={focusedSeq}
+                getDetail={getDetail}
+                onReading={pause}
+              />
+            );
           const event = node.event;
           const record = records.find((entry) => entry.event === event);
           if (!record) return null;
@@ -620,6 +699,7 @@ function TranscriptBody({
                   onOpenChange={(open) => {
                     pause();
                     memory.expanded[record.id] = open;
+                    persistViewMemory(memory);
                   }}
                 />
               )}

@@ -52,7 +52,7 @@ type InterceptDetail struct {
 func (d *DB) GetInterceptDetail(id int64) (*InterceptDetail, error) {
 	var out InterceptDetail
 	var raw []byte
-	err := d.QueryRow(approvalRowSelectWithAudit+` WHERE ip.id=$1`, id).Scan(
+	err := d.QueryRow(approvalRowSelectWithAudit+` WHERE ip.id=?1`, id).Scan(
 		&out.ID, &out.RuleID, &out.ConversationID, &out.TaskID, &out.AgentName,
 		&out.ToolName, &out.ToolInput, &out.Status, &out.Reason, &out.DecidedAt, &out.CreatedAt,
 		&out.DecisionSource, &out.ConvTitle, &out.ConvAgentKey, &out.RuleName, &raw,
@@ -84,11 +84,11 @@ func (d *DB) ResolveIntercept(id int64, status, action, reason string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	r, err := d.Exec(`UPDATE intercept_pending SET status=$2, decided_at=utc_now(),
-		audit=CASE WHEN audit IS NULL THEN NULL ELSE json_object_merge(json_object_merge(audit,$3),
-        CASE WHEN $4='allow' AND audit->>'correlation' IS DISTINCT FROM 'exact'
+	r, err := d.Exec(`UPDATE intercept_pending SET status=?2, decided_at=utc_now(),
+		audit=CASE WHEN audit IS NULL THEN NULL ELSE json_object_merge(json_object_merge(audit,?3),
+        CASE WHEN ?4='allow' AND audit->>'correlation' IS DISTINCT FROM 'exact'
         THEN '{"execution_status":"unknown"}' ELSE '{}' END) END
-        WHERE id=$1 AND status='pending'`, id, status, patch, action)
+        WHERE id=?1 AND status='pending'`, id, status, patch, action)
 	if err != nil {
 		return false, err
 	}
@@ -106,8 +106,8 @@ func (d *DB) CompleteIntercept(id int64, runID, toolUseID, status, output string
 	if err != nil {
 		return err
 	}
-	_, err = d.Exec(`UPDATE intercept_pending SET audit=json_object_merge(audit,$4)
-		WHERE id=$1 AND audit->>'run_id'=$2 AND audit->>'tool_use_id'=$3
+	_, err = d.Exec(`UPDATE intercept_pending SET audit=json_object_merge(audit,?4)
+		WHERE id=?1 AND audit->>'run_id'=?2 AND audit->>'tool_use_id'=?3
 		AND audit->>'effective_action'='allow' AND audit->>'execution_status'='awaiting_result'`,
 		id, runID, toolUseID, patch)
 	return err

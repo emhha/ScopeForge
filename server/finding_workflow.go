@@ -22,7 +22,7 @@ func (s *Server) seedFindingWorkflowTools() {
 		// Only replace the original built-in text. A user-edited description is
 		// authoritative and must survive upgrades.
 		legacy := "查询记录代理已抓取的目标流量（必须指定 host，可再按 URL 子串或正文关键词过滤）。body_contains 会在已抓取的请求/响应头与正文中做全文搜索，支持任意子串和中文（至少 3 个字符），可用来找响应里的密码、密钥、报错、内网地址等。仅返回极轻量索引(id/method/url/status/resp_len)，不含任何响应内容。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页（page=0 起）；要看某条的请求/响应原文用 traffic_get(id)。回看已访问资源、找端点先用它，避免重复 curl 同一 URL。"
-		if _, err := s.m.pg.Exec(`UPDATE tools SET description=$1,updated_at=utc_now() WHERE key='traffic_search' AND system AND description=$2`, traffic.TrafficSearchDescription, legacy); err != nil {
+		if _, err := s.m.pg.Exec(`UPDATE tools SET description=?1,updated_at=utc_now() WHERE key='traffic_search' AND system AND description=?2`, traffic.TrafficSearchDescription, legacy); err != nil {
 			// Log and leave the flag unset so the next startup retries; do not
 			// return, or a transient error here would also skip the reporter
 			// migration below — the two are independent.
@@ -78,7 +78,7 @@ func (s *Server) seedFindingWorkflowTools() {
 			}
 		}
 		raw, _ := json.Marshal(schema)
-		result, err := s.m.pg.Exec(`UPDATE tools SET schema=$2,updated_at=utc_now() WHERE key=$1 AND system AND schema=$3`, key, string(raw), string(row.Schema))
+		result, err := s.m.pg.Exec(`UPDATE tools SET schema=?2,updated_at=utc_now() WHERE key=?1 AND system AND schema=?3`, key, string(raw), string(row.Schema))
 		if err != nil {
 			log.Printf("[evidence] upgrade %s: %v", key, err)
 			return
@@ -91,11 +91,11 @@ func (s *Server) seedFindingWorkflowTools() {
 	// flags survive; the one-time flag also preserves future user unbinding.
 	readers := `["worker","reporter"]`
 	for _, key := range []string{"traffic_search", "traffic_get", "traffic_blob"} {
-		if _, err := s.m.pg.Exec(`UPDATE tools SET agents=$2 WHERE key=$1 AND system AND (json_equal(agents,'["worker"]') OR (json_contains(agents,'["worker","planner","mainagent","auto","pentest"]') AND json_array_length(agents)=5))`, key, readers); err != nil {
+		if _, err := s.m.pg.Exec(`UPDATE tools SET agents=?2 WHERE key=?1 AND system AND (json_equal(agents,'["worker"]') OR (json_contains(agents,'["worker","planner","mainagent","auto","pentest"]') AND json_array_length(agents)=5))`, key, readers); err != nil {
 			return
 		}
 	}
-	if _, err := s.m.pg.Exec(`UPDATE tools SET agents=$1 WHERE key='get_finding_traffic' AND system AND json_contains(agents,'["auto","reporter"]') AND json_array_length(agents)=2`, `["auto","reporter","worker","planner","mainagent","pentest"]`); err != nil {
+	if _, err := s.m.pg.Exec(`UPDATE tools SET agents=?1 WHERE key='get_finding_traffic' AND system AND json_contains(agents,'["auto","reporter"]') AND json_array_length(agents)=2`, `["auto","reporter","worker","planner","mainagent","pentest"]`); err != nil {
 		return
 	}
 	// Replace the previous code default only; preserve customized binding lists.

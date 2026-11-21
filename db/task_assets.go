@@ -100,10 +100,10 @@ func (s *AssetStore) SetTaskAssetSource(taskID, assetID int64, source, summary s
 	}
 	query := `
 INSERT INTO task_asset_links(task_id, asset_id, source, source_summary, source_node_id)
-SELECT task.id, asset.id, $3, $4, $5
+SELECT task.id, asset.id, ?3, ?4, ?5
 FROM tasks task
-JOIN assets asset ON asset.id=$2 AND task.id IN (SELECT value FROM json_each(asset.task_ids))
-WHERE task.id=$1 AND task.deleted_at IS NULL
+JOIN assets asset ON asset.id=?2 AND task.id IN (SELECT value FROM json_each(asset.task_ids))
+WHERE task.id=?1 AND task.deleted_at IS NULL
 ON CONFLICT (task_id, asset_id) DO UPDATE
 SET source=EXCLUDED.source,
     source_summary=EXCLUDED.source_summary,
@@ -162,7 +162,7 @@ func (s *AssetStore) RegisterTaskAssetScopes(taskID int64, inputs []ScopeInput) 
 		return mutation, err
 	}
 	var taskExists bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND deleted_at IS NULL)`, taskID).Scan(&taskExists); err != nil {
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND deleted_at IS NULL)`, taskID).Scan(&taskExists); err != nil {
 		return mutation, err
 	}
 	if !taskExists {
@@ -182,7 +182,7 @@ func (s *AssetStore) RegisterTaskAssetScopes(taskID int64, inputs []ScopeInput) 
 			taskScope.Kind = "root_domain"
 			taskScope.Domain = rule.Domain
 			var alreadyLinked bool
-			err := tx.QueryRow(`SELECT id, $2 IN (SELECT value FROM json_each(task_ids)) FROM assets WHERE type='root_domain' AND domain=$1`, rule.Domain, taskID).
+			err := tx.QueryRow(`SELECT id, ?2 IN (SELECT value FROM json_each(task_ids)) FROM assets WHERE type='root_domain' AND domain=?1`, rule.Domain, taskID).
 				Scan(&assetID, &alreadyLinked)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return mutation, err
@@ -205,7 +205,7 @@ func (s *AssetStore) RegisterTaskAssetScopes(taskID int64, inputs []ScopeInput) 
 			}
 			ipValue := ip.String()
 			var alreadyLinked bool
-			err := tx.QueryRow(`SELECT id, $2 IN (SELECT value FROM json_each(task_ids)) FROM assets WHERE type='ip' AND ip=$1`, ipValue, taskID).
+			err := tx.QueryRow(`SELECT id, ?2 IN (SELECT value FROM json_each(task_ids)) FROM assets WHERE type='ip' AND ip=?1`, ipValue, taskID).
 				Scan(&assetID, &alreadyLinked)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return mutation, err
@@ -273,7 +273,7 @@ func (s *AssetStore) AttachAssetsToTask(taskID int64, assetIDs []int64, sourceSu
 	defer tx.Rollback() //nolint:errcheck
 
 	var taskExists bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND deleted_at IS NULL)`, taskID).Scan(&taskExists); err != nil {
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND deleted_at IS NULL)`, taskID).Scan(&taskExists); err != nil {
 		return mutation, err
 	}
 	if !taskExists {
@@ -281,8 +281,8 @@ func (s *AssetStore) AttachAssetsToTask(taskID int64, assetIDs []int64, sourceSu
 	}
 	var found, existing int
 	if err := tx.QueryRow(`
-SELECT count(*), count(*) FILTER (WHERE $1 IN (SELECT value FROM json_each(task_ids)))
-FROM assets WHERE id IN (SELECT value FROM json_each($2))`, taskID, assetIDs).Scan(&found, &existing); err != nil {
+SELECT count(*), count(*) FILTER (WHERE ?1 IN (SELECT value FROM json_each(task_ids)))
+FROM assets WHERE id IN (SELECT value FROM json_each(?2))`, taskID, assetIDs).Scan(&found, &existing); err != nil {
 		return mutation, err
 	}
 	if found != len(assetIDs) {
@@ -294,13 +294,13 @@ FROM assets WHERE id IN (SELECT value FROM json_each($2))`, taskID, assetIDs).Sc
 	// two statements silently degrades every manual attach back to 'system'.
 	if _, err := tx.Exec(`
 UPDATE assets
-SET task_ids=CASE WHEN $1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids ELSE json_array_add(task_ids,$1) END
-WHERE id IN (SELECT value FROM json_each($2))`, taskID, assetIDs); err != nil {
+SET task_ids=CASE WHEN ?1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids ELSE json_array_add(task_ids,?1) END
+WHERE id IN (SELECT value FROM json_each(?2))`, taskID, assetIDs); err != nil {
 		return mutation, err
 	}
 	if _, err := tx.Exec(`
 INSERT INTO task_asset_links(task_id, asset_id, source, source_summary)
-SELECT $1, id, 'manual', $3 FROM assets WHERE id IN (SELECT value FROM json_each($2))
+SELECT ?1, id, 'manual', ?3 FROM assets WHERE id IN (SELECT value FROM json_each(?2))
 ON CONFLICT (task_id, asset_id) DO UPDATE
 SET source='manual', source_summary=EXCLUDED.source_summary, source_node_id=NULL`,
 		taskID, assetIDs, sourceSummary); err != nil {
@@ -319,8 +319,8 @@ func (s *AssetStore) DetachAssetFromTask(taskID, assetID int64) (bool, error) {
 	}
 	var detachedID int64
 	err := s.db.QueryRow(`
-UPDATE assets SET task_ids=json_array_remove(task_ids,$1)
-WHERE id=$2 AND $1 IN (SELECT value FROM json_each(task_ids))
+UPDATE assets SET task_ids=json_array_remove(task_ids,?1)
+WHERE id=?2 AND ?1 IN (SELECT value FROM json_each(task_ids))
 RETURNING id`, taskID, assetID).Scan(&detachedID)
 	if err == sql.ErrNoRows {
 		return false, nil
@@ -344,7 +344,7 @@ func (s *AssetStore) hydrateTaskAssetSources(taskID int64, assets []*Asset) erro
 	rows, err := s.db.Query(`
 SELECT asset_id, source, source_summary, source_node_id
 FROM task_asset_links
-WHERE task_id=$1 AND asset_id IN (SELECT value FROM json_each($2))`, taskID, ids)
+WHERE task_id=?1 AND asset_id IN (SELECT value FROM json_each(?2))`, taskID, ids)
 	if err != nil {
 		return err
 	}
@@ -376,12 +376,12 @@ func (s *AssetStore) IntentAssets(taskID int64) ([]IntentAsset, error) {
 WITH context AS (
     SELECT task.id AS task_id, task.exploration_id, false AS inherited
     FROM tasks task
-    WHERE task.id=$1 AND task.deleted_at IS NULL
+    WHERE task.id=?1 AND task.deleted_at IS NULL
     UNION ALL
     SELECT source.id, source.exploration_id, true
     FROM task_relations relation
     JOIN tasks source ON source.id=relation.source_task_id AND source.deleted_at IS NULL
-    WHERE relation.task_id=$1
+    WHERE relation.task_id=?1
 )
 SELECT intent.id, asset.id, asset.type,
        CASE asset.type

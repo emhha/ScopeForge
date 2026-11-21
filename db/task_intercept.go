@@ -29,7 +29,7 @@ func (s *AssetStore) ListTaskInterceptRules(taskID int64) ([]AssetInterceptRule,
 	if taskID <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.Query(`SELECT `+taskInterceptRuleCols+` FROM task_intercept_rules WHERE task_id=$1 ORDER BY action, id`, taskID)
+	rows, err := s.db.Query(`SELECT `+taskInterceptRuleCols+` FROM task_intercept_rules WHERE task_id=?1 ORDER BY action, id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func normalizeRuleAction(action string) string {
 func (s *AssetStore) CreateTaskInterceptRule(taskID int64, action, kind, pattern, note string, enabled bool) (AssetInterceptRule, error) {
 	row := s.db.QueryRow(`
 INSERT INTO task_intercept_rules(task_id, enabled, action, kind, pattern, note)
-VALUES ($1,$2,$3,$4,$5,$6)
+VALUES (?1,?2,?3,?4,?5,?6)
 RETURNING `+taskInterceptRuleCols,
 		taskID, enabled, normalizeRuleAction(action), kind, pattern, note)
 	return scanTaskInterceptRule(row)
@@ -84,8 +84,8 @@ RETURNING `+taskInterceptRuleCols,
 func (s *AssetStore) UpdateTaskInterceptRule(taskID, ruleID int64, action, kind, pattern, note string, enabled bool) (AssetInterceptRule, error) {
 	row := s.db.QueryRow(`
 UPDATE task_intercept_rules
-   SET enabled=$3, action=$4, kind=$5, pattern=$6, note=$7
-WHERE id=$1 AND task_id=$2
+   SET enabled=?3, action=?4, kind=?5, pattern=?6, note=?7
+WHERE id=?1 AND task_id=?2
 RETURNING `+taskInterceptRuleCols,
 		ruleID, taskID, enabled, normalizeRuleAction(action), kind, pattern, note)
 	return scanTaskInterceptRule(row)
@@ -93,7 +93,7 @@ RETURNING `+taskInterceptRuleCols,
 
 // DeleteTaskInterceptRule removes a task's rule. Returns false if not found.
 func (s *AssetStore) DeleteTaskInterceptRule(taskID, ruleID int64) (bool, error) {
-	res, err := s.db.Exec(`DELETE FROM task_intercept_rules WHERE id=$1 AND task_id=$2`, ruleID, taskID)
+	res, err := s.db.Exec(`DELETE FROM task_intercept_rules WHERE id=?1 AND task_id=?2`, ruleID, taskID)
 	if err != nil {
 		return false, err
 	}
@@ -103,7 +103,7 @@ func (s *AssetStore) DeleteTaskInterceptRule(taskID, ruleID int64) (bool, error)
 
 // ToggleTaskInterceptRule flips the enabled state of a task's rule.
 func (s *AssetStore) ToggleTaskInterceptRule(taskID, ruleID int64, enabled bool) error {
-	_, err := s.db.Exec(`UPDATE task_intercept_rules SET enabled=$3 WHERE id=$1 AND task_id=$2`, ruleID, taskID, enabled)
+	_, err := s.db.Exec(`UPDATE task_intercept_rules SET enabled=?3 WHERE id=?1 AND task_id=?2`, ruleID, taskID, enabled)
 	return err
 }
 
@@ -113,7 +113,7 @@ func insertTaskInterceptRules(tx *Tx, taskID int64, rules []TaskInterceptRuleInp
 	for _, r := range rules {
 		if _, err := tx.Exec(`
 INSERT INTO task_intercept_rules(task_id, enabled, action, kind, pattern, note)
-VALUES ($1,$2,$3,$4,$5,$6)`, taskID, r.Enabled, normalizeRuleAction(r.Action), r.Kind, r.Pattern, r.Note); err != nil {
+VALUES (?1,?2,?3,?4,?5,?6)`, taskID, r.Enabled, normalizeRuleAction(r.Action), r.Kind, r.Pattern, r.Note); err != nil {
 			return fmt.Errorf("insert task intercept rule %q: %w", r.Pattern, err)
 		}
 	}

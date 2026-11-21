@@ -16,7 +16,7 @@ func TestActivityPageSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	es := d.Exploration(expID)
 
 	intentA, err := es.AddIntent(map[string]any{"summary": "intent A"}, 5, nil, "planner")
@@ -137,7 +137,7 @@ func TestListByKindPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	es := d.Exploration(expID)
 
 	const total = 25

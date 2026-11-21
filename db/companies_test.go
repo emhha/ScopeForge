@@ -10,8 +10,8 @@ import (
 
 // cleanup helpers to remove test data
 func cleanupCompany(d *DB, id int64) {
-	d.Exec(`DELETE FROM company_scope WHERE company_id = $1`, id)
-	d.Exec(`DELETE FROM companies WHERE id = $1`, id)
+	d.Exec(`DELETE FROM company_scope WHERE company_id = ?1`, id)
+	d.Exec(`DELETE FROM companies WHERE id = ?1`, id)
 }
 
 func TestCompanyUpsertAndGet(t *testing.T) {
@@ -367,11 +367,11 @@ func TestDeleteCompanyWithAssetsDeletesBoth(t *testing.T) {
 	domain := fmt.Sprintf("delete-assets-%d.example", stamp)
 	if err := d.QueryRow(`
 INSERT INTO assets(type, domain, root_domain, company_id, company_source)
-VALUES ('root_domain', $1, $1, $2, 'explicit')
+VALUES ('root_domain', ?1, ?1, ?2, 'explicit')
 RETURNING id`, domain, id).Scan(&assetID); err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM assets WHERE id = $1`, assetID) //nolint:errcheck
+	defer d.Exec(`DELETE FROM assets WHERE id = ?1`, assetID) //nolint:errcheck
 
 	deleted, err := cs.DeleteCompanyWithAssets(id, true)
 	if err != nil {
@@ -388,7 +388,7 @@ RETURNING id`, domain, id).Scan(&assetID); err != nil {
 		t.Fatalf("company still exists: %+v", company)
 	}
 	var assetsRemaining int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM assets WHERE id = $1`, assetID).Scan(&assetsRemaining); err != nil {
+	if err := d.QueryRow(`SELECT COUNT(*) FROM assets WHERE id = ?1`, assetID).Scan(&assetsRemaining); err != nil {
 		t.Fatal(err)
 	}
 	if assetsRemaining != 0 {
@@ -417,11 +417,11 @@ func TestRecomputeAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM assets WHERE id = $1`, assetID)
+	defer d.Exec(`DELETE FROM assets WHERE id = ?1`, assetID)
 
 	// asset should not be attributed yet
 	var companyID *int64
-	d.QueryRow(`SELECT company_id FROM assets WHERE id = $1`, assetID).Scan(&companyID)
+	d.QueryRow(`SELECT company_id FROM assets WHERE id = ?1`, assetID).Scan(&companyID)
 	if companyID != nil {
 		t.Error("expected no company before scope added")
 	}
@@ -432,7 +432,7 @@ func TestRecomputeAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d.QueryRow(`SELECT company_id FROM assets WHERE id = $1`, assetID).Scan(&companyID)
+	d.QueryRow(`SELECT company_id FROM assets WHERE id = ?1`, assetID).Scan(&companyID)
 	if companyID == nil || *companyID != id {
 		t.Errorf("RecomputeAttribution: expected company %d, got %v", id, companyID)
 	}

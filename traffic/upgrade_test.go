@@ -14,7 +14,7 @@ func openLegacyIndex(t *testing.T, dir string) *sql.DB {
 	if err := os.MkdirAll(filepath.Join(dir, "_index"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old, err := sql.Open("sqlite", filepath.Join(dir, "_index", "index.sqlite"))
+	old, err := sql.Open("sqlite3", filepath.Join(dir, "_index", "index.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

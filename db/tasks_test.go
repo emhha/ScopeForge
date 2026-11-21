@@ -71,12 +71,12 @@ func TestTaskLifecycleAndDeleteCascade(t *testing.T) {
 		t.Fatalf("task should be gone")
 	}
 	var nodes int
-	d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, tk.ExplorationID).Scan(&nodes)
+	d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=?1`, tk.ExplorationID).Scan(&nodes)
 	if nodes != 0 {
 		t.Fatalf("exploration nodes should be cascade-deleted, got %d", nodes)
 	}
 	var exps int
-	d.QueryRow(`SELECT count(*) FROM explorations WHERE id=$1`, tk.ExplorationID).Scan(&exps)
+	d.QueryRow(`SELECT count(*) FROM explorations WHERE id=?1`, tk.ExplorationID).Scan(&exps)
 	if exps != 0 {
 		t.Fatalf("exploration should be deleted, got %d", exps)
 	}
@@ -538,7 +538,7 @@ func TestCreateTaskWithCompanyScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM companies WHERE id IN ($1,$2,$3)`, companyA, companyB, emptyCompany)
+		_, _ = d.Exec(`DELETE FROM companies WHERE id IN (?1,?2,?3)`, companyA, companyB, emptyCompany)
 	})
 
 	existingTask, err := d.CreateTask("existing company asset owner", "goal", nil, 0, 0)
@@ -551,13 +551,13 @@ func TestCreateTaskWithCompanyScopes(t *testing.T) {
 	domainB := fmt.Sprintf("task-company-b-%d.example.test", suffix)
 	if err := d.QueryRow(`
 INSERT INTO assets(type, domain, root_domain, company_id, company_source, task_ids)
-VALUES ('root_domain',$1,$1,$2,'explicit',json_array($3))
+VALUES ('root_domain',?1,?1,?2,'explicit',json_array(?3))
 RETURNING id`, domainA, companyA, existingTask.ID).Scan(&companyAssetA); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.QueryRow(`
 INSERT INTO assets(type, domain, root_domain, company_id, company_source)
-VALUES ('root_domain',$1,$1,$2,'explicit')
+VALUES ('root_domain',?1,?1,?2,'explicit')
 RETURNING id`, domainB, companyB).Scan(&companyAssetB); err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +581,7 @@ RETURNING id`, domainB, companyB).Scan(&companyAssetB); err != nil {
 		t.Fatalf("hydrated company IDs=%v", got.CompanyIDs)
 	}
 	var scopeCount int
-	if err := d.QueryRow(`SELECT count(*) FROM task_scope WHERE task_id=$1 AND kind='company'`, task.ID).Scan(&scopeCount); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM task_scope WHERE task_id=?1 AND kind='company'`, task.ID).Scan(&scopeCount); err != nil {
 		t.Fatal(err)
 	}
 	if scopeCount != 2 {
@@ -612,14 +612,14 @@ RETURNING id`, domainB, companyB).Scan(&companyAssetB); err != nil {
 		}
 	}
 	var existingAssociation bool
-	if err := d.QueryRow(`SELECT $1 IN (SELECT value FROM json_each(task_ids)) FROM assets WHERE id=$2`, existingTask.ID, companyAssetA).Scan(&existingAssociation); err != nil {
+	if err := d.QueryRow(`SELECT ?1 IN (SELECT value FROM json_each(task_ids)) FROM assets WHERE id=?2`, existingTask.ID, companyAssetA).Scan(&existingAssociation); err != nil {
 		t.Fatal(err)
 	}
 	if !existingAssociation {
 		t.Fatal("company snapshot removed the asset's existing task association")
 	}
 	var existingSource string
-	if err := d.QueryRow(`SELECT source FROM task_asset_links WHERE task_id=$1 AND asset_id=$2`, existingTask.ID, companyAssetA).Scan(&existingSource); err != nil {
+	if err := d.QueryRow(`SELECT source FROM task_asset_links WHERE task_id=?1 AND asset_id=?2`, existingTask.ID, companyAssetA).Scan(&existingSource); err != nil {
 		t.Fatal(err)
 	}
 	if existingSource == taskCompanyAssetSource {
@@ -657,7 +657,7 @@ RETURNING id`, domainB, companyB).Scan(&companyAssetB); err != nil {
 		t.Fatalf("missing company error=%v, want %v", err, ErrTaskCompanyNotFound)
 	}
 	var leaked int
-	if err := d.QueryRow(`SELECT count(*) FROM explorations WHERE description=$1`, badDescription).Scan(&leaked); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM explorations WHERE description=?1`, badDescription).Scan(&leaked); err != nil {
 		t.Fatal(err)
 	}
 	if leaked != 0 {

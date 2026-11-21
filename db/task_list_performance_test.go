@@ -86,13 +86,13 @@ func TestTaskListMetricsAll(t *testing.T) {
 INSERT INTO activity(
     exploration_id, kind, input_tokens, output_tokens,
     cache_read_tokens, cache_write_tokens, created_at
-) VALUES ($1,'result',11,7,3,2,$2), ($1,'tool_result',999,999,999,999,$3)`,
+) VALUES (?1,'result',11,7,3,2,?2), (?1,'tool_result',999,999,999,999,?3)`,
 		task.ExplorationID, resultAt, latestAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, state)
-VALUES ($1,'goal','{}','met'), ($1,'goal','{}','open')`, task.ExplorationID); err != nil {
+VALUES (?1,'goal','{}','met'), (?1,'goal','{}','open')`, task.ExplorationID); err != nil {
 		t.Fatal(err)
 	}
 

@@ -271,7 +271,7 @@ func (k *Knowledge) indexNext() bool {
 	k.activeDoc = ""
 	k.activeCancel = nil
 	var status string
-	if e := k.pg.QueryRow(`SELECT status FROM knowledge_documents WHERE id=$1`, d.ID).Scan(&status); e != nil || status != "indexing" {
+	if e := k.pg.QueryRow(`SELECT status FROM knowledge_documents WHERE id=?1`, d.ID).Scan(&status); e != nil || status != "indexing" {
 		return true
 	}
 	if k.ctx.Err() != nil {

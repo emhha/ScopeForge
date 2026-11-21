@@ -340,6 +340,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
+	cfg.ThinkingBudget = p.ThinkingBudget
 	cfg.ReasoningEffort = p.ReasoningEffort
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
@@ -384,7 +385,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
 		ID: id, Name: "default", Format: format, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
-		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
+		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ThinkingBudget: cfg.ThinkingBudget, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
 		Retry: retry,
@@ -510,6 +511,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
+	cfg.ThinkingBudget = p.ThinkingBudget
 	cfg.ReasoningEffort = p.ReasoningEffort
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
@@ -907,6 +909,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/visibility/skill/toggle", s.pgToggleSkillVisibility)
 	// LLM 多 profile
 	mux.HandleFunc("GET /api/llm/profiles", s.pgListProfiles)
+	mux.HandleFunc("GET /api/llm/catalog", s.llmModelCatalog)
 	mux.HandleFunc("POST /api/llm/profiles", s.pgSaveProfile)
 	mux.HandleFunc("DELETE /api/llm/profiles/{id}", s.pgDeleteProfile)
 	mux.HandleFunc("POST /api/llm/profiles/active", s.pgActivateProfile)
@@ -1310,6 +1313,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"rate_per_minute":  s.llmCfg.RatePerMinute,
 		"context_window_k": s.llmCfg.ContextWindowK,
 		"thinking_type":    s.llmCfg.ThinkingType,
+		"thinking_budget":  s.llmCfg.ThinkingBudget,
 		"reasoning_effort": s.llmCfg.ReasoningEffort,
 	})
 }
@@ -1326,6 +1330,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		RatePerMinute   float64 `json:"rate_per_minute"`
 		ContextWindowK  int     `json:"context_window_k"`
 		ThinkingType    string  `json:"thinking_type"`
+		ThinkingBudget  int     `json:"thinking_budget"`
 		ReasoningEffort string  `json:"reasoning_effort"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1335,10 +1340,11 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = req.RatePerSecond, req.RatePerMinute
 	cfg.ThinkingType = req.ThinkingType
+	cfg.ThinkingBudget = req.ThinkingBudget
 	cfg.ReasoningEffort = req.ReasoningEffort
-	if k := req.ContextWindowK; k > 0 { // 0 = keep default (200K); cap at 1M
-		if k > 1000 {
-			k = 1000
+	if k := req.ContextWindowK; k > 0 {
+		if k > 100000 {
+			k = 100000
 		}
 		cfg.ContextWindowK = k
 	}
@@ -1382,6 +1388,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		Proxy            string `json:"proxy"`
 		APIKey           string `json:"api_key"`
 		ThinkingType     string `json:"thinking_type"`
+		ThinkingBudget   int    `json:"thinking_budget"`
 		ReasoningEffort  string `json:"reasoning_effort"`
 		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
 		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
@@ -1395,6 +1402,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// mirror production: send the SAME thinking params so a provider that rejects the
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
 	cfg.ThinkingType = req.ThinkingType
+	cfg.ThinkingBudget = req.ThinkingBudget
 	cfg.ReasoningEffort = req.ReasoningEffort
 	// 同理，收发模式也照该 profile 的选择来：只支持其中一种通道的端点必须在这里就
 	// 暴露，而不是等会话里才发现"测试通过的配置根本跑不动"。

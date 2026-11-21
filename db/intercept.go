@@ -75,7 +75,7 @@ func (d *DB) ListInterceptRules() ([]InterceptRule, error) {
 func (d *DB) CreateInterceptRule(name, matchTarget, matchType, pattern, action, message string, priority int, enabled bool, timeoutEnabled bool, timeoutSeconds int, timeoutAction string) (InterceptRule, error) {
 	row := d.QueryRow(`
 INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 RETURNING `+interceptRuleCols,
 		name, enabled, priority, matchTarget, matchType, pattern, action, message, timeoutEnabled, timeoutSeconds, timeoutAction)
 	return scanInterceptRule(row)
@@ -85,10 +85,10 @@ RETURNING `+interceptRuleCols,
 func (d *DB) UpdateInterceptRule(id int64, name, matchTarget, matchType, pattern, action, message string, priority int, enabled bool, timeoutEnabled bool, timeoutSeconds int, timeoutAction string) (InterceptRule, error) {
 	row := d.QueryRow(`
 UPDATE intercept_rules
-   SET name=$2, enabled=$3, priority=$4, match_target=$5,
-       match_type=$6, pattern=$7, action=$8, message=$9,
-       timeout_enabled=$10, timeout_seconds=$11, timeout_action=$12
-WHERE id=$1
+   SET name=?2, enabled=?3, priority=?4, match_target=?5,
+       match_type=?6, pattern=?7, action=?8, message=?9,
+       timeout_enabled=?10, timeout_seconds=?11, timeout_action=?12
+WHERE id=?1
 RETURNING `+interceptRuleCols,
 		id, name, enabled, priority, matchTarget, matchType, pattern, action, message, timeoutEnabled, timeoutSeconds, timeoutAction)
 	return scanInterceptRule(row)
@@ -96,13 +96,13 @@ RETURNING `+interceptRuleCols,
 
 // DeleteInterceptRule removes a rule.
 func (d *DB) DeleteInterceptRule(id int64) error {
-	_, err := d.Exec(`DELETE FROM intercept_rules WHERE id=$1`, id)
+	_, err := d.Exec(`DELETE FROM intercept_rules WHERE id=?1`, id)
 	return err
 }
 
 // ToggleInterceptRule flips the enabled state of a rule.
 func (d *DB) ToggleInterceptRule(id int64, enabled bool) error {
-	_, err := d.Exec(`UPDATE intercept_rules SET enabled=$2 WHERE id=$1`, id, enabled)
+	_, err := d.Exec(`UPDATE intercept_rules SET enabled=?2 WHERE id=?1`, id, enabled)
 	return err
 }
 
@@ -130,14 +130,14 @@ func (d *DB) CreateInterceptPending(ruleID, convID int64, taskID, agentName, too
 	var id int64
 	err := d.QueryRow(`
 INSERT INTO intercept_pending(rule_id, conversation_id, task_id, agent_name, tool_name, tool_input, reason, decision_source, audit)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id`,
 		ruleIDPtr, convIDPtr, taskIDPtr, agentName, toolName, raw, reason, interceptSource(ruleID, reason), firstAudit(audits)).Scan(&id)
 	return id, err
 }
 
 // DecideInterceptPending updates a pending record's status (allowed/denied/timeout).
 func (d *DB) DecideInterceptPending(id int64, status string) error {
-	_, err := d.Exec(`UPDATE intercept_pending SET status=$2, decided_at=utc_now() WHERE id=$1`, id, status)
+	_, err := d.Exec(`UPDATE intercept_pending SET status=?2, decided_at=utc_now() WHERE id=?1`, id, status)
 	return err
 }
 
@@ -166,7 +166,7 @@ func (d *DB) CreateDecidedIntercept(ruleID, convID int64, taskID, agentName, too
 	var id int64
 	err := d.QueryRow(`
 INSERT INTO intercept_pending(rule_id, conversation_id, task_id, agent_name, tool_name, tool_input, status, reason, decided_at, decision_source, audit)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, utc_now(), $9, $10) RETURNING id`,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, utc_now(), ?9, ?10) RETURNING id`,
 		ruleIDPtr, convIDPtr, taskIDPtr, agentName, toolName, raw, status, reason, interceptSource(ruleID, reason), firstAudit(audits)).Scan(&id)
 	return id, err
 }
@@ -200,7 +200,7 @@ func (d *DB) ListPendingIntercepts() ([]InterceptPending, error) {
 func (d *DB) GetInterceptPending(id int64) (*InterceptPending, error) {
 	var p InterceptPending
 	err := scanInterceptPending(
-		d.QueryRow(`SELECT `+interceptPendingCols+` FROM intercept_pending WHERE id=$1`, id),
+		d.QueryRow(`SELECT `+interceptPendingCols+` FROM intercept_pending WHERE id=?1`, id),
 		&p,
 	)
 	if err == sql.ErrNoRows {
@@ -268,7 +268,7 @@ func firstAudit(audits []*InterceptAudit) any {
 // ListAllIntercepts returns up to limit intercept_pending rows (newest first)
 // joined with conversation and rule info.
 func (d *DB) ListAllIntercepts(limit int) ([]InterceptApprovalRow, error) {
-	rows, err := d.Query(approvalRowSelect+` ORDER BY ip.created_at DESC LIMIT $1`, limit)
+	rows, err := d.Query(approvalRowSelect+` ORDER BY ip.created_at DESC LIMIT ?1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +298,7 @@ func (d *DB) ListAllInterceptsPage(page, size int, filter InterceptApprovalFilte
 
 // ListTaskIntercepts returns all intercept_pending rows for a specific task (newest first).
 func (d *DB) ListTaskIntercepts(taskID string) ([]InterceptApprovalRow, error) {
-	rows, err := d.Query(approvalRowSelect+` WHERE ip.task_id=$1 ORDER BY ip.created_at DESC`, taskID)
+	rows, err := d.Query(approvalRowSelect+` WHERE ip.task_id=?1 ORDER BY ip.created_at DESC`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -354,8 +354,8 @@ func (d *DB) listInterceptsPage(taskID string, page, size int, filter InterceptA
 	limitArg := len(args) + 1
 	offsetArg := limitArg + 1
 	dataQ := approvalRowSelect + where +
-		" ORDER BY ip.created_at DESC, ip.id DESC LIMIT $" + fmt.Sprint(limitArg) +
-		" OFFSET $" + fmt.Sprint(offsetArg)
+		" ORDER BY ip.created_at DESC, ip.id DESC LIMIT ?" + fmt.Sprint(limitArg) +
+		" OFFSET ?" + fmt.Sprint(offsetArg)
 	args = append(args, size, offset)
 	rows, err := d.Query(dataQ, args...)
 	if err != nil {

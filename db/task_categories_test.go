@@ -82,7 +82,7 @@ func TestCreateTaskRejectsMissingCategoryAtomically(t *testing.T) {
 		t.Fatalf("create error=%v, want %v", err, ErrTaskCategoryNotFound)
 	}
 	var count int
-	if err := d.QueryRow(`SELECT count(*) FROM explorations WHERE description=$1`, description).Scan(&count); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM explorations WHERE description=?1`, description).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {

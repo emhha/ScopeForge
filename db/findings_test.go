@@ -47,7 +47,7 @@ func TestDeleteFinding(t *testing.T) {
 		t.Fatalf("finding row should be gone, got %+v", f)
 	}
 	var cnt int
-	d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE id=$1`, nodeID).Scan(&cnt)
+	d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE id=?1`, nodeID).Scan(&cnt)
 	if cnt != 0 {
 		t.Fatalf("originating finding node should be deleted, still %d", cnt)
 	}
@@ -70,7 +70,7 @@ func TestFindingsPageAndStats(t *testing.T) {
 
 	const vc = "__test_vc_pagination__"
 	// clean any leftovers from a prior aborted run, and clean up on exit
-	cleanup := func() { _, _ = d.Exec(`DELETE FROM findings WHERE vulnclass=$1`, vc) }
+	cleanup := func() { _, _ = d.Exec(`DELETE FROM findings WHERE vulnclass=?1`, vc) }
 	cleanup()
 	defer cleanup()
 
@@ -166,7 +166,7 @@ func TestFindingsPageAndStats(t *testing.T) {
 		t.Fatalf("new finding report should be empty, got %q", one.Report)
 	}
 	// report column round-trips through GetFinding.
-	if _, err := d.Exec(`UPDATE findings SET report=$1 WHERE id=$2`, "# 报告\n正文", ids[0]); err != nil {
+	if _, err := d.Exec(`UPDATE findings SET report=?1 WHERE id=?2`, "# 报告\n正文", ids[0]); err != nil {
 		t.Fatal(err)
 	}
 	if one, _ = d.GetFinding(ids[0]); one.Report != "# 报告\n正文" {
@@ -192,7 +192,7 @@ func TestFindingsPageAndStats(t *testing.T) {
 			}
 		})
 	}
-	if _, err := d.Exec(`UPDATE findings SET name=$1 WHERE id=$2`, "literal %_ marker", ids[1]); err != nil {
+	if _, err := d.Exec(`UPDATE findings SET name=?1 WHERE id=?2`, "literal %_ marker", ids[1]); err != nil {
 		t.Fatal(err)
 	}
 	matches, searchTotal, err := d.ListFindingsPage(FindingFilter{VulnClass: vc, Query: "%_"}, 1, 20)
@@ -224,7 +224,7 @@ func TestListFindingsPageUsesStableIDTieBreaker(t *testing.T) {
 	defer d.Close()
 
 	vc := fmt.Sprintf("__test_finding_stable_page_%d__", time.Now().UnixNano())
-	defer d.Exec(`DELETE FROM findings WHERE vulnclass=$1`, vc)
+	defer d.Exec(`DELETE FROM findings WHERE vulnclass=?1`, vc)
 	ids := make([]int64, 0, 7)
 	for i := 0; i < 7; i++ {
 		id, addErr := d.AddFinding(0, 0, vc, "", SeverityHigh, fmt.Sprintf("finding %d", i), "", "test", nil)
@@ -234,7 +234,7 @@ func TestListFindingsPageUsesStableIDTieBreaker(t *testing.T) {
 		ids = append(ids, id)
 	}
 	sharedCreatedAt := time.Date(2026, time.August, 21, 8, 30, 0, 0, time.UTC)
-	if _, err := d.Exec(`UPDATE findings SET created_at=$1 WHERE vulnclass=$2`, sharedCreatedAt, vc); err != nil {
+	if _, err := d.Exec(`UPDATE findings SET created_at=?1 WHERE vulnclass=?2`, sharedCreatedAt, vc); err != nil {
 		t.Fatal(err)
 	}
 
@@ -272,7 +272,7 @@ func TestFindingGroupsAndUnassignedPaging(t *testing.T) {
 	defer d.Close()
 
 	vc := fmt.Sprintf("__test_finding_groups_%d__", time.Now().UnixNano())
-	cleanupFindings := func() { _, _ = d.Exec(`DELETE FROM findings WHERE vulnclass=$1`, vc) }
+	cleanupFindings := func() { _, _ = d.Exec(`DELETE FROM findings WHERE vulnclass=?1`, vc) }
 	defer cleanupFindings()
 
 	taskA, err := d.CreateTask("group A", "goal", nil, 0, 0)
@@ -427,7 +427,7 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM assets WHERE id=$1`, assetID)
+	defer d.Exec(`DELETE FROM assets WHERE id=?1`, assetID)
 
 	store := d.Exploration(task.ExplorationID)
 	findingNodeID, err := store.AddNode(KindFinding, map[string]any{"summary": "source"}, 5, "confirmed", "worker", []int64{assetID})
@@ -465,11 +465,11 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 		t.Fatalf("follow-up intent metadata: %+v", node)
 	}
 	var anchorCount, edgeCount int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_anchors WHERE node_id=$1 AND asset_id=$2`, intentID, assetID).Scan(&anchorCount); err != nil {
+	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_anchors WHERE node_id=?1 AND asset_id=?2`, intentID, assetID).Scan(&anchorCount); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_edges
-		WHERE exploration_id=$1 AND src_id=$2 AND rel=$3 AND dst_id=$4`,
+		WHERE exploration_id=?1 AND src_id=?2 AND rel=?3 AND dst_id=?4`,
 		task.ExplorationID, findingNodeID, RelDerivedFrom, intentID).Scan(&edgeCount); err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 	}
 	var persistedAuditCount int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM activity
-		WHERE id=$1 AND exploration_id=$2 AND node_id=$3 AND worker='system' AND summary=$4`,
+		WHERE id=?1 AND exploration_id=?2 AND node_id=?3 AND worker='system' AND summary=?4`,
 		audit.ID, task.ExplorationID, intentID, expectedAuditSummary).Scan(&persistedAuditCount); err != nil {
 		t.Fatal(err)
 	}
@@ -487,10 +487,10 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 	}
 
 	var nodesBefore, activitiesBefore int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodesBefore); err != nil {
+	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_nodes WHERE exploration_id=?1`, task.ExplorationID).Scan(&nodesBefore); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=$1`, task.ExplorationID).Scan(&activitiesBefore); err != nil {
+	if err := d.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=?1`, task.ExplorationID).Scan(&activitiesBefore); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.AddFindingFollowUpIntent(findingID, findingNodeID, "must roll back", Activity{
@@ -499,10 +499,10 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 		t.Fatal("invalid activity metadata should fail the transaction")
 	}
 	var nodesAfter, activitiesAfter int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodesAfter); err != nil {
+	if err := d.QueryRow(`SELECT COUNT(*) FROM exploration_nodes WHERE exploration_id=?1`, task.ExplorationID).Scan(&nodesAfter); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=$1`, task.ExplorationID).Scan(&activitiesAfter); err != nil {
+	if err := d.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=?1`, task.ExplorationID).Scan(&activitiesAfter); err != nil {
 		t.Fatal(err)
 	}
 	if nodesAfter != nodesBefore || activitiesAfter != activitiesBefore {
@@ -510,7 +510,7 @@ func TestAddFindingFollowUpIntent(t *testing.T) {
 			nodesBefore, nodesAfter, activitiesBefore, activitiesAfter)
 	}
 
-	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE id=$1`, findingNodeID); err != nil {
+	if _, err := d.Exec(`DELETE FROM exploration_nodes WHERE id=?1`, findingNodeID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.AddFindingFollowUpIntent(findingID, findingNodeID, "should fail", auditInput); !errors.Is(err, ErrFindingOriginUnavailable) {

@@ -53,7 +53,7 @@ func TestFindingLineageAPIEmptySessionsIsArray(t *testing.T) {
 	s, f, request := trafficEvidenceServer(t)
 	for _, detached := range []bool{false, true} {
 		if detached {
-			if _, err := s.m.pg.Exec(`UPDATE findings SET node_id=NULL WHERE id=$1`, f.FindingID); err != nil {
+			if _, err := s.m.pg.Exec(`UPDATE findings SET node_id=NULL WHERE id=?1`, f.FindingID); err != nil {
 				t.Fatal(err)
 			}
 		}

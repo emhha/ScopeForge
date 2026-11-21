@@ -299,7 +299,7 @@ func TestSideHTTPBusyIsolationClearAndReconnect(t *testing.T) {
 		t.Fatal("clear lost main snapshot")
 	}
 	var count int
-	if err := f.m.pg.QueryRow(`SELECT count(*) FROM conversation_activities WHERE conversation_id=$1`, p.ConversationID).Scan(&count); err != nil || count != 0 {
+	if err := f.m.pg.QueryRow(`SELECT count(*) FROM conversation_activities WHERE conversation_id=?1`, p.ConversationID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("side contaminated main activity %d %v", count, err)
 	}
 	f.s.cfgMu.Lock()
@@ -402,7 +402,7 @@ func TestSideRejectsDeletedOrChangedCachedProfile(t *testing.T) {
 	if _, err = f.s.sideProvider(model); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.m.pg.Exec(`UPDATE llm_profiles SET model='changed' WHERE id=$1`, id); err != nil {
+	if _, err = f.m.pg.Exec(`UPDATE llm_profiles SET model='changed' WHERE id=?1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = f.s.sideProvider(model); err == nil {

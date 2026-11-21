@@ -508,6 +508,8 @@ function ChatView({
   const hasMoreRef = React.useRef(false); // older history remains above the loaded window
   const loadingMoreRef = React.useRef(false); // guard: one scroll-up load at a time
   const [historyLoaded, setHistoryLoaded] = React.useState(false);
+  const [historyError, setHistoryError] = React.useState("");
+  const [historyAttempt, setHistoryAttempt] = React.useState(0);
   const [hasMore, setHasMore] = React.useState(false); // drives the "load earlier" hint
   const agent = agents.find((a) => a.key === conv.agent_key);
   const currentProfileId = conv.llm_profile_id ?? null;
@@ -546,6 +548,7 @@ function ChatView({
     setHasMore(false);
     setMessages([]);
     setHistoryLoaded(false);
+    setHistoryError("");
     setRunning(false);
     let live = true;
     api
@@ -560,15 +563,13 @@ function ChatView({
         setRunning((current) => current || r.running);
         setHistoryLoaded(true);
       })
-      .catch(() => {
-        // A source link can retry history through its locator; ordinary chats
-        // retain the existing usable empty state on a transient failure.
-        if (live) setHistoryLoaded(true);
+      .catch((error: Error) => {
+        if (live) setHistoryError(error.message || "历史记录加载失败");
       });
     return () => {
       live = false;
     };
-  }, [conv.id]);
+  }, [conv.id, historyAttempt]);
 
   // A trigger or another tab may start a turn while this conversation is open.
   // A false list snapshot must not stop the tail before its final messages load.
@@ -590,9 +591,9 @@ function ChatView({
           setMessages((prev) => mergeActivities(prev, r.items));
         }
         cursorRef.current = Math.max(cursorRef.current, r.cursor);
-        keepPolling = r.running;
-        setRunning(r.running);
-        if (!r.running) onTitleMaybeChanged(); // first-turn auto-title landed
+        keepPolling = r.running || r.hasMore;
+        setRunning(keepPolling);
+        if (!keepPolling) onTitleMaybeChanged(); // first-turn auto-title landed
       } catch {
         /* transient — keep polling */
       } finally {
@@ -607,14 +608,23 @@ function ChatView({
     };
   }, [running, conv.id, onTitleMaybeChanged]);
 
-  const loadFocusPage = React.useCallback((before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE), [conv.id]);
+  const loadFocusPage = React.useCallback(
+    (before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE),
+    [conv.id],
+  );
   const mergeFocusPage = React.useCallback((page: { items: Activity[]; hasMore: boolean }) => {
     setMessages((prev) => mergeActivities(page.items, prev));
     earliestRef.current = page.items[0]?.seq ?? earliestRef.current;
     hasMoreRef.current = page.hasMore;
     setHasMore(page.hasMore);
   }, []);
-  const focusHistory = useApprovalHistory(approvalFocus.state?.source, historyLoaded, messages, loadFocusPage, mergeFocusPage);
+  const focusHistory = useApprovalHistory(
+    approvalFocus.state?.source,
+    historyLoaded,
+    messages,
+    loadFocusPage,
+    mergeFocusPage,
+  );
 
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -795,19 +805,40 @@ function ChatView({
       {/* messages */}
       <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
         <div className="min-w-0 max-w-full px-4 py-3" ref={contentRef}>
-          {messages.length === 0 && !running ? (
+          {historyError && (
+            <div role="alert" className="mb-3 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">
+              历史加载失败：{historyError}{" "}
+              <Button variant="outline" size="sm" onClick={() => setHistoryAttempt((n) => n + 1)}>
+                重新加载历史
+              </Button>
+            </div>
+          )}
+          {!historyLoaded && !historyError && (
+            <p role="status" className="py-6 text-center text-sm text-muted-foreground">
+              正在恢复会话历史…
+            </p>
+          )}
+          {messages.length === 0 && !running && historyLoaded ? (
             <div className="text-muted-foreground py-10 text-center text-sm">
               开始和「{agent?.name ?? conv.agent_key}」对话
             </div>
           ) : (
             <>
               {hasMore && (
-                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">向上滚动加载更早的消息…</div>
+                <div className="pb-2 text-center">
+                  <Button type="button" variant="ghost" size="sm" onClick={() => void loadEarlier()}>
+                    加载更早的消息与执行过程
+                  </Button>
+                </div>
               )}
               <Transcript
                 scopeKey={`conversation:${conv.id}`}
-                onReading={() => { atBottomRef.current = false; }}
-                onFollow={() => { atBottomRef.current = true; }}
+                onReading={() => {
+                  atBottomRef.current = false;
+                }}
+                onFollow={() => {
+                  atBottomRef.current = true;
+                }}
                 activity={messages}
                 live={running}
                 chat
@@ -1059,15 +1090,18 @@ export default function ChatPage() {
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [sourceRequested, setSourceRequested] = React.useState(false);
   const [convsLoaded, setConvsLoaded] = React.useState(false);
-  const selectConversation = React.useCallback((id: number | null) => {
-    if (id !== selectedId) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("approval");
-      setSourceRequested(false);
-      window.history.replaceState(null, "", url);
-    }
-    setSelectedId(id);
-  }, [selectedId]);
+  const selectConversation = React.useCallback(
+    (id: number | null) => {
+      if (id !== selectedId) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("approval");
+        setSourceRequested(false);
+        window.history.replaceState(null, "", url);
+      }
+      setSelectedId(id);
+    },
+    [selectedId],
+  );
 
   const [renamingId, setRenamingId] = React.useState<number | null>(null);
   const [renameText, setRenameText] = React.useState("");
@@ -1094,7 +1128,10 @@ export default function ChatPage() {
     const seq = ++conversationListSeq.current;
     try {
       const items = await api.conversations();
-      if (seq === conversationListSeq.current) { setConvs(items); setConvsLoaded(true); }
+      if (seq === conversationListSeq.current) {
+        setConvs(items);
+        setConvsLoaded(true);
+      }
     } catch {
       // Preserve the selected transcript and list on a transient poll failure.
     }

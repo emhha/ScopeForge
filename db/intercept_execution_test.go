@@ -22,7 +22,7 @@ func TestInterceptExecutionNavigation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_pending WHERE id=$1`, n) })
+		t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_pending WHERE id=?1`, n) })
 		return n
 	}
 	conv := func() int64 {
@@ -31,7 +31,7 @@ func TestInterceptExecutionNavigation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM conversations WHERE id=$1`, c.ID) })
+		t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM conversations WHERE id=?1`, c.ID) })
 		return c.ID
 	}
 	addConv := func(c int64, kind, id string) int64 {
@@ -68,8 +68,8 @@ func TestInterceptExecutionNavigation(t *testing.T) {
 		}
 		exp := task.ExplorationID
 		t.Cleanup(func() {
-			_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
-			_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, exp)
+			_, _ = d.Exec(`DELETE FROM tasks WHERE id=?1`, task.ID)
+			_, _ = d.Exec(`DELETE FROM explorations WHERE id=?1`, exp)
 		})
 		es := d.Exploration(exp)
 		intent, err := es.AddIntent(map[string]any{"summary": "do not parse agent label"}, 1, nil, "planner")
@@ -103,19 +103,19 @@ func TestInterceptExecutionNavigation(t *testing.T) {
 			t.Fatal(err)
 		}
 		deletedApproval := approval(0, fmt.Sprint(task.ID), deletedCall, true)
-		if _, err = d.Exec(`DELETE FROM activity WHERE id=$1`, deletedSeq); err != nil {
+		if _, err = d.Exec(`DELETE FROM activity WHERE id=?1`, deletedSeq); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = d.GetInterceptExecution(deletedApproval); !errors.Is(err, ErrInterceptSessionDeleted) {
 			t.Fatalf("deleted session: %v", err)
 		}
-		if _, err = d.Exec(`UPDATE tasks SET archived_at=utc_now() WHERE id=$1`, task.ID); err != nil {
+		if _, err = d.Exec(`UPDATE tasks SET archived_at=utc_now() WHERE id=?1`, task.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = d.GetInterceptExecution(deletedApproval); !errors.Is(err, ErrInterceptTaskDeleted) {
 			t.Fatalf("archived task: %v", err)
 		}
-		if _, err = d.Exec(`UPDATE tasks SET archived_at=NULL WHERE id=$1`, task.ID); err != nil {
+		if _, err = d.Exec(`UPDATE tasks SET archived_at=NULL WHERE id=?1`, task.ID); err != nil {
 			t.Fatal(err)
 		}
 		a := Activity{Worker: "work#7", NodeID: &intent, Kind: "tool_use", Tool: "Bash", ToolUseID: "unpaired", Summary: "pwd"}

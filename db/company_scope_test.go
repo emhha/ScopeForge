@@ -129,7 +129,7 @@ func TestExplicitCompanyAttributionSurvivesScopeRebuild(t *testing.T) {
 	// installations. The schema default conservatively treats it as explicit.
 	var assetID int64
 	if err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain,company_id)
-		VALUES ('root_domain',$1,$1,$2) RETURNING id`, domain, explicitCompany).Scan(&assetID); err != nil {
+		VALUES ('root_domain',?1,?1,?2) RETURNING id`, domain, explicitCompany).Scan(&assetID); err != nil {
 		t.Fatal(err)
 	}
 	defer deleteAsset(d, assetID)
@@ -159,7 +159,7 @@ func TestExplicitCompanyAttributionSurvivesScopeRebuild(t *testing.T) {
 		t.Helper()
 		var got *int64
 		var gotSource string
-		if err := d.QueryRow(`SELECT company_id,company_source FROM assets WHERE id=$1`, id).Scan(&got, &gotSource); err != nil {
+		if err := d.QueryRow(`SELECT company_id,company_source FROM assets WHERE id=?1`, id).Scan(&got, &gotSource); err != nil {
 			t.Fatal(err)
 		}
 		if got == nil || *got != want || gotSource != source {
@@ -180,7 +180,7 @@ func TestExplicitCompanyAttributionSurvivesScopeRebuild(t *testing.T) {
 	assertCompany(appID, explicitCompany, "explicit")
 	var autoCompanyID *int64
 	var autoSource string
-	if err := d.QueryRow(`SELECT company_id,company_source FROM assets WHERE id=$1`, autoAssetID).Scan(&autoCompanyID, &autoSource); err != nil {
+	if err := d.QueryRow(`SELECT company_id,company_source FROM assets WHERE id=?1`, autoAssetID).Scan(&autoCompanyID, &autoSource); err != nil {
 		t.Fatal(err)
 	}
 	if autoCompanyID != nil || autoSource != "scope" {
@@ -255,10 +255,10 @@ func TestCompanyICPAttribution(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		// 不吞错误：清理失败会污染后续用例，必须让它在本次运行里显形。
-		if _, err := d.Exec(`DELETE FROM assets WHERE json_contains(task_ids,json_array($1))`, suffix); err != nil {
+		if _, err := d.Exec(`DELETE FROM assets WHERE json_contains(task_ids,json_array(?1))`, suffix); err != nil {
 			t.Errorf("清理测试资产失败: %v", err)
 		}
-		if _, err := d.Exec(`DELETE FROM companies WHERE id=$1`, companyID); err != nil {
+		if _, err := d.Exec(`DELETE FROM companies WHERE id=?1`, companyID); err != nil {
 			t.Errorf("清理测试公司失败: %v", err)
 		}
 	})
@@ -294,7 +294,7 @@ func TestCompanyICPAttribution(t *testing.T) {
 	assertCompany := func(assetID int64, want *int64) {
 		t.Helper()
 		var got *int64
-		if err := d.QueryRow(`SELECT company_id FROM assets WHERE id=$1`, assetID).Scan(&got); err != nil {
+		if err := d.QueryRow(`SELECT company_id FROM assets WHERE id=?1`, assetID).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
 		if want == nil && got != nil {
@@ -327,7 +327,7 @@ func TestCompanyScopeAttribution(t *testing.T) {
 		t.Fatalf("startMax: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM assets WHERE id > $1`, startMax)
+		_, _ = d.Exec(`DELETE FROM assets WHERE id > ?1`, startMax)
 		d.Close()
 	})
 
@@ -349,7 +349,7 @@ func TestCompanyScopeAttribution(t *testing.T) {
 		t.Fatalf("pre upsert: %v", err)
 	}
 	var preCompanyID *int64
-	d.QueryRow(`SELECT company_id FROM assets WHERE id = $1`, preID).Scan(&preCompanyID)
+	d.QueryRow(`SELECT company_id FROM assets WHERE id = ?1`, preID).Scan(&preCompanyID)
 	if preCompanyID != nil {
 		t.Fatalf("pre-scope asset should be unattributed, got %v", *preCompanyID)
 	}
@@ -358,7 +358,7 @@ func TestCompanyScopeAttribution(t *testing.T) {
 
 	mustCid := func(id int64, want int64, label string) {
 		var cID *int64
-		d.QueryRow(`SELECT company_id FROM assets WHERE id = $1`, id).Scan(&cID)
+		d.QueryRow(`SELECT company_id FROM assets WHERE id = ?1`, id).Scan(&cID)
 		if cID == nil {
 			t.Fatalf("%s company_id = nil, want %d", label, want)
 		}
@@ -368,7 +368,7 @@ func TestCompanyScopeAttribution(t *testing.T) {
 	}
 	mustNil := func(id int64, label string) {
 		var cID *int64
-		d.QueryRow(`SELECT company_id FROM assets WHERE id = $1`, id).Scan(&cID)
+		d.QueryRow(`SELECT company_id FROM assets WHERE id = ?1`, id).Scan(&cID)
 		if cID != nil {
 			t.Fatalf("%s should be unattributed, got %d", label, *cID)
 		}

@@ -25,7 +25,7 @@ func TestChatUnavailableReasonDistinguishesStates(t *testing.T) {
 	for _, p := range existing {
 		if p.IsDefault {
 			// The active profile cannot be deleted directly; clear the flag first.
-			_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, p.ID)
+			_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=?1`, p.ID)
 		}
 		_ = m.pg.DeleteProfile(p.ID)
 	}
@@ -39,7 +39,7 @@ func TestChatUnavailableReasonDistinguishesStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, id)
+		_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=?1`, id)
 		_ = m.pg.DeleteProfile(id)
 	})
 

@@ -23,8 +23,8 @@ func TestAssetUpsertWaitsForCompanyScopeMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM assets WHERE domain = $1`, domain)
-		_, _ = d.Exec(`DELETE FROM companies WHERE id IN ($1,$2)`, oldCompany, newCompany)
+		_, _ = d.Exec(`DELETE FROM assets WHERE domain = ?1`, domain)
+		_, _ = d.Exec(`DELETE FROM companies WHERE id IN (?1,?2)`, oldCompany, newCompany)
 	})
 	if added, _, invalid, validationErrors, err := companies.AddScopeInputsChecked(oldCompany, []ScopeInput{
 		{Kind: "domain", Value: domain},
@@ -40,7 +40,7 @@ func TestAssetUpsertWaitsForCompanyScopeMutation(t *testing.T) {
 	if err := lockCompanyScopeMutation(mutation); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mutation.Exec(`DELETE FROM company_scope WHERE company_id=$1 AND kind='domain' AND domain=$2`, oldCompany, domain); err != nil {
+	if _, err := mutation.Exec(`DELETE FROM company_scope WHERE company_id=?1 AND kind='domain' AND domain=?2`, oldCompany, domain); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := insertScopeRuleTx(mutation, newCompany, ParsedScope{
@@ -80,7 +80,7 @@ func TestAssetUpsertWaitsForCompanyScopeMutation(t *testing.T) {
 		t.Fatal(got.err)
 	}
 	var companyID *int64
-	if err := d.QueryRow(`SELECT company_id FROM assets WHERE id=$1`, got.id).Scan(&companyID); err != nil {
+	if err := d.QueryRow(`SELECT company_id FROM assets WHERE id=?1`, got.id).Scan(&companyID); err != nil {
 		t.Fatal(err)
 	}
 	if companyID == nil || *companyID != newCompany {
@@ -109,8 +109,8 @@ func TestResolveAndRecomputeUseStableCompanyIDTieBreak(t *testing.T) {
 	icp := fmt.Sprintf("ICP-TIE-%d", stamp)
 	appName := fmt.Sprintf("Tie Break App %d", stamp)
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM assets WHERE domain=$1 OR ip=$2 OR app_name=$3`, domain, ip, appName)
-		_, _ = d.Exec(`DELETE FROM companies WHERE id IN ($1,$2)`, first, second)
+		_, _ = d.Exec(`DELETE FROM assets WHERE domain=?1 OR ip=?2 OR app_name=?3`, domain, ip, appName)
+		_, _ = d.Exec(`DELETE FROM companies WHERE id IN (?1,?2)`, first, second)
 	})
 
 	rules := []ScopeInput{
@@ -156,7 +156,7 @@ func TestResolveAndRecomputeUseStableCompanyIDTieBreak(t *testing.T) {
 		t.Helper()
 		for _, id := range []int64{rootID, ipID, appID} {
 			var got *int64
-			if err := d.QueryRow(`SELECT company_id FROM assets WHERE id=$1`, id).Scan(&got); err != nil {
+			if err := d.QueryRow(`SELECT company_id FROM assets WHERE id=?1`, id).Scan(&got); err != nil {
 				t.Fatal(err)
 			}
 			if got == nil || *got != want {
@@ -208,7 +208,7 @@ func TestCompanyScopeLimitsAndCheckedErrors(t *testing.T) {
 		t.Fatalf("append past the old cap: added=%d err=%v", added, err)
 	}
 	var count int
-	if err := d.QueryRow(`SELECT count(*) FROM company_scope WHERE company_id=$1`, companyID).Scan(&count); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM company_scope WHERE company_id=?1`, companyID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != bulk+1 {

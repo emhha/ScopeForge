@@ -13,12 +13,12 @@ const directTaskContextCTE = `
 context_tasks AS (
   SELECT t.id AS task_id, t.exploration_id
   FROM tasks t
-  WHERE t.id=$1 AND t.deleted_at IS NULL
+  WHERE t.id=?1 AND t.deleted_at IS NULL
   UNION ALL
   SELECT source.id, source.exploration_id
   FROM task_relations relation
   JOIN tasks source ON source.id=relation.source_task_id AND source.deleted_at IS NULL
-  WHERE relation.task_id=$1
+  WHERE relation.task_id=?1
 )`
 
 const contextCoverageCTE = directTaskContextCTE + `,
@@ -65,12 +65,12 @@ const scopeTargetCTE = `
 context_tasks AS (
   SELECT t.id AS task_id
   FROM tasks t
-  WHERE t.id=$1 AND t.deleted_at IS NULL
+  WHERE t.id=?1 AND t.deleted_at IS NULL
   UNION ALL
   SELECT source.id
   FROM task_relations relation
   JOIN tasks source ON source.id=relation.source_task_id AND source.deleted_at IS NULL
-  WHERE relation.task_id=$1
+  WHERE relation.task_id=?1
 ),
 target AS (
   SELECT DISTINCT a.id
@@ -97,7 +97,7 @@ SELECT ts.id, ts.task_id, ts.kind, COALESCE(ts.company_id,0), COALESCE(c.name,''
 FROM task_scope ts
 JOIN context_tasks ctx ON ctx.task_id=ts.task_id
 LEFT JOIN companies c ON c.id=ts.company_id
-ORDER BY CASE WHEN ts.task_id=$1 THEN 0 ELSE 1 END, ts.id`, taskID)
+ORDER BY CASE WHEN ts.task_id=?1 THEN 0 ELSE 1 END, ts.id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (s *AssetStore) ListUntestedAssetsWithSources(taskID int64, typ string, lim
 	typeFilter := ""
 	args := []any{taskID}
 	if typ != "" {
-		typeFilter = " AND target.type = $2"
+		typeFilter = " AND target.type = ?2"
 		args = append(args, typ)
 	}
 	var total int
@@ -177,7 +177,7 @@ SELECT count(*) FROM target WHERE target.id NOT IN (SELECT asset_id FROM tested)
 	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
 SELECT target.id, target.type, target.label FROM target
 WHERE target.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+`
-ORDER BY target.id LIMIT $`+limitPosition+` OFFSET $`+offsetPosition, pageArgs...)
+ORDER BY target.id LIMIT ?`+limitPosition+` OFFSET ?`+offsetPosition, pageArgs...)
 	if err != nil {
 		return nil, total, err
 	}

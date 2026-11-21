@@ -71,7 +71,7 @@ func TestSQLiteRejectsForeignAndFutureDatabases(t *testing.T) {
 	for _, test := range []struct{ name, ddl string }{{"unrecognized", `CREATE TABLE unrelated(id INTEGER)`}, {"future", `PRAGMA application_id=1095914584; PRAGMA user_version=999`}} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "store.sqlite")
-			raw, err := sql.Open("sqlite", path)
+			raw, err := sql.Open(BusinessSQLiteDriver, path)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"modernc.org/sqlite"
+	sqlite3 "github.com/mattn/go-sqlite3"
 )
 
 // Tx reserves the SQLite writer at BEGIN IMMEDIATE. All ownership checks and
@@ -142,9 +142,9 @@ func (d *DB) Close() error {
 func IsUniqueViolation(err error) bool     { return sqliteCode(err) == 2067 || sqliteCode(err) == 1555 }
 func IsForeignKeyViolation(err error) bool { return sqliteCode(err) == 787 }
 func sqliteCode(err error) int {
-	var e *sqlite.Error
+	var e sqlite3.Error
 	if errors.As(err, &e) {
-		return e.Code()
+		return int(e.ExtendedCode)
 	}
 	return 0
 }
@@ -183,8 +183,8 @@ func openSQLite(path string) (*DB, error) {
 	if strings.Contains(uri, "?") {
 		sep = "&"
 	}
-	base := uri + sep + "_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_time_format=sqlite"
-	writer, err := sql.Open("sqlite", base+"&_txlock=immediate")
+	base := uri + sep + "_busy_timeout=10000&_foreign_keys=on&_journal_mode=WAL&_synchronous=FULL"
+	writer, err := sql.Open(BusinessSQLiteDriver, base+"&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func openSQLite(path string) (*DB, error) {
 		writer.Close()
 		return nil, fmt.Errorf("initialize SQLite schema: %w", err)
 	}
-	reader, err := sql.Open("sqlite", base+"&_txlock=deferred&_pragma=query_only(1)")
+	reader, err := sql.Open(BusinessSQLiteDriver, base+"&_txlock=deferred&_query_only=on")
 	if err != nil {
 		writer.Close()
 		return nil, err
@@ -213,7 +213,7 @@ func openSQLite(path string) (*DB, error) {
 	return d, nil
 }
 
-const sqliteSchemaVersion = 5
+const sqliteSchemaVersion = 7
 const sqliteApplicationID = 0x41525458 // Stable SQLite format identifier; retained for existing databases.
 func initializeSQLite(writer *sql.DB) error {
 	tx, err := writer.Begin()
@@ -321,6 +321,34 @@ PRAGMA user_version=4`); err != nil {
 		}
 	}
 
+	if version < 6 {
+		var present int
+		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('conversation_activities') WHERE name='metadata'`).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			if _, err = tx.Exec(`ALTER TABLE conversation_activities ADD COLUMN metadata JSON_TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata))`); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(`PRAGMA user_version=6`); err != nil {
+			return err
+		}
+	}
+	if version < 7 {
+		var present int
+		if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('llm_profiles') WHERE name='thinking_budget'`).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			if _, err = tx.Exec(`ALTER TABLE llm_profiles ADD COLUMN thinking_budget INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(`PRAGMA user_version=7`); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 

@@ -28,12 +28,12 @@ func commandFilter(expID *int64, q string) (string, []any, int) {
 	argN := 1
 
 	if expID != nil {
-		where += fmt.Sprintf(` AND u.exploration_id = $%d`, argN)
+		where += fmt.Sprintf(` AND u.exploration_id = ?%d`, argN)
 		args = append(args, *expID)
 		argN++
 	}
 	if q != "" {
-		where += fmt.Sprintf(` AND (u.tool LIKE $%d OR u.detail LIKE $%d)`, argN, argN)
+		where += fmt.Sprintf(` AND (u.tool LIKE ?%d OR u.detail LIKE ?%d)`, argN, argN)
 		args = append(args, "%"+q+"%")
 		argN++
 	}
@@ -106,7 +106,7 @@ FROM activity u
 LEFT JOIN activity r ON r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result'
 ` + where + `
 ORDER BY u.id DESC
-LIMIT $` + fmt.Sprintf("%d", argN) + ` OFFSET $` + fmt.Sprintf("%d", argN+1)
+LIMIT ?` + fmt.Sprintf("%d", argN) + ` OFFSET ?` + fmt.Sprintf("%d", argN+1)
 
 	args = append(args, size, offset)
 	rows, err := d.Query(dataQ, args...)
@@ -157,7 +157,7 @@ type LLMRecord struct {
 func (d *DB) InsertLLMRecord(r *LLMRecord) error {
 	_, err := d.Exec(`
 INSERT INTO llm_records(model, profile_name, session_id, task_id, worker, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, error, request_body, response_body, raw_request, raw_response)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`,
 		r.Model, nullIfEmpty(r.ProfileName), r.SessionID, nullIfEmpty(r.TaskID), nullIfEmpty(r.Worker),
 		r.LatencyMs, r.InputTokens, r.OutputTokens, r.CacheRead, r.CacheWrite,
 		r.Status, nullIfEmpty(r.Error), nullIfEmpty(r.RequestBody), nullIfEmpty(r.ResponseBody),
@@ -179,17 +179,17 @@ func (d *DB) ListLLMRecords(model, session, task string, page, size int) ([]LLMR
 	args := []any{}
 	argN := 1
 	if model != "" {
-		where += fmt.Sprintf(` AND model = $%d`, argN)
+		where += fmt.Sprintf(` AND model = ?%d`, argN)
 		args = append(args, model)
 		argN++
 	}
 	if session != "" {
-		where += fmt.Sprintf(` AND session_id LIKE $%d`, argN)
+		where += fmt.Sprintf(` AND session_id LIKE ?%d`, argN)
 		args = append(args, "%"+session+"%")
 		argN++
 	}
 	if task != "" {
-		where += fmt.Sprintf(` AND COALESCE(task_id,'') = $%d`, argN)
+		where += fmt.Sprintf(` AND COALESCE(task_id,'') = ?%d`, argN)
 		args = append(args, task)
 		argN++
 	}
@@ -202,7 +202,7 @@ func (d *DB) ListLLMRecords(model, session, task string, page, size int) ([]LLMR
 	dataQ := `SELECT id, ts, COALESCE(model,''), COALESCE(profile_name,''), COALESCE(session_id,''), COALESCE(task_id,''), COALESCE(worker,''),
 		COALESCE(latency_ms,0), COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(cache_read,0), COALESCE(cache_write,0),
 		COALESCE(status,''), COALESCE(error,'')
-		FROM llm_records ` + where + ` ORDER BY id DESC LIMIT $` + fmt.Sprintf("%d", argN) + ` OFFSET $` + fmt.Sprintf("%d", argN+1)
+		FROM llm_records ` + where + ` ORDER BY id DESC LIMIT ?` + fmt.Sprintf("%d", argN) + ` OFFSET ?` + fmt.Sprintf("%d", argN+1)
 	args = append(args, size, offset)
 
 	rows, err := d.Query(dataQ, args...)
@@ -264,7 +264,7 @@ WHERE COALESCE(task_id,'') <> '' GROUP BY task_id ORDER BY MAX(id) DESC`)
 // DeleteLLMRecords removes every LLM record for one exact task_id — the same
 // match the page's task picker/filter uses. Returns rows deleted.
 func (d *DB) DeleteLLMRecords(task string) (int64, error) {
-	res, err := d.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'') = $1`, task)
+	res, err := d.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'') = ?1`, task)
 	if err != nil {
 		return 0, err
 	}
@@ -278,7 +278,7 @@ func (d *DB) GetLLMRecord(id int64) (*LLMRecord, error) {
 	err := d.QueryRow(`SELECT id, ts, COALESCE(model,''), COALESCE(profile_name,''), COALESCE(session_id,''), COALESCE(task_id,''), COALESCE(worker,''),
 		COALESCE(latency_ms,0), COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(cache_read,0), COALESCE(cache_write,0),
 		COALESCE(status,''), COALESCE(error,''), request_body, response_body, raw_request, raw_response
-		FROM llm_records WHERE id=$1`, id).
+		FROM llm_records WHERE id=?1`, id).
 		Scan(&r.ID, &r.Ts, &r.Model, &r.ProfileName, &r.SessionID, &r.TaskID, &r.Worker, &r.LatencyMs,
 			&r.InputTokens, &r.OutputTokens, &r.CacheRead, &r.CacheWrite, &r.Status, &r.Error,
 			&reqBody, &respBody, &rawReq, &rawResp)

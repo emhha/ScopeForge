@@ -484,7 +484,7 @@ func (s *Server) seedOrchestrationTools() {
 			// Old catalogs predate verbose. Add only the missing property so
 			// edited parameter defaults, bindings and enable state survive upgrades.
 			property, _ := json.Marshal(t.Declaration().InputSchema.Properties["verbose"])
-			if _, err := s.m.PG().Exec(`UPDATE tools SET schema=json_set(schema,'$.properties.verbose',json($1)), updated_at=utc_now() WHERE key='http_request' AND system AND json_type(schema,'$.properties.verbose') IS NULL`, property); err != nil {
+			if _, err := s.m.PG().Exec(`UPDATE tools SET schema=json_set(schema,'$.properties.verbose',json(?1)), updated_at=utc_now() WHERE key='http_request' AND system AND json_type(schema,'$.properties.verbose') IS NULL`, property); err != nil {
 				log.Printf("[network] add HTTP verbose parameter: %v", err)
 			}
 		}

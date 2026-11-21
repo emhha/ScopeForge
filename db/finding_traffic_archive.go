@@ -51,7 +51,7 @@ func restoreFindingTrafficTx(tx *Tx, snapshot *TaskArchiveSnapshot) error {
 			return errors.New("invalid archived evidence binding")
 		}
 		var owned bool
-		if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM findings WHERE id=$1 AND task_id=$2)`, fid, snapshot.TaskID).Scan(&owned); err != nil {
+		if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM findings WHERE id=?1 AND task_id=?2)`, fid, snapshot.TaskID).Scan(&owned); err != nil {
 			return err
 		}
 		if !owned {

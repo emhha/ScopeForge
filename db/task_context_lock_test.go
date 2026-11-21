@@ -49,7 +49,7 @@ func TestTaskLLMProfileMutationsWaitForSQLiteWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer replaceBlocker.Rollback()
-	if _, err := replaceBlocker.Exec(`SELECT id FROM tasks WHERE id=$1 `, task.ID); err != nil {
+	if _, err := replaceBlocker.Exec(`SELECT id FROM tasks WHERE id=?1 `, task.ID); err != nil {
 		replaceBlocker.Rollback()
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestTaskLLMProfileMutationsWaitForSQLiteWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer deleteBlocker.Rollback()
-	if _, err := deleteBlocker.Exec(`SELECT id FROM tasks WHERE id=$1 `, task.ID); err != nil {
+	if _, err := deleteBlocker.Exec(`SELECT id FROM tasks WHERE id=?1 `, task.ID); err != nil {
 		deleteBlocker.Rollback()
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestDeleteProfileSerializesNonTaskReferences(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=$1 `, agent.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=?1 `, agent.ID); err != nil {
 			t.Fatal(err)
 		}
 		deleteDB, deletePID := openSingleConnectionTestDB(t, dsn)
@@ -193,7 +193,7 @@ func TestDeleteProfileSerializesNonTaskReferences(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=$1 `, conversation.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=?1 `, conversation.ID); err != nil {
 			t.Fatal(err)
 		}
 		deleteDB, deletePID := openSingleConnectionTestDB(t, dsn)
@@ -249,7 +249,7 @@ func TestNonTaskProfileMutationsWaitForSQLiteWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=$1 `, agent.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM agents WHERE id=?1 `, agent.ID); err != nil {
 			t.Fatal(err)
 		}
 		mutationDB, mutationPID := openSingleConnectionTestDB(t, dsn)
@@ -297,7 +297,7 @@ func TestNonTaskProfileMutationsWaitForSQLiteWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer blocker.Rollback()
-		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=$1 `, conversation.ID); err != nil {
+		if _, err := blocker.Exec(`SELECT id FROM conversations WHERE id=?1 `, conversation.ID); err != nil {
 			t.Fatal(err)
 		}
 		mutationDB, mutationPID := openSingleConnectionTestDB(t, dsn)
@@ -334,7 +334,7 @@ func TestCreateConversationAndDeleteProfileDoNotDeadlock(t *testing.T) {
 	}
 	title := fmt.Sprintf("conversation create race %d", suffix)
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM conversations WHERE title=$1`, title)
+		_, _ = d.Exec(`DELETE FROM conversations WHERE title=?1`, title)
 		_ = d.DeleteProfile(profileID)
 	})
 
@@ -343,7 +343,7 @@ func TestCreateConversationAndDeleteProfileDoNotDeadlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer profileBlocker.Rollback()
-	if _, err := profileBlocker.Exec(`SELECT id FROM llm_profiles WHERE id=$1 `, profileID); err != nil {
+	if _, err := profileBlocker.Exec(`SELECT id FROM llm_profiles WHERE id=?1 `, profileID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -385,7 +385,7 @@ func TestCreateConversationAndDeleteProfileDoNotDeadlock(t *testing.T) {
 		t.Fatalf("delete profile during conversation creation: %v", err)
 	}
 	var persisted int
-	if err := d.QueryRow(`SELECT count(*) FROM conversations WHERE title=$1`, title).Scan(&persisted); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM conversations WHERE title=?1`, title).Scan(&persisted); err != nil {
 		t.Fatal(err)
 	}
 	if created.err == nil {
@@ -431,12 +431,12 @@ func TestDeleteProfileObservesReferenceCommittedBeforeWriterAcquisition(t *testi
 	}
 	defer referenceTx.Rollback()
 	if _, err := referenceTx.Exec(`UPDATE tasks
-SET llm_profile_id=$2, active_llm_profile_id=$2
-WHERE id=$1`, task.ID, profileID); err != nil {
+SET llm_profile_id=?2, active_llm_profile_id=?2
+WHERE id=?1`, task.ID, profileID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := referenceTx.Exec(`INSERT INTO task_llm_profiles(task_id, profile_id, position)
-VALUES ($1,$2,0)`, task.ID, profileID); err != nil {
+VALUES (?1,?2,0)`, task.ID, profileID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -467,12 +467,12 @@ VALUES ($1,$2,0)`, task.ID, profileID); err != nil {
 // rather than only the in-process writer pool. Schema is already initialized.
 func openSingleConnectionTestDB(t *testing.T, path string) (*DB, int) {
 	t.Helper()
-	writer, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_txlock=immediate")
+	writer, err := sql.Open(BusinessSQLiteDriver, "file:"+path+"?_busy_timeout=10000&_foreign_keys=on&_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
 	}
 	writer.SetMaxOpenConns(1)
-	reader, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_txlock=deferred")
+	reader, err := sql.Open(BusinessSQLiteDriver, "file:"+path+"?_busy_timeout=10000&_foreign_keys=on&_txlock=deferred")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +494,7 @@ func assertProfilesUnlocked(t *testing.T, d *DB, profileIDs ...int64) {
 	// WAL readers must remain usable while a different writer owns BEGIN IMMEDIATE.
 	for _, id := range profileIDs {
 		var got int64
-		if err := d.QueryRow(`SELECT id FROM llm_profiles WHERE id=$1`, id).Scan(&got); err != nil {
+		if err := d.QueryRow(`SELECT id FROM llm_profiles WHERE id=?1`, id).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
 	}

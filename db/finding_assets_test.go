@@ -10,7 +10,7 @@ import (
 // t.Cleanup):t.Cleanup 跑在测试函数返回之后,那时 defer d.Close() 已经把连接关了,
 // 清理会静默失败并把脏数据留在共享开发库里。
 func cleanupTreeFixtures(d *DB, taskID int64, rootDomains ...string) {
-	d.Exec(`DELETE FROM assets WHERE root_domain IN (SELECT value FROM json_each($1))`, rootDomains) //nolint:errcheck
+	d.Exec(`DELETE FROM assets WHERE root_domain IN (SELECT value FROM json_each(?1))`, rootDomains) //nolint:errcheck
 	d.DeleteFindingsByTask(taskID)                                                                   //nolint:errcheck
 }
 
@@ -19,7 +19,7 @@ func seedTreeAsset(t *testing.T, d *DB, kind string, cols map[string]any) int64 
 	t.Helper()
 	names := []string{"type"}
 	values := []any{kind}
-	placeholders := []string{"$1"}
+	placeholders := []string{"?1"}
 	for k, v := range cols {
 		values = append(values, v)
 		names = append(names, k)

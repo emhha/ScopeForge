@@ -41,7 +41,7 @@ func newTestChannel(t *testing.T, d *DB, kind, mode string, filter string) *Noti
 	if err != nil {
 		t.Fatalf("建渠道失败: %v", err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM notification_channels WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM notification_channels WHERE id=?1`, id) })
 	ch.ID = id
 	return ch
 }
@@ -55,7 +55,7 @@ func addTestEvent(t *testing.T, d *DB, kind string, findingID int64, snap notify
 	if err != nil {
 		t.Fatalf("写事件失败: %v", err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM notification_events WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM notification_events WHERE id=?1`, id) })
 	return id
 }
 
@@ -72,11 +72,11 @@ func TestNotificationAssetNamesResolvesAndPreservesOrder(t *testing.T) {
 		}
 		return id
 	}
-	domID := insertAsset(`INSERT INTO assets(type, domain) VALUES('subdomain',$1) RETURNING id`, "a.example.com")
-	ipID := insertAsset(`INSERT INTO assets(type, ip) VALUES('ip',$1) RETURNING id`, "10.1.2.3")
-	svcID := insertAsset(`INSERT INTO assets(type, url) VALUES('service',$1) RETURNING id`, "https://a.example.com/admin")
+	domID := insertAsset(`INSERT INTO assets(type, domain) VALUES('subdomain',?1) RETURNING id`, "a.example.com")
+	ipID := insertAsset(`INSERT INTO assets(type, ip) VALUES('ip',?1) RETURNING id`, "10.1.2.3")
+	svcID := insertAsset(`INSERT INTO assets(type, url) VALUES('service',?1) RETURNING id`, "https://a.example.com/admin")
 	t.Cleanup(func() {
-		d.Exec(`DELETE FROM assets WHERE id IN ($1,$2,$3)`, domID, ipID, svcID)
+		d.Exec(`DELETE FROM assets WHERE id IN (?1,?2,?3)`, domID, ipID, svcID)
 	})
 
 	// 传入顺序刻意乱序，且含一个不存在的 id。
@@ -180,7 +180,7 @@ func TestFanOutRoutesEventsByFilter(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var exists bool
-			if err := d.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM notification_deliveries WHERE event_id=$1 AND channel_id=$2)`,
+			if err := d.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM notification_deliveries WHERE event_id=?1 AND channel_id=?2)`,
 				tc.eventID, tc.channel).Scan(&exists); err != nil {
 				t.Fatal(err)
 			}
@@ -217,7 +217,7 @@ func TestFanOutMarksEventsWithNoMatchingChannel(t *testing.T) {
 		t.Fatalf("不该产生投递，得到 %d", deliveries)
 	}
 	var fanned bool
-	if err := d.QueryRowContext(ctx, `SELECT fanned_out FROM notification_events WHERE id=$1`, ev).Scan(&fanned); err != nil {
+	if err := d.QueryRowContext(ctx, `SELECT fanned_out FROM notification_events WHERE id=?1`, ev).Scan(&fanned); err != nil {
 		t.Fatal(err)
 	}
 	if !fanned {
@@ -291,7 +291,7 @@ func TestClaimExpiredLeaseRecovers(t *testing.T) {
 		t.Fatalf("首次领取失败: %v (%d 条)", err, len(first))
 	}
 	// 把租约手动推到过去，模拟「租约已过期」。
-	if _, err := d.Exec(`UPDATE notification_deliveries SET next_attempt_at = datetime(utc_now(), '-1 minute') WHERE id=$1`, first[0].ID); err != nil {
+	if _, err := d.Exec(`UPDATE notification_deliveries SET next_attempt_at = datetime(utc_now(), '-1 minute') WHERE id=?1`, first[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	second, err := d.ClaimRealtimeDeliveries(ctx, ch.ID, 10, time.Minute)
@@ -319,7 +319,7 @@ func TestClaimSkipsDisabledChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	var state string
-	if err := d.QueryRow(`SELECT state FROM notification_deliveries WHERE channel_id=$1`, ch.ID).Scan(&state); err != nil {
+	if err := d.QueryRow(`SELECT state FROM notification_deliveries WHERE channel_id=?1`, ch.ID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != NotifyStateSkipped {
@@ -355,7 +355,7 @@ func TestDigestBatchDueAndStableBatchID(t *testing.T) {
 	}
 
 	// 把三条投递的创建时间一起推老，模拟一个攒够周期的批次。
-	if _, err := d.Exec(`UPDATE notification_deliveries SET created_at = datetime(utc_now(), '-40 minutes') WHERE channel_id=$1`, ch.ID); err != nil {
+	if _, err := d.Exec(`UPDATE notification_deliveries SET created_at = datetime(utc_now(), '-40 minutes') WHERE channel_id=?1`, ch.ID); err != nil {
 		t.Fatal(err)
 	}
 	due, err = d.DigestBatchDue(ctx, ch.ID, 30*time.Minute)
@@ -397,7 +397,7 @@ func TestDigestBatchDueAndStableBatchID(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 把租约推到过去，模拟退避时间已到。
-	if _, err := d.Exec(`UPDATE notification_deliveries SET next_attempt_at = datetime(utc_now(), '-1 minute') WHERE channel_id=$1`, ch.ID); err != nil {
+	if _, err := d.Exec(`UPDATE notification_deliveries SET next_attempt_at = datetime(utc_now(), '-1 minute') WHERE channel_id=?1`, ch.ID); err != nil {
 		t.Fatal(err)
 	}
 	reclaimed, err := d.ClaimDigestBatch(ctx, ch.ID, MaxDigestBatchSize, time.Minute)
@@ -430,7 +430,7 @@ func TestDeliveryStateTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var state, lastErr string
-	if err := d.QueryRow(`SELECT state, last_error FROM notification_deliveries WHERE id=$1`, id).Scan(&state, &lastErr); err != nil {
+	if err := d.QueryRow(`SELECT state, last_error FROM notification_deliveries WHERE id=?1`, id).Scan(&state, &lastErr); err != nil {
 		t.Fatal(err)
 	}
 	if state != NotifyStatePending || lastErr != "网络抖动" {
@@ -440,7 +440,7 @@ func TestDeliveryStateTransitions(t *testing.T) {
 	if err := d.FailDeliveries(ctx, []int64{id}, "重试耗尽"); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT state FROM notification_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
+	if err := d.QueryRow(`SELECT state FROM notification_deliveries WHERE id=?1`, id).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != NotifyStateFailed {
@@ -453,7 +453,7 @@ func TestDeliveryStateTransitions(t *testing.T) {
 	}
 	var attempts int
 	var next time.Time
-	if err := d.QueryRow(`SELECT state, attempts, next_attempt_at FROM notification_deliveries WHERE id=$1`, id).Scan(&state, &attempts, &next); err != nil {
+	if err := d.QueryRow(`SELECT state, attempts, next_attempt_at FROM notification_deliveries WHERE id=?1`, id).Scan(&state, &attempts, &next); err != nil {
 		t.Fatal(err)
 	}
 	if state != NotifyStatePending || attempts != 0 {
@@ -536,11 +536,11 @@ func TestSetFindingStatusWithNotifyOnlyEmitsOnRealChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM notification_events WHERE finding_id=$1`, f.FindingID) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM notification_events WHERE finding_id=?1`, f.FindingID) })
 
 	// 落库时已登记一条 finding_created 事件，先把它数出来作为基线。
 	var base int
-	if err := d.QueryRow(`SELECT count(*) FROM notification_events WHERE finding_id=$1`, f.FindingID).Scan(&base); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM notification_events WHERE finding_id=?1`, f.FindingID).Scan(&base); err != nil {
 		t.Fatal(err)
 	}
 	if base < 1 {
@@ -571,7 +571,7 @@ func TestSetFindingStatusWithNotifyOnlyEmitsOnRealChange(t *testing.T) {
 		t.Fatalf("from 应为 pending，得到 %q", from)
 	}
 	var snapshot []byte
-	if err := d.QueryRow(`SELECT snapshot FROM notification_events WHERE finding_id=$1 AND kind=$2`,
+	if err := d.QueryRow(`SELECT snapshot FROM notification_events WHERE finding_id=?1 AND kind=?2`,
 		f.FindingID, notify.EventFindingStatusChanged).Scan(&snapshot); err != nil {
 		t.Fatalf("未找到状态变更事件: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestSetFindingStatusWithNotifyOnlyEmitsOnRealChange(t *testing.T) {
 		t.Fatalf("快照缺少渲染字段: %+v", snap)
 	}
 	var status string
-	if err := d.QueryRow(`SELECT status FROM findings WHERE id=$1`, f.FindingID).Scan(&status); err != nil {
+	if err := d.QueryRow(`SELECT status FROM findings WHERE id=?1`, f.FindingID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "fixed" {
@@ -641,7 +641,7 @@ func TestNotificationChannelCRUDRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("新建失败: %v", err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM notification_channels WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM notification_channels WHERE id=?1`, id) })
 
 	got, err := d.NotificationChannelByID(ctx, id)
 	if err != nil {
@@ -716,7 +716,7 @@ func TestSaveNotificationChannelKeepsExplicitZeroRate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM notification_channels WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM notification_channels WHERE id=?1`, id) })
 	got, err := d.NotificationChannelByID(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -749,7 +749,7 @@ func TestDeleteChannelCascadesDeliveries(t *testing.T) {
 		t.Fatal(err)
 	}
 	var before int
-	if err := d.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=$1`, ch.ID).Scan(&before); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=?1`, ch.ID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if before == 0 {
@@ -759,14 +759,14 @@ func TestDeleteChannelCascadesDeliveries(t *testing.T) {
 		t.Fatal(err)
 	}
 	var after int
-	if err := d.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=$1`, ch.ID).Scan(&after); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=?1`, ch.ID).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
 	if after != 0 {
 		t.Fatalf("渠道删除后其投递应级联删除，仍有 %d 条", after)
 	}
 	var evExists bool
-	if err := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM notification_events WHERE id=$1)`, ev).Scan(&evExists); err != nil {
+	if err := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM notification_events WHERE id=?1)`, ev).Scan(&evExists); err != nil {
 		t.Fatal(err)
 	}
 	if !evExists {
@@ -824,7 +824,7 @@ func TestFinishFindingRetestEmitsStatusChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM notification_events WHERE finding_id=$1`, f.FindingID) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM notification_events WHERE finding_id=?1`, f.FindingID) })
 
 	// 建一条复测记录并直接推到完成态。
 	rt, _, _, err := d.CreateFindingRetest(ctx, f.FindingID, "复核")
@@ -846,7 +846,7 @@ func TestFinishFindingRetestEmitsStatusChange(t *testing.T) {
 	}
 
 	var status string
-	if err := d.QueryRow(`SELECT status FROM findings WHERE id=$1`, f.FindingID).Scan(&status); err != nil {
+	if err := d.QueryRow(`SELECT status FROM findings WHERE id=?1`, f.FindingID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != FindingFixed {
@@ -855,7 +855,7 @@ func TestFinishFindingRetestEmitsStatusChange(t *testing.T) {
 
 	// 关键断言：必须有一条状态变更事件，且 from/to 正确。
 	var snapshot []byte
-	err = d.QueryRow(`SELECT snapshot FROM notification_events WHERE finding_id=$1 AND kind=$2 ORDER BY id DESC LIMIT 1`,
+	err = d.QueryRow(`SELECT snapshot FROM notification_events WHERE finding_id=?1 AND kind=?2 ORDER BY id DESC LIMIT 1`,
 		f.FindingID, notify.EventFindingStatusChanged).Scan(&snapshot)
 	if err != nil {
 		t.Fatalf("复测判已修复应登记状态变更推送事件（否则配了 on_status_change 的渠道收不到）: %v", err)

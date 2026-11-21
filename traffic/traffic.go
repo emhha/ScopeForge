@@ -35,7 +35,7 @@ import (
 	"github.com/emhha/netloom"
 	"github.com/emhha/netloom/mitm"
 	"github.com/emhha/scopeforge/db"
-	_ "modernc.org/sqlite"
+	_ "github.com/mattn/go-sqlite3"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -188,9 +188,9 @@ func Open(dir, addr string) (*Traffic, error) {
 	index := filepath.Join(dir, "_index", "index.sqlite")
 	dsn := index
 	if !strings.ContainsRune(index, '?') {
-		dsn = "file:" + index + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+		dsn = "file:" + index + "?_busy_timeout=5000&_journal_mode=WAL"
 	}
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -1722,7 +1722,15 @@ func (t *Traffic) reclaimChunk(ctx context.Context, conn *sql.Conn, merges *int)
 		return progressed, nil
 	}
 	// The budget is a constant and PRAGMA arguments cannot be bound as parameters.
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA incremental_vacuum(%d)`, reclaimChunkPages)); err != nil {
+	// SQLite implements incremental_vacuum as a row-producing statement. Drain
+	// every step: Exec can stop at its first SQLITE_ROW with the mattn driver.
+	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`PRAGMA incremental_vacuum(%d)`, reclaimChunkPages))
+	if err != nil {
+		return false, fmt.Errorf("回收索引空闲页: %w", err)
+	}
+	for rows.Next() {
+	}
+	if err = errors.Join(rows.Err(), rows.Close()); err != nil {
 		return false, fmt.Errorf("回收索引空闲页: %w", err)
 	}
 	if err := conn.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&after); err != nil {

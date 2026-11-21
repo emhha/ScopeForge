@@ -40,7 +40,7 @@ func OpenRetrieval(dir string, pg *db.DB) (*Retrieval, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	k := &Retrieval{pg: pg, dir: path, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), components: semantic.NewInstaller(filepath.Join(path, "components"), semantic.FindCatalog())}
 	k.semantic = newSemanticIndex(path, k.components)
-	cache, err := sql.Open("sqlite", filepath.Join(path, "embeddings.db"))
+	cache, err := sql.Open("sqlite3", filepath.Join(path, "embeddings.db"))
 	if err != nil {
 		cancel()
 		return nil, err

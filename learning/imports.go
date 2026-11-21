@@ -264,7 +264,7 @@ func (k *Knowledge) CancelImport(id string) error {
 	}
 	if k.activeDoc != "" {
 		var batch string
-		_ = k.pg.QueryRow(`SELECT import_id FROM knowledge_documents WHERE id=$1`, k.activeDoc).Scan(&batch)
+		_ = k.pg.QueryRow(`SELECT import_id FROM knowledge_documents WHERE id=?1`, k.activeDoc).Scan(&batch)
 		if batch == id && k.activeCancel != nil {
 			k.activeCancel()
 		}

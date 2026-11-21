@@ -16,7 +16,7 @@ func TestTokenStatsBySessionUsesCompleteIntentHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	store := d.Exploration(expID)
 
 	intentID, err := store.AddIntent(map[string]any{"summary": "worker session"}, 1, nil, "planner")
@@ -32,7 +32,7 @@ func TestTokenStatsBySessionUsesCompleteIntentHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, otherExpID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, otherExpID)
 	foreignIntentID, err := d.Exploration(otherExpID).AddIntent(map[string]any{"summary": "foreign worker"}, 1, nil, "planner")
 	if err != nil {
 		t.Fatal(err)

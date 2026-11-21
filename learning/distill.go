@@ -158,7 +158,7 @@ func (m *Memories) distill(ctx context.Context, id int64, mdl model.Model, autom
 		if err := m.store.AddMemory(ctx, globalKey, text, []string{"experience"}, memory.WithMetadata(&memory.Metadata{Kind: memory.KindFact})); err != nil {
 			return nil, err
 		}
-		if _, err := m.pg.Exec(`INSERT INTO memory_promotions(task_id,content) VALUES($1,$2)`, id, text); err != nil {
+		if _, err := m.pg.Exec(`INSERT INTO memory_promotions(task_id,content) VALUES(?1,?2)`, id, text); err != nil {
 			return nil, err
 		}
 	}

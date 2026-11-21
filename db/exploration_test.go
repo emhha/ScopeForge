@@ -16,7 +16,7 @@ func TestExplorationFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID) // cascades nodes/edges/activity
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID) // cascades nodes/edges/activity
 	es := d.Exploration(expID)
 
 	// goal node + two intents
@@ -127,7 +127,7 @@ func TestIntentPauseResumeAndCancelCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	es := d.Exploration(expID)
 
 	assetID, err := d.Assets().UpsertRootDomain(UpsertRootDomainReq{
@@ -239,12 +239,12 @@ func TestIntentPauseResumeAndCancelCleanup(t *testing.T) {
 			t.Fatalf("query count=%d, want %d: %s", got, want, query)
 		}
 	}
-	assertCount(`SELECT COUNT(*) FROM findings WHERE id=$1`, 0, findingRowID)
-	assertCount(`SELECT COUNT(*) FROM activity WHERE id=$1`, 0, activityID)
-	assertCount(`SELECT COUNT(*) FROM activity WHERE id=$1`, 1, keptActivityID)
-	assertCount(`SELECT COUNT(*) FROM exploration_edges WHERE exploration_id=$1 AND (src_id=$2 OR dst_id=$2)`, 0, expID, intentID)
-	assertCount(`SELECT COUNT(*) FROM exploration_anchors WHERE node_id=$1`, 0, directFact)
-	assertCount(`SELECT COUNT(*) FROM assets WHERE id=$1`, 1, assetID)
+	assertCount(`SELECT COUNT(*) FROM findings WHERE id=?1`, 0, findingRowID)
+	assertCount(`SELECT COUNT(*) FROM activity WHERE id=?1`, 0, activityID)
+	assertCount(`SELECT COUNT(*) FROM activity WHERE id=?1`, 1, keptActivityID)
+	assertCount(`SELECT COUNT(*) FROM exploration_edges WHERE exploration_id=?1 AND (src_id=?2 OR dst_id=?2)`, 0, expID, intentID)
+	assertCount(`SELECT COUNT(*) FROM exploration_anchors WHERE node_id=?1`, 0, directFact)
+	assertCount(`SELECT COUNT(*) FROM assets WHERE id=?1`, 1, assetID)
 }
 
 // TestNodesPageQueryMatchesID verifies the 播报板 search filters on node id (both
@@ -260,7 +260,7 @@ func TestNodesPageQueryMatchesID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	es := d.Exploration(expID)
 
 	target, err := es.AddNode("fact", map[string]any{"summary": "needle-alpha"}, 0, "confirmed", "worker-a", nil)

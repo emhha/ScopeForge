@@ -155,6 +155,10 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	if err := os.MkdirAll(filepath.Dir(streamPath), archiveDirMode); err != nil {
 		return err
 	}
+	// Rebuild derived snapshots after a recovered staging attempt.
+	if err := os.Remove(streamPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	streamFile, err := os.OpenFile(streamPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, archiveFileMode)
 	if err != nil {
 		return err
@@ -172,6 +176,11 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	if snapshot.ExplorationID != task.ExplorationID {
 		return errors.New("任务探索记录在归档快照期间发生变化")
 	}
+	count, err := s.m.exportNativeSessions(s.ctx, filepath.Join(fileStage.payload, nativeSessionArchiveFile), snapshot.ExplorationID)
+	if err != nil {
+		return fmt.Errorf("archive native sessions: %w", err)
+	}
+	snapshot.DataCounts["native_sessions"] = count
 	if s.m.traffic != nil && len(snapshot.Hosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", 38)
 		trafficCount, err := s.m.traffic.ExportHosts(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
@@ -322,11 +331,19 @@ func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb
 		return err
 	}
 	databaseRestored := false
+	undoSessions := func() {}
 	defer func() {
 		if !databaseRestored {
+			undoSessions()
 			runErr = errors.Join(runErr, files.rollback())
 		}
 	}()
+	if count, present := snapshot.DataCounts["native_sessions"]; present {
+		undoSessions, err = s.m.restoreNativeSessions(s.ctx, filepath.Join(extracted, nativeSessionArchiveFile), snapshot.ExplorationID, count)
+		if err != nil {
+			return fmt.Errorf("restore native sessions: %w", err)
+		}
+	}
 	_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "restore_database", 70)
 	var warnings []string
 	if llmRecordsFile != nil {

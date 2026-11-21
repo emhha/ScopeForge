@@ -31,11 +31,11 @@ func (d *DB) sideParent(ctx context.Context, p sidequestion.Parent) error {
 	var id int64
 	var err error
 	if p.ConversationID > 0 {
-		err = d.QueryRowContext(ctx, `SELECT id FROM conversations WHERE id=$1`, p.ConversationID).Scan(&id)
+		err = d.QueryRowContext(ctx, `SELECT id FROM conversations WHERE id=?1`, p.ConversationID).Scan(&id)
 	} else {
-		err = d.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id=$1 AND exploration_id=$2 AND deleted_at IS NULL AND archived_at IS NULL`, p.TaskID, p.ExplorationID).Scan(&id)
+		err = d.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id=?1 AND exploration_id=?2 AND deleted_at IS NULL AND archived_at IS NULL`, p.TaskID, p.ExplorationID).Scan(&id)
 		if err == nil && p.IntentID > 0 {
-			err = d.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state NOT IN ('stopped','deleted')`, p.IntentID, p.ExplorationID).Scan(&id)
+			err = d.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE id=?1 AND exploration_id=?2 AND kind='intent' AND state NOT IN ('stopped','deleted')`, p.IntentID, p.ExplorationID).Scan(&id)
 		}
 	}
 	if errors.Is(err, sql.ErrNoRows) {

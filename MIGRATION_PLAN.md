@@ -12,12 +12,12 @@
 
 - [x] Make：默认构建内嵌前端程序；后端、前端、开发、测试、清理入口；复用前端产物交叉编译与 zip 打包。发布工作流使用相同 Make 目标。
 - [x] SQLite：删除 PostgreSQL 驱动、DDL 和专有查询；配置为数据库文件。默认 `-data/scopeforge.sqlite`，`SCOPEFORGE_DB_PATH` 优先，配置内相对路径相对配置文件解析。旧 PostgreSQL 配置显式拒绝，已有数据不自动导入。
-- [x] 并发与数据：modernc SQLite，WAL、外键、busy_timeout、FULL 同步；读池和单写连接，写事务 `BEGIN IMMEDIATE`。数组使用 JSON，IP/CIDR 使用 `net/netip`，归档在 Go 中投影和还原。数据库测试必须使用临时 SQLite，初始化失败不跳过。
+- [x] 并发与数据：mattn/go-sqlite3（CGO），WAL、外键、busy_timeout、FULL 同步；读池和单写连接，写事务 `BEGIN IMMEDIATE`。数组使用 JSON，IP/CIDR 使用 `net/netip`，归档在 Go 中投影和还原。数据库测试必须使用临时 SQLite，初始化失败不跳过。
 - [x] 原生运行：删除 norma 模块和运行时，不提供兼容层或本地替代模块。角色直接使用原生 `model.Model`、`tool.CallableTool`、`LLMAgent` 和 `Runner`；业务配置与审计适配保持在应用边界。删除旧 noa 后端、API 和 UI 设置。
 - [x] 模型与工具：原生 OpenAI Chat、Responses、Anthropic；保留代理、配额识别、输出前重试与供应商切换。输出后不重放。原生 hostexec、file、todo、skills 与 MCP 工具，业务工具实现原生接口。工具回调先补默认参数并校验 schema，再审批，再执行；保留拦截审计和用量统计。
-- [x] Session：Manager 共享 `session/inmemory`，TTL 24 小时；Runner 摘要和待办均在内存。摘要通过原生动态 summarizer 使用当前模型，达到上下文窗口约 2/3 时生成。对话/任务删除或归档时清理内存会话，Manager 关闭时释放。
+- [x] Session：Manager 共享原生 `session/sqlite`，独立 `sessions.sqlite`，事件同步落盘，不设置 TTL 或事件截断；摘要和待办状态随会话保存。原生动态 summarizer 使用当前模型，达到上下文窗口约 2/3 时生成摘要。对话/任务删除时清理对应会话，任务归档保留其原生数据库快照。
 - [x] 旁路问答：完整 snapshot、历史和幂等状态仅保存在进程内；保留 generation、序号、并发清空保护和 TTL。schema v2 删除旧旁路 session 表，归档不再导出或恢复 checkpoint。重启不会从 Activity、聊天记录或旧 transcript 还原上下文。
-- [x] Memory / Knowledge：只预留原生类型注入，默认 nil，不创建服务、不注册功能工具、不导入历史数据。
+- [x] Memory / Knowledge：已接入原生记忆与知识库功能，默认开启任务隔离记忆和抽象共享经验；关键词检索无需 Embedding，可选安装原生 SQLiteVec 与本地推理组件。见 MEMORY_KNOWLEDGE.md。
 
 业务任务、聊天展示记录、活动、审批、用量和按设置启用的 LLM 调用审计仍是 SQLite 中的业务数据；它们不充当模型 session 存储，也不作为恢复输入。
 
@@ -70,7 +70,7 @@ SQLite 实现移植并适配自本机同源项目提交 `3f7e686`；保持当前
 - `make test-web`：类型检查与 7 项测试通过。
 - `make release`、`make build-embedded VERSION=dev`、`make package VERSION=dev`：通过。
 - Linux amd64 实际启动：内嵌首页、health、管理员初始化、鉴权 API、重启后登录及正常退出全部通过；SQLite header、schema v2、完整性和无 session 表检查通过。
-- linux/arm64、darwin/amd64、darwin/arm64、windows/amd64：`CGO_ENABLED=0` 内嵌前端交叉编译通过。其他平台未在本机执行运行验证。
+- 历史纯 Go 交叉编译结果不再适用于当前构建。现已统一 CGO SQLite，发布改用各目标平台原生 runner；本机验证范围见当前变更记录，其他平台须由 CI 验证。
 - 代码及模块中无旧 SDK 依赖或运行入口；配置文件不提交，生成物不提交，初期原有脚本删除保持未暂存；后续集成提交保留并提交这些删除。
 
 ## 网络工具与命名收尾（2026-11-19）
@@ -98,3 +98,7 @@ SQLite 实现移植并适配自本机同源项目提交 `3f7e686`；保持当前
 - 后端补齐真实供应商调用摘要和实际系统提示词的延迟读取；提示词不进入轻量活动 metadata，不从审计记录恢复模型上下文。
 - SQLite v3 增加 `node_sources` 业务溯源索引，原生工具上下文仅记录实际成功写入的节点；与活动写入一并提交，归档恢复保留关联。历史数据只显示不确定的历史关联，不假造执行者。
 - 验证包括：全量 Go 测试、前端 39 项回归、原生 Runner 调用 HTTP、模型记录错误/取消状态、同名工具调用 ID 复用、SQLite v2 升级、溯源归档恢复，以及真实浏览器的连线标注与节点会话抽屉。
+
+## 原生持久化会话与模型目录
+
+模型目录以完整 JSON 快照随二进制内置，默认离线读取；仅用户点击在线更新时拉取 models.dev，结果不入库、不落盘。生产会话使用 tRPC 原生 session/sqlite，独立 sessions.sqlite，关闭异步事件写入、TTL 和事件截断，保留原生摘要。业务库仅保存页面活动与配置，活动 metadata 随 schema 迁移补齐。SQLite 参数使用原生 ?NNN 位置语法，避免切换驱动后参数按出现顺序绑定。

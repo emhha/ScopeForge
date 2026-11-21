@@ -41,7 +41,7 @@ func (s *ExplorationStore) FindingLineageSessions(nodeID int64) ([]LineageSessio
 		return out, err
 	}
 	var taskID int64
-	err = s.db.QueryRow(`SELECT id FROM tasks WHERE exploration_id=$1 AND deleted_at IS NULL ORDER BY id LIMIT 1`, s.expID).Scan(&taskID)
+	err = s.db.QueryRow(`SELECT id FROM tasks WHERE exploration_id=?1 AND deleted_at IS NULL ORDER BY id LIMIT 1`, s.expID).Scan(&taskID)
 	if err == sql.ErrNoRows {
 		return out, nil
 	}
@@ -83,14 +83,14 @@ func (s *ExplorationStore) FindingLineageSessions(nodeID int64) ([]LineageSessio
 	// Only actual node_sources links receive an exact activity deep-link.
 	// Keep the same causal scope as FindingLineage; covers is not ancestry.
 	rows, err := s.db.Query(`WITH RECURSIVE anc(id) AS (
- SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND id=$2
- UNION SELECT e.src_id FROM exploration_edges e JOIN anc ON e.dst_id=anc.id WHERE e.exploration_id=$1 AND e.rel<>'covers'
+ SELECT id FROM exploration_nodes WHERE exploration_id=?1 AND id=?2
+ UNION SELECT e.src_id FROM exploration_edges e JOIN anc ON e.dst_id=anc.id WHERE e.exploration_id=?1 AND e.rel<>'covers'
  )
  SELECT ns.node_id, ns.relation, a.id, COALESCE(a.tool_use_id,''), COALESCE(a.worker,''), COALESCE(a.main_seg,0), COALESCE(n.id,0), COALESCE(n.payload,'{}')
  FROM node_sources ns
- JOIN activity a ON a.id=ns.activity_id AND a.exploration_id=$1
- JOIN exploration_nodes output ON output.id=ns.node_id AND output.exploration_id=$1
- LEFT JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=$1 AND n.kind='intent'
+ JOIN activity a ON a.id=ns.activity_id AND a.exploration_id=?1
+ JOIN exploration_nodes output ON output.id=ns.node_id AND output.exploration_id=?1
+ LEFT JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=?1 AND n.kind='intent'
  WHERE ns.node_id IN (SELECT id FROM anc) ORDER BY a.id, ns.node_id, ns.relation`, s.expID, nodeID)
 	if err != nil {
 		return nil, err
@@ -125,7 +125,7 @@ func (s *ExplorationStore) FindingLineageSessions(nodeID int64) ([]LineageSessio
 		return nil, err
 	}
 	// Historical activity.node_id identifies the executed intent, not its output.
-	rows, err = s.db.Query(`SELECT DISTINCT n.id FROM activity a JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id AND n.kind='intent' WHERE a.exploration_id=$1 AND COALESCE(a.worker,'') NOT IN ('mainagent','planner') AND a.kind IN ('tool_use','tool_result','model_call','text','thinking','usage','result') ORDER BY n.id`, s.expID)
+	rows, err = s.db.Query(`SELECT DISTINCT n.id FROM activity a JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id AND n.kind='intent' WHERE a.exploration_id=?1 AND COALESCE(a.worker,'') NOT IN ('mainagent','planner') AND a.kind IN ('tool_use','tool_result','model_call','text','thinking','usage','result') ORDER BY n.id`, s.expID)
 	if err != nil {
 		return nil, err
 	}

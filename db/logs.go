@@ -18,7 +18,7 @@ type DBLog struct {
 func (d *DB) InsertLog(level, tag, text string) (int64, error) {
 	var id int64
 	err := d.QueryRowContext(context.Background(),
-		"INSERT INTO server_logs(level,tag,text) VALUES($1,$2,$3) RETURNING id",
+		"INSERT INTO server_logs(level,tag,text) VALUES(?1,?2,?3) RETURNING id",
 		level, tag, text,
 	).Scan(&id)
 	return id, err
@@ -30,7 +30,7 @@ func (d *DB) RecentLogs(limit int) ([]*DBLog, error) {
 		`SELECT id, created_at, level, tag, text
 		   FROM server_logs
 		  ORDER BY id DESC
-		  LIMIT $1`, limit)
+		  LIMIT ?1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -55,9 +55,9 @@ func (d *DB) ListLogsBefore(beforeID int64, limit int) ([]*DBLog, error) {
 	rows, err := d.QueryContext(context.Background(),
 		`SELECT id, created_at, level, tag, text
 		   FROM server_logs
-		  WHERE id < $1
+		  WHERE id < ?1
 		  ORDER BY id DESC
-		  LIMIT $2`, beforeID, limit)
+		  LIMIT ?2`, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}

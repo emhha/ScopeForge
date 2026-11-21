@@ -20,7 +20,7 @@ func retestDB(t *testing.T) (*DB, int64) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM conversations WHERE id IN (SELECT conversation_id FROM finding_retests WHERE finding_id=$1)`, fid)
+		_, _ = d.Exec(`DELETE FROM conversations WHERE id IN (SELECT conversation_id FROM finding_retests WHERE finding_id=?1)`, fid)
 		_, _ = d.DeleteFinding(fid)
 		d.Close()
 	})
@@ -74,10 +74,10 @@ func TestRetestAtomicDeduplicationAndHistory(t *testing.T) {
 		t.Fatalf("snapshot=%+v err=%v", full, err)
 	}
 	var messages int
-	if err := d.QueryRow(`SELECT count(*) FROM conversation_activities WHERE conversation_id=$1 AND kind='user'`, *r.ConversationID).Scan(&messages); err != nil || messages != 1 {
+	if err := d.QueryRow(`SELECT count(*) FROM conversation_activities WHERE conversation_id=?1 AND kind='user'`, *r.ConversationID).Scan(&messages); err != nil || messages != 1 {
 		t.Fatalf("messages=%d err=%v", messages, err)
 	}
-	_, _ = d.Exec(`UPDATE findings SET evidence='changed evidence' WHERE id=$1`, fid)
+	_, _ = d.Exec(`UPDATE findings SET evidence='changed evidence' WHERE id=?1`, fid)
 	full, err = d.FindingRetestForConversation(ctx, *r.ConversationID)
 	if err != nil || strings.Contains(string(full.Snapshot), "changed evidence") {
 		t.Fatal("snapshot changed", err)
@@ -156,7 +156,7 @@ func TestRetestDeletionAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	_ = d.QueryRow(`SELECT count(*) FROM finding_retests WHERE id IN ($1,$2)`, r.ID, next.ID).Scan(&count)
+	_ = d.QueryRow(`SELECT count(*) FROM finding_retests WHERE id IN (?1,?2)`, r.ID, next.ID).Scan(&count)
 	if count != 0 {
 		t.Fatal("finding deletion did not cascade")
 	}

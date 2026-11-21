@@ -41,7 +41,7 @@ func (m *Memories) QueueCheckpoint(id int64) error {
 	if task == nil {
 		return nil
 	}
-	rows, err := m.pg.Query(`SELECT summary FROM activity WHERE exploration_id=$1 AND kind='result' AND summary IS NOT NULL ORDER BY id DESC LIMIT 12`, task.ExplorationID)
+	rows, err := m.pg.Query(`SELECT summary FROM activity WHERE exploration_id=?1 AND kind='result' AND summary IS NOT NULL ORDER BY id DESC LIMIT 12`, task.ExplorationID)
 	if err != nil {
 		return err
 	}
@@ -66,7 +66,7 @@ func (m *Memories) QueueCheckpoint(id int64) error {
 		return rowErr
 	}
 	graph := []map[string]any{}
-	rows, err = m.pg.Query(`SELECT kind,state,payload FROM exploration_nodes WHERE exploration_id=$1 AND (kind IN ('fact','finding','digest') OR (kind='intent' AND state IN ('done','blocked','exhausted'))) ORDER BY id DESC LIMIT 24`, task.ExplorationID)
+	rows, err = m.pg.Query(`SELECT kind,state,payload FROM exploration_nodes WHERE exploration_id=?1 AND (kind IN ('fact','finding','digest') OR (kind='intent' AND state IN ('done','blocked','exhausted'))) ORDER BY id DESC LIMIT 24`, task.ExplorationID)
 	if err != nil {
 		return err
 	}

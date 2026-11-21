@@ -23,11 +23,12 @@ type LLMProfile struct {
 	RatePerSecond float64 `json:"rate_per_second"`
 	RatePerMinute float64 `json:"rate_per_minute"`
 	// ContextWindowK is the model's context window in K tokens, used to size
-	// compaction thresholds. 0 = use a 200K default; capped at 1000 (1M).
+	// compaction thresholds. 0 = use a 200K default; capped at 100000 (100M).
 	ContextWindowK int `json:"context_window_k"`
 	// ThinkingType 独立控制思考「开关」(thinking.type):"" = 不发送(默认);
 	// "disabled" = 显式关闭; "enabled" = 开启. 与 ReasoningEffort 解耦.
-	ThinkingType string `json:"thinking_type"`
+	ThinkingType   string `json:"thinking_type"`
+	ThinkingBudget int    `json:"thinking_budget"`
 	// ReasoningEffort 独立控制思考「强度」:"" = 不发送(默认);
 	// "low"/"medium"/"high"/"xhigh"/"max" = 对应强度. 见 agent.Config.NewProvider.
 	ReasoningEffort string `json:"reasoning_effort"`
@@ -80,8 +81,8 @@ type RetryOverride struct {
 // profileCols is the read column list (hint variant, no api key) shared by the
 // list query; profileColsKey is the same with api_key for the single-row loads.
 const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
-const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols
-const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols
+const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,COALESCE(thinking_budget,0)`
+const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,COALESCE(thinking_budget,0)`
 
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
 // 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
@@ -91,7 +92,7 @@ func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile
 		&p.MaxTokens, &p.MaxTokensField, &p.SessionHeaderKey,
 		&p.Retry.Connect.Attempts, &p.Retry.Connect.IntervalMS,
 		&p.Retry.Empty.Attempts, &p.Retry.Empty.IntervalMS,
-		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS)
+		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS, &p.ThinkingBudget)
 }
 
 func (d *DB) ListProfiles() ([]*LLMProfile, error) {
@@ -125,7 +126,7 @@ func (d *DB) ActiveProfile() (*LLMProfile, error) {
 // Used to run a task on a specific (non-default) LLM profile.
 func (d *DB) ProfileByID(id int64) (*LLMProfile, error) {
 	var p LLMProfile
-	err := scanProfile(d.QueryRow(`SELECT `+profileColsKey+` FROM llm_profiles WHERE id=$1`, id), &p.APIKey, &p)
+	err := scanProfile(d.QueryRow(`SELECT `+profileColsKey+` FROM llm_profiles WHERE id=?1`, id), &p.APIKey, &p)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -165,21 +166,21 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	r := p.Retry.Clamped()
 	if p.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,base_url,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,thinking_type,streaming,max_tokens,max_tokens_field,session_header_key,retry_connect_attempts,retry_connect_interval_ms,retry_empty_attempts,retry_empty_interval_ms,retry_stream_attempts,retry_stream_interval_ms)
-VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
+		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,base_url,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,thinking_type,streaming,max_tokens,max_tokens_field,session_header_key,retry_connect_attempts,retry_connect_interval_ms,retry_empty_attempts,retry_empty_interval_ms,retry_stream_attempts,retry_stream_interval_ms,thinking_budget)
+VALUES (?1,?2,NULLIF(?3,''),NULLIF(?4,''),?5,NULLIF(?6,''),NULLIF(?7,''),?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25) RETURNING id`,
 			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey,
-			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS).Scan(&id)
+			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ThinkingBudget).Scan(&id)
 		return id, err
 	}
 	if p.APIKey == "" {
-		_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,thinking_type=$12,streaming=$13,max_tokens=$14,max_tokens_field=$15,session_header_key=$16,retry_connect_attempts=$17,retry_connect_interval_ms=$18,retry_empty_attempts=$19,retry_empty_interval_ms=$20,retry_stream_attempts=$21,retry_stream_interval_ms=$22 WHERE id=$23`,
+		_, err := d.Exec(`UPDATE llm_profiles SET name=?1,format=?2,base_url=NULLIF(?3,''),proxy=NULLIF(?4,''),model=?5,rate_per_second=?6,rate_per_minute=?7,context_window_k=?8,reasoning_effort=?9,priority=?10,pool_exclude=?11,thinking_type=?12,streaming=?13,max_tokens=?14,max_tokens_field=?15,session_header_key=?16,retry_connect_attempts=?17,retry_connect_interval_ms=?18,retry_empty_attempts=?19,retry_empty_interval_ms=?20,retry_stream_attempts=?21,retry_stream_interval_ms=?22,thinking_budget=?24 WHERE id=?23`,
 			p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey,
-			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
+			r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID, p.ThinkingBudget)
 		return p.ID, err
 	}
-	_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format=$2,base_url=NULLIF($3,''),proxy=NULLIF($4,''),model=$5,api_key=$6,api_key_hint=$7,rate_per_second=$8,rate_per_minute=$9,context_window_k=$10,reasoning_effort=$11,priority=$12,pool_exclude=$13,thinking_type=$14,streaming=$15,max_tokens=$16,max_tokens_field=$17,session_header_key=$18,retry_connect_attempts=$19,retry_connect_interval_ms=$20,retry_empty_attempts=$21,retry_empty_interval_ms=$22,retry_stream_attempts=$23,retry_stream_interval_ms=$24 WHERE id=$25`,
+	_, err := d.Exec(`UPDATE llm_profiles SET name=?1,format=?2,base_url=NULLIF(?3,''),proxy=NULLIF(?4,''),model=?5,api_key=?6,api_key_hint=?7,rate_per_second=?8,rate_per_minute=?9,context_window_k=?10,reasoning_effort=?11,priority=?12,pool_exclude=?13,thinking_type=?14,streaming=?15,max_tokens=?16,max_tokens_field=?17,session_header_key=?18,retry_connect_attempts=?19,retry_connect_interval_ms=?20,retry_empty_attempts=?21,retry_empty_interval_ms=?22,retry_stream_attempts=?23,retry_stream_interval_ms=?24,thinking_budget=?26 WHERE id=?25`,
 		p.Name, p.Format, p.BaseURL, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.ThinkingType, p.Streaming, p.MaxTokens, p.MaxTokensField, p.SessionHeaderKey,
-		r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID)
+		r.Connect.Attempts, r.Connect.IntervalMS, r.Empty.Attempts, r.Empty.IntervalMS, r.Stream.Attempts, r.Stream.IntervalMS, p.ID, p.ThinkingBudget)
 	return p.ID, err
 }
 
@@ -231,11 +232,11 @@ func (d *DB) deleteProfile(ctx context.Context, id int64) (bool, error) {
 	// order when their chains overlap multiple tasks.
 	lockedTasks, err := lockProfileReferenceRows(ctx, tx, `SELECT t.id
 FROM tasks t
-WHERE t.llm_profile_id=$1
-   OR t.active_llm_profile_id=$1
+WHERE t.llm_profile_id=?1
+   OR t.active_llm_profile_id=?1
    OR EXISTS (
        SELECT 1 FROM task_llm_profiles x
-       WHERE x.task_id=t.id AND x.profile_id=$1
+       WHERE x.task_id=t.id AND x.profile_id=?1
    )
 ORDER BY t.id
 `, id)
@@ -243,14 +244,14 @@ ORDER BY t.id
 		return false, err
 	}
 	lockedAgents, err := lockProfileReferenceRows(ctx, tx, `SELECT id FROM agents
-WHERE llm_profile_id=$1
+WHERE llm_profile_id=?1
 ORDER BY id
 `, id)
 	if err != nil {
 		return false, err
 	}
 	lockedConversations, err := lockProfileReferenceRows(ctx, tx, `SELECT id FROM conversations
-WHERE llm_profile_id=$1
+WHERE llm_profile_id=?1
 ORDER BY id
 `, id)
 	if err != nil {
@@ -258,7 +259,7 @@ ORDER BY id
 	}
 
 	var isDefault bool
-	if err := tx.QueryRowContext(ctx, `SELECT is_default FROM llm_profiles WHERE id=$1 `, id).Scan(&isDefault); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT is_default FROM llm_profiles WHERE id=?1 `, id).Scan(&isDefault); err != nil {
 		if err == sql.ErrNoRows {
 			return false, ErrLLMProfileNotFound
 		}
@@ -281,16 +282,16 @@ ORDER BY id
 	rows, err := tx.QueryContext(ctx, `SELECT ref_kind, ref_id FROM (
 	SELECT 'task' AS ref_kind, t.id AS ref_id
 FROM tasks t
-WHERE t.llm_profile_id=$1
-   OR t.active_llm_profile_id=$1
+WHERE t.llm_profile_id=?1
+   OR t.active_llm_profile_id=?1
    OR EXISTS (
        SELECT 1 FROM task_llm_profiles x
-       WHERE x.task_id=t.id AND x.profile_id=$1
+       WHERE x.task_id=t.id AND x.profile_id=?1
    )
 	UNION ALL
-	SELECT 'agent', a.id FROM agents a WHERE a.llm_profile_id=$1
+	SELECT 'agent', a.id FROM agents a WHERE a.llm_profile_id=?1
 	UNION ALL
-	SELECT 'conversation', c.id FROM conversations c WHERE c.llm_profile_id=$1
+	SELECT 'conversation', c.id FROM conversations c WHERE c.llm_profile_id=?1
 ) refs
 ORDER BY ref_kind, ref_id`, id)
 	if err != nil {
@@ -327,10 +328,10 @@ ORDER BY ref_kind, ref_id`, id)
 		return false, err
 	}
 
-	rows, err = tx.QueryContext(ctx, `SELECT x.task_id, x.position, COALESCE(t.active_llm_profile_id=$1, false)
+	rows, err = tx.QueryContext(ctx, `SELECT x.task_id, x.position, COALESCE(t.active_llm_profile_id=?1, false)
 FROM task_llm_profiles x
 JOIN tasks t ON t.id=x.task_id
-WHERE x.profile_id=$1
+WHERE x.profile_id=?1
 ORDER BY x.task_id`, id)
 	if err != nil {
 		return false, err
@@ -351,7 +352,7 @@ ORDER BY x.task_id`, id)
 	if err := rows.Close(); err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_profiles WHERE id=$1`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_profiles WHERE id=?1`, id); err != nil {
 		return false, err
 	}
 	// Only a successor after the deleted cursor is eligible. If there is none,
@@ -359,33 +360,33 @@ ORDER BY x.task_id`, id)
 	// profiles before a manually selected cursor must never be revived.
 	for _, task := range affected {
 		if !task.wasActive {
-			if _, err := tx.ExecContext(ctx, `UPDATE tasks SET llm_chain_revision=llm_chain_revision+1 WHERE id=$1`, task.id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE tasks SET llm_chain_revision=llm_chain_revision+1 WHERE id=?1`, task.id); err != nil {
 				return false, err
 			}
 			continue
 		}
 		var next int64
 		err := tx.QueryRowContext(ctx, `SELECT profile_id FROM task_llm_profiles
-WHERE task_id=$1 AND position>$2 AND status='ready'
+WHERE task_id=?1 AND position>?2 AND status='ready'
 ORDER BY position
 LIMIT 1`, task.id, task.position).Scan(&next)
 		if err != nil && err != sql.ErrNoRows {
 			return false, err
 		}
 		if err == sql.ErrNoRows {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM task_llm_profiles WHERE task_id=$1`, task.id); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM task_llm_profiles WHERE task_id=?1`, task.id); err != nil {
 				return false, err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE tasks
 SET active_llm_profile_id=NULL, llm_profile_id=NULL, llm_chain_revision=llm_chain_revision+1
-WHERE id=$1`, task.id); err != nil {
+WHERE id=?1`, task.id); err != nil {
 				return false, err
 			}
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE tasks
-SET active_llm_profile_id=$2, llm_profile_id=$2, llm_chain_revision=llm_chain_revision+1
-WHERE id=$1`, task.id, next); err != nil {
+SET active_llm_profile_id=?2, llm_profile_id=?2, llm_chain_revision=llm_chain_revision+1
+WHERE id=?1`, task.id, next); err != nil {
 			return false, err
 		}
 	}
@@ -425,7 +426,7 @@ func (d *DB) SetActiveProfile(id int64) error {
 	if _, err := tx.Exec(`UPDATE llm_profiles SET is_default=false WHERE is_default`); err != nil {
 		return err
 	}
-	res, err := tx.Exec(`UPDATE llm_profiles SET is_default=true WHERE id=$1`, id)
+	res, err := tx.Exec(`UPDATE llm_profiles SET is_default=true WHERE id=?1`, id)
 	if err != nil {
 		return err
 	}
@@ -495,7 +496,7 @@ func (d *DB) ListAgents() ([]*Agent, error) {
 }
 
 func (d *DB) GetAgentByKey(key string) (*Agent, error) {
-	a, err := scanAgent(d.QueryRow(`SELECT `+agentCols+` FROM agents WHERE key=$1`, key))
+	a, err := scanAgent(d.QueryRow(`SELECT `+agentCols+` FROM agents WHERE key=?1`, key))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -558,7 +559,7 @@ func (d *DB) AgentBindingCounts() (mcp map[int64]int, skill map[int64]int, tools
 func (d *DB) CreateAgent(key, name, description string) (*Agent, error) {
 	a, err := scanAgent(d.QueryRow(`
 INSERT INTO agents(key, name, description, role, builtin, enabled)
-VALUES ($1, $2, NULLIF($3,''), 'assistant', false, true)
+VALUES (?1, ?2, NULLIF(?3,''), 'assistant', false, true)
 RETURNING `+agentCols, key, name, description))
 	if err != nil {
 		return nil, err
@@ -569,7 +570,7 @@ RETURNING `+agentCols, key, name, description))
 // UpdateAgentMeta updates a custom agent's display name + description. Built-in
 // agents are left untouched (guarded by the caller / the builtin flag).
 func (d *DB) UpdateAgentMeta(key, name, description string) error {
-	_, err := d.Exec(`UPDATE agents SET name=$2, description=NULLIF($3,'') WHERE key=$1 AND builtin=false`, key, name, description)
+	_, err := d.Exec(`UPDATE agents SET name=?2, description=NULLIF(?3,'') WHERE key=?1 AND builtin=false`, key, name, description)
 	return err
 }
 
@@ -577,7 +578,7 @@ func (d *DB) UpdateAgentMeta(key, name, description string) error {
 // builtin=false guard. agent_prompts / agent_prompt_vars / visibility rows cascade
 // via FK; tools.agents bindings for the key are cleaned by the caller.
 func (d *DB) DeleteAgent(key string) error {
-	_, err := d.Exec(`DELETE FROM agents WHERE key=$1 AND builtin=false`, key)
+	_, err := d.Exec(`DELETE FROM agents WHERE key=?1 AND builtin=false`, key)
 	return err
 }
 
@@ -586,7 +587,7 @@ func (d *DB) SetAgentMaxTurns(key string, maxTurns int) error {
 	if maxTurns < 0 {
 		maxTurns = 0
 	}
-	_, err := d.Exec(`UPDATE agents SET max_turns=$1 WHERE key=$2`, maxTurns, key)
+	_, err := d.Exec(`UPDATE agents SET max_turns=?1 WHERE key=?2`, maxTurns, key)
 	return err
 }
 
@@ -603,7 +604,7 @@ func (d *DB) SetAgentLLMProfile(key string, id *int64) error {
 	// DeleteProfile locks reference rows before the profile row. Keep the same
 	// order here so a concurrent rebind cannot form a child/profile deadlock.
 	var agentID int64
-	if err := tx.QueryRow(`SELECT id FROM agents WHERE key=$1 `, key).Scan(&agentID); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM agents WHERE key=?1 `, key).Scan(&agentID); err != nil {
 		if err == sql.ErrNoRows {
 			// Preserve the previous UPDATE semantics: an unknown key is a no-op.
 			return tx.Commit()
@@ -613,7 +614,7 @@ func (d *DB) SetAgentLLMProfile(key string, id *int64) error {
 	if err := lockLLMProfileForReference(tx, id); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE agents SET llm_profile_id=$1 WHERE id=$2`, id, agentID); err != nil {
+	if _, err := tx.Exec(`UPDATE agents SET llm_profile_id=?1 WHERE id=?2`, id, agentID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -626,7 +627,7 @@ func lockLLMProfileForReference(tx *Tx, profileID *int64) error {
 		return nil
 	}
 	var lockedID int64
-	if err := tx.QueryRow(`SELECT id FROM llm_profiles WHERE id=$1`, *profileID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM llm_profiles WHERE id=?1`, *profileID).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrLLMProfileNotFound
 		}
@@ -638,28 +639,28 @@ func lockLLMProfileForReference(tx *Tx, profileID *int64) error {
 // SetAgentWebSearch toggles whether an agent uses network search (still gated by
 // the global web-search master switch + backend/key config).
 func (d *DB) SetAgentWebSearch(key string, on bool) error {
-	_, err := d.Exec(`UPDATE agents SET web_search=$1 WHERE key=$2`, on, key)
+	_, err := d.Exec(`UPDATE agents SET web_search=?1 WHERE key=?2`, on, key)
 	return err
 }
 
 // SetAgentInteractiveShell toggles whether an agent gets the interactive shell
 // (持久 PTY 会话) tool family + Bash 提示词联动(见 docs/交互式shell设计.md §14.2).
 func (d *DB) SetAgentInteractiveShell(key string, on bool) error {
-	_, err := d.Exec(`UPDATE agents SET interactive_shell=$1 WHERE key=$2`, on, key)
+	_, err := d.Exec(`UPDATE agents SET interactive_shell=?1 WHERE key=?2`, on, key)
 	return err
 }
 
 // SetAgentWrapupPrompt stores an agent's wrap-up (settlement) prompt. Empty string
 // means "use the code built-in default" — resolved at runtime by resolveWrapup.
 func (d *DB) SetAgentWrapupPrompt(key, prompt string) error {
-	_, err := d.Exec(`UPDATE agents SET wrapup_prompt=$1 WHERE key=$2`, prompt, key)
+	_, err := d.Exec(`UPDATE agents SET wrapup_prompt=?1 WHERE key=?2`, prompt, key)
 	return err
 }
 
 // SetAgentWrapupMaxTurns stores the wrap-up phase's own turn budget. 0 means "use
 // the code built-in default" — resolved at runtime by resolveWrapupTurns.
 func (d *DB) SetAgentWrapupMaxTurns(key string, n int) error {
-	_, err := d.Exec(`UPDATE agents SET wrapup_max_turns=$1 WHERE key=$2`, n, key)
+	_, err := d.Exec(`UPDATE agents SET wrapup_max_turns=?1 WHERE key=?2`, n, key)
 	return err
 }
 
@@ -667,7 +668,7 @@ func (d *DB) SetAgentWrapupMaxTurns(key string, n int) error {
 // use code built-in default; only worker/planner have one) and its turn budget
 // (0 = default). Resolved at runtime by resolveTaskTimeoutWrapup / …Turns.
 func (d *DB) SetAgentTaskTimeoutWrapup(key, prompt string, maxTurns int) error {
-	_, err := d.Exec(`UPDATE agents SET task_timeout_wrapup_prompt=$1, task_timeout_wrapup_max_turns=$2 WHERE key=$3`, prompt, maxTurns, key)
+	_, err := d.Exec(`UPDATE agents SET task_timeout_wrapup_prompt=?1, task_timeout_wrapup_max_turns=?2 WHERE key=?3`, prompt, maxTurns, key)
 	return err
 }
 
@@ -676,7 +677,7 @@ func (d *DB) SetAgentRunSeconds(key string, runSecs int) error {
 	if runSecs < 0 {
 		runSecs = 0
 	}
-	_, err := d.Exec(`UPDATE agents SET run_seconds=$1 WHERE key=$2`, runSecs, key)
+	_, err := d.Exec(`UPDATE agents SET run_seconds=?1 WHERE key=?2`, runSecs, key)
 	return err
 }
 
@@ -697,7 +698,7 @@ func (d *DB) SetAgentTriggerBehavior(key, runMode, mergeMode string, maxParallel
 	if maxParallel < 0 {
 		maxParallel = 0
 	}
-	_, err := d.Exec(`UPDATE agents SET trigger_run_mode=$1, trigger_merge_mode=$2, trigger_max_parallel=$3 WHERE key=$4`,
+	_, err := d.Exec(`UPDATE agents SET trigger_run_mode=?1, trigger_merge_mode=?2, trigger_max_parallel=?3 WHERE key=?4`,
 		runMode, mergeMode, maxParallel, key)
 	return err
 }
@@ -710,7 +711,7 @@ type PromptVar struct {
 }
 
 func (d *DB) PromptVars(agentID int64) ([]PromptVar, error) {
-	rows, err := d.Query(`SELECT var_name,COALESCE(description,''),COALESCE(example,''),source FROM agent_prompt_vars WHERE agent_id=$1 ORDER BY var_name`, agentID)
+	rows, err := d.Query(`SELECT var_name,COALESCE(description,''),COALESCE(example,''),source FROM agent_prompt_vars WHERE agent_id=?1 ORDER BY var_name`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +730,7 @@ func (d *DB) PromptVars(agentID int64) ([]PromptVar, error) {
 // CurrentPrompt returns the agent's active template text ("" if none set yet).
 func (d *DB) CurrentPrompt(agentID int64) (string, error) {
 	var tmpl sql.NullString
-	err := d.QueryRow(`SELECT p.template_text FROM agents a JOIN agent_prompts p ON p.id=a.current_prompt_id WHERE a.id=$1`, agentID).Scan(&tmpl)
+	err := d.QueryRow(`SELECT p.template_text FROM agents a JOIN agent_prompts p ON p.id=a.current_prompt_id WHERE a.id=?1`, agentID).Scan(&tmpl)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -742,7 +743,7 @@ func (d *DB) CurrentPrompt(agentID int64) (string, error) {
 // clobbered on restart. Idempotent — a no-op once any version exists.
 func (d *DB) SeedPromptIfEmpty(agentID int64, tmpl string) error {
 	var cur sql.NullInt64
-	if err := d.QueryRow(`SELECT current_prompt_id FROM agents WHERE id=$1`, agentID).Scan(&cur); err != nil {
+	if err := d.QueryRow(`SELECT current_prompt_id FROM agents WHERE id=?1`, agentID).Scan(&cur); err != nil {
 		return err
 	}
 	if cur.Valid {
@@ -766,15 +767,15 @@ func (d *DB) SavePrompt(agentID int64, template, note, by string) (int, error) {
 	}
 	defer tx.Rollback()
 	var ver int
-	if err := tx.QueryRow(`SELECT COALESCE(max(version),0)+1 FROM agent_prompts WHERE agent_id=$1`, agentID).Scan(&ver); err != nil {
+	if err := tx.QueryRow(`SELECT COALESCE(max(version),0)+1 FROM agent_prompts WHERE agent_id=?1`, agentID).Scan(&ver); err != nil {
 		return 0, err
 	}
 	var pid int64
-	if err := tx.QueryRow(`INSERT INTO agent_prompts(agent_id,version,template_text,note,updated_by) VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,'')) RETURNING id`,
+	if err := tx.QueryRow(`INSERT INTO agent_prompts(agent_id,version,template_text,note,updated_by) VALUES (?1,?2,?3,NULLIF(?4,''),NULLIF(?5,'')) RETURNING id`,
 		agentID, ver, template, note, by).Scan(&pid); err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(`UPDATE agents SET current_prompt_id=$1 WHERE id=$2`, pid, agentID); err != nil {
+	if _, err := tx.Exec(`UPDATE agents SET current_prompt_id=?1 WHERE id=?2`, pid, agentID); err != nil {
 		return 0, err
 	}
 	return ver, tx.Commit()
@@ -788,7 +789,7 @@ type PromptVersion struct {
 }
 
 func (d *DB) ListPromptVersions(agentID int64) ([]PromptVersion, error) {
-	rows, err := d.Query(`SELECT version,template_text,COALESCE(note,''),created_at FROM agent_prompts WHERE agent_id=$1 ORDER BY version DESC`, agentID)
+	rows, err := d.Query(`SELECT version,template_text,COALESCE(note,''),created_at FROM agent_prompts WHERE agent_id=?1 ORDER BY version DESC`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -849,7 +850,7 @@ func (d *DB) ListMCP() ([]*MCPServer, error) {
 
 // MCPToolNames returns the cached tool names for a server (empty until discovered).
 func (d *DB) MCPToolNames(serverID int64) ([]string, error) {
-	rows, err := d.Query(`SELECT tool_name FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+	rows, err := d.Query(`SELECT tool_name FROM mcp_tools_cache WHERE server_id=?1 ORDER BY tool_name`, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -873,7 +874,7 @@ type MCPTool struct {
 
 // MCPToolsDetailed returns the cached tools (name + description) for a server.
 func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
-	rows, err := d.Query(`SELECT tool_name, COALESCE(description,'') FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+	rows, err := d.Query(`SELECT tool_name, COALESCE(description,'') FROM mcp_tools_cache WHERE server_id=?1 ORDER BY tool_name`, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -896,11 +897,11 @@ func (d *DB) SaveMCPTools(serverID int64, tools []MCPTool) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1`, serverID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=?1`, serverID); err != nil {
 		return err
 	}
 	for _, t := range tools {
-		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description) VALUES ($1,$2,$3)
+		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description) VALUES (?1,?2,?3)
 ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description`, serverID, t.Name, t.Description); err != nil {
 			return err
 		}
@@ -918,11 +919,11 @@ func (d *DB) SaveMCP(m *MCPServer) (int64, error) {
 	}
 	if m.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO mcp_servers(name,transport,command,args,env,url,enabled,insecure) VALUES ($1,$2,NULLIF($3,''),$4,$5,NULLIF($6,''),$7,$8) RETURNING id`,
+		err := d.QueryRow(`INSERT INTO mcp_servers(name,transport,command,args,env,url,enabled,insecure) VALUES (?1,?2,NULLIF(?3,''),?4,?5,NULLIF(?6,''),?7,?8) RETURNING id`,
 			m.Name, m.Transport, m.Command, args, env, m.URL, m.Enabled, m.Insecure).Scan(&id)
 		return id, err
 	}
-	_, err := d.Exec(`UPDATE mcp_servers SET name=$1,transport=$2,command=NULLIF($3,''),args=$4,env=$5,url=NULLIF($6,''),enabled=$7,insecure=$8 WHERE id=$9`,
+	_, err := d.Exec(`UPDATE mcp_servers SET name=?1,transport=?2,command=NULLIF(?3,''),args=?4,env=?5,url=NULLIF(?6,''),enabled=?7,insecure=?8 WHERE id=?9`,
 		m.Name, m.Transport, m.Command, args, env, m.URL, m.Enabled, m.Insecure, m.ID)
 	return m.ID, err
 }
@@ -933,10 +934,10 @@ func (d *DB) DeleteMCP(id int64) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id=$1`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id=?1`, id); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM mcp_servers WHERE id=$1`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM mcp_servers WHERE id=?1`, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -946,7 +947,7 @@ func (d *DB) DeleteMCP(id int64) error {
 
 // AgentSkillNames returns the skill directory names visible to an agent.
 func (d *DB) AgentSkillNames(agentID int64) ([]string, error) {
-	rows, err := d.Query(`SELECT skill_name FROM agent_skill_visibility WHERE agent_id=$1 AND enabled ORDER BY skill_name`, agentID)
+	rows, err := d.Query(`SELECT skill_name FROM agent_skill_visibility WHERE agent_id=?1 AND enabled ORDER BY skill_name`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -964,7 +965,7 @@ func (d *DB) AgentSkillNames(agentID int64) ([]string, error) {
 
 // SkillAgents returns the agent IDs that can see a skill.
 func (d *DB) SkillAgents(skillName string) ([]int64, error) {
-	rows, err := d.Query(`SELECT agent_id FROM agent_skill_visibility WHERE skill_name=$1 AND enabled`, skillName)
+	rows, err := d.Query(`SELECT agent_id FROM agent_skill_visibility WHERE skill_name=?1 AND enabled`, skillName)
 	if err != nil {
 		return nil, err
 	}
@@ -987,11 +988,11 @@ func (d *DB) SetAgentSkillVisibility(agentID int64, names []string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM agent_skill_visibility WHERE agent_id=$1`, agentID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM agent_skill_visibility WHERE agent_id=?1`, agentID); err != nil {
 		return err
 	}
 	for _, name := range names {
-		if _, err := tx.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled) VALUES ($1,$2,true)
+		if _, err := tx.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled) VALUES (?1,?2,true)
 ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=true`, agentID, name); err != nil {
 			return err
 		}
@@ -1002,17 +1003,17 @@ ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=true`, agentID, name); e
 // ToggleSkillVisibility sets one (agent, skill_name) visibility on/off.
 func (d *DB) ToggleSkillVisibility(agentID int64, skillName string, on bool) error {
 	if on {
-		_, err := d.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled) VALUES ($1,$2,true)
+		_, err := d.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled) VALUES (?1,?2,true)
 ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=true`, agentID, skillName)
 		return err
 	}
-	_, err := d.Exec(`DELETE FROM agent_skill_visibility WHERE agent_id=$1 AND skill_name=$2`, agentID, skillName)
+	_, err := d.Exec(`DELETE FROM agent_skill_visibility WHERE agent_id=?1 AND skill_name=?2`, agentID, skillName)
 	return err
 }
 
 // DeleteSkillVisibility removes all visibility rows for a skill (called on skill delete).
 func (d *DB) DeleteSkillVisibility(skillName string) error {
-	_, err := d.Exec(`DELETE FROM agent_skill_visibility WHERE skill_name=$1`, skillName)
+	_, err := d.Exec(`DELETE FROM agent_skill_visibility WHERE skill_name=?1`, skillName)
 	return err
 }
 
@@ -1020,7 +1021,7 @@ func (d *DB) DeleteSkillVisibility(skillName string) error {
 
 // AgentVisible returns the resource ids of a kind visible to an agent.
 func (d *DB) AgentVisible(agentID int64, kind string) ([]int64, error) {
-	rows, err := d.Query(`SELECT resource_id FROM agent_visibility WHERE agent_id=$1 AND resource_kind=$2 AND enabled`, agentID, kind)
+	rows, err := d.Query(`SELECT resource_id FROM agent_visibility WHERE agent_id=?1 AND resource_kind=?2 AND enabled`, agentID, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -1038,7 +1039,7 @@ func (d *DB) AgentVisible(agentID int64, kind string) ([]int64, error) {
 
 // ResourceAgents returns the agent ids that can see a resource.
 func (d *DB) ResourceAgents(kind string, resourceID int64) ([]int64, error) {
-	rows, err := d.Query(`SELECT agent_id FROM agent_visibility WHERE resource_kind=$1 AND resource_id=$2 AND enabled`, kind, resourceID)
+	rows, err := d.Query(`SELECT agent_id FROM agent_visibility WHERE resource_kind=?1 AND resource_id=?2 AND enabled`, kind, resourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -1063,11 +1064,11 @@ func (d *DB) SetAgentVisibilityKind(agentID int64, kind string, resourceIDs []in
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind=$2`, agentID, kind); err != nil {
+	if _, err := tx.Exec(`DELETE FROM agent_visibility WHERE agent_id=?1 AND resource_kind=?2`, agentID, kind); err != nil {
 		return err
 	}
 	for _, rid := range resourceIDs {
-		if _, err := tx.Exec(`INSERT INTO agent_visibility(agent_id,resource_kind,resource_id,enabled) VALUES ($1,$2,$3,true)
+		if _, err := tx.Exec(`INSERT INTO agent_visibility(agent_id,resource_kind,resource_id,enabled) VALUES (?1,?2,?3,true)
 ON CONFLICT (agent_id,resource_kind,resource_id,mcp_tool_name) DO UPDATE SET enabled=true`, agentID, kind, rid); err != nil {
 			return err
 		}
@@ -1078,10 +1079,10 @@ ON CONFLICT (agent_id,resource_kind,resource_id,mcp_tool_name) DO UPDATE SET ena
 // ToggleVisibility sets one (agent, kind, resource) visibility on/off (idempotent).
 func (d *DB) ToggleVisibility(agentID int64, kind string, resourceID int64, on bool) error {
 	if on {
-		_, err := d.Exec(`INSERT INTO agent_visibility(agent_id,resource_kind,resource_id,enabled) VALUES ($1,$2,$3,true)
+		_, err := d.Exec(`INSERT INTO agent_visibility(agent_id,resource_kind,resource_id,enabled) VALUES (?1,?2,?3,true)
 ON CONFLICT (agent_id,resource_kind,resource_id,mcp_tool_name) DO UPDATE SET enabled=true`, agentID, kind, resourceID)
 		return err
 	}
-	_, err := d.Exec(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind=$2 AND resource_id=$3`, agentID, kind, resourceID)
+	_, err := d.Exec(`DELETE FROM agent_visibility WHERE agent_id=?1 AND resource_kind=?2 AND resource_id=?3`, agentID, kind, resourceID)
 	return err
 }

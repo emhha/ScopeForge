@@ -16,7 +16,7 @@ type ToolUsage struct {
 func (d *DB) InsertToolUsage(u *ToolUsage) error {
 	_, err := d.Exec(`
 INSERT INTO tool_usage(tool_key, agent_key, task_id, exploration_id, intent_id, session_id)
-VALUES ($1, NULLIF($2,''), $3, $4, $5, NULLIF($6,''))`,
+VALUES (?1, NULLIF(?2,''), ?3, ?4, ?5, NULLIF(?6,''))`,
 		u.ToolKey, u.AgentKey, nullIfZero(u.TaskID), nullIfZero(u.ExplorationID),
 		nullIfZero(u.IntentID), u.SessionID)
 	return err

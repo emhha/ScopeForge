@@ -30,7 +30,7 @@ type SkillUsage struct {
 func (d *DB) InsertSkillUsage(u *SkillUsage) error {
 	_, err := d.Exec(`
 INSERT INTO skill_usage(skill, agent_key, task_id, exploration_id, intent_id, session_id, args_len, found)
-VALUES ($1, NULLIF($2,''), $3, $4, $5, NULLIF($6,''), $7, $8)`,
+VALUES (?1, NULLIF(?2,''), ?3, ?4, ?5, NULLIF(?6,''), ?7, ?8)`,
 		u.Skill, u.AgentKey, nullIfZero(u.TaskID), nullIfZero(u.ExplorationID),
 		nullIfZero(u.IntentID), u.SessionID, u.ArgsLen, u.Found)
 	return err
@@ -166,9 +166,9 @@ func (d *DB) RecentSkillCalls(skill string, limit int) ([]SkillCall, error) {
 	rows, err := d.Query(`
 SELECT ts, COALESCE(agent_key,''), COALESCE(task_id,0), COALESCE(session_id,''), args_len
 FROM skill_usage
-WHERE skill = $1 AND found
+WHERE skill = ?1 AND found
 ORDER BY ts DESC
-LIMIT $2`, skill, limit)
+LIMIT ?2`, skill, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +190,7 @@ func (d *DB) SkillCallsByTask(taskID int64) ([]SkillStat, error) {
 	rows, err := d.Query(`
 SELECT skill, COUNT(*) AS calls, MAX(ts) AS last_used
 FROM skill_usage
-WHERE task_id = $1 AND found
+WHERE task_id = ?1 AND found
 GROUP BY skill
 ORDER BY COUNT(*) DESC, skill`, taskID)
 	if err != nil {

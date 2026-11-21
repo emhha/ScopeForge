@@ -175,7 +175,7 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 	}
 	defer tx.Rollback()
 	var expID int64
-	if err := tx.QueryRow(`INSERT INTO explorations(description, goal) VALUES ($1,$2) RETURNING id`, description, goal).Scan(&expID); err != nil {
+	if err := tx.QueryRow(`INSERT INTO explorations(description, goal) VALUES (?1,?2) RETURNING id`, description, goal).Scan(&expID); err != nil {
 		return nil, err
 	}
 	// origin fact: the exploration graph's root, a KindFact node (state='origin')
@@ -190,7 +190,7 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 	})
 	if _, err := tx.Exec(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
-VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); err != nil {
+VALUES (?1, 'fact', ?2, 0, 'origin', 'system')`, expID, string(originPayload)); err != nil {
 		return nil, err
 	}
 	if opts.TimeoutSeconds < 0 {
@@ -203,7 +203,7 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		if *opts.CategoryID <= 0 {
 			return nil, fmt.Errorf("%w: category id must be positive", ErrTaskCategoryInvalid)
 		}
-		if err := tx.QueryRow(`SELECT name FROM task_categories WHERE id=$1`, *opts.CategoryID).Scan(&categoryName); err != nil {
+		if err := tx.QueryRow(`SELECT name FROM task_categories WHERE id=?1`, *opts.CategoryID).Scan(&categoryName); err != nil {
 			if err == sql.ErrNoRows {
 				return nil, ErrTaskCategoryNotFound
 			}
@@ -227,7 +227,7 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 	}
 	if err := tx.QueryRow(`
 INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)
+VALUES (?1,?2,?3,?4,?5,?6,?6,?7,?8,?9)
 RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -261,8 +261,8 @@ func insertTaskCompanies(tx *Tx, taskID int64, companyIDs []int64) error {
 		return err
 	}
 	result, err := tx.Exec(`INSERT INTO task_scope(task_id,kind,company_id,source,reason)
- SELECT $1,'company',companies.id,'manual','任务创建时关联企业'
- FROM json_each($2) requested JOIN companies ON companies.id=requested.value
+ SELECT ?1,'company',companies.id,'manual','任务创建时关联企业'
+ FROM json_each(?2) requested JOIN companies ON companies.id=requested.value
  ORDER BY CAST(requested.key AS INTEGER)`, taskID, companyIDs)
 	if err != nil {
 		return err
@@ -283,19 +283,19 @@ func insertTaskCompanies(tx *Tx, taskID int64, companyIDs []int64) error {
 	if _, err := tx.Exec(`
 UPDATE assets
 SET task_ids=CASE
-    WHEN $1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids
-    ELSE json_array_add(task_ids, $1)
+    WHEN ?1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids
+    ELSE json_array_add(task_ids, ?1)
 END
-WHERE company_id IN (SELECT value FROM json_each($2))`, taskID, companyIDs); err != nil {
+WHERE company_id IN (SELECT value FROM json_each(?2))`, taskID, companyIDs); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`
 INSERT INTO task_asset_links(task_id, asset_id, source, source_summary)
-SELECT $1, asset.id, $3, '任务创建时关联企业：' || company.name
+SELECT ?1, asset.id, ?3, '任务创建时关联企业：' || company.name
 FROM assets asset
 JOIN companies company ON company.id=asset.company_id
-WHERE asset.company_id IN (SELECT value FROM json_each($2))
-  AND $1 IN (SELECT value FROM json_each(asset.task_ids))
+WHERE asset.company_id IN (SELECT value FROM json_each(?2))
+  AND ?1 IN (SELECT value FROM json_each(asset.task_ids))
 ON CONFLICT (task_id, asset_id) DO UPDATE
 SET source=EXCLUDED.source,
     source_summary=EXCLUDED.source_summary,
@@ -313,7 +313,7 @@ func insertTaskRelations(tx *Tx, taskID int64, sourceIDs []int64) error {
 		}
 		seen[sourceID] = true
 		res, err := tx.Exec(`INSERT INTO task_relations(task_id, source_task_id)
-SELECT $1, id FROM tasks WHERE id=$2 AND deleted_at IS NULL`, taskID, sourceID)
+SELECT ?1, id FROM tasks WHERE id=?2 AND deleted_at IS NULL`, taskID, sourceID)
 		if err != nil {
 			return err
 		}
@@ -331,7 +331,7 @@ func insertTaskLLMProfiles(tx *Tx, taskID int64, profileIDs []int64) error {
 			return fmt.Errorf("invalid or duplicate LLM profile id %d", profileID)
 		}
 		seen[profileID] = true
-		if _, err := tx.Exec(`INSERT INTO task_llm_profiles(task_id, profile_id, position) VALUES ($1,$2,$3)`, taskID, profileID, position); err != nil {
+		if _, err := tx.Exec(`INSERT INTO task_llm_profiles(task_id, profile_id, position) VALUES (?1,?2,?3)`, taskID, profileID, position); err != nil {
 			return err
 		}
 	}
@@ -353,7 +353,7 @@ func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 
 // SetParentRef records a task's parent task id (编排 agent spawn_task 关联).
 func (d *DB) SetParentRef(id int64, parentRef string) error {
-	_, err := d.Exec(`UPDATE tasks SET parent_ref=NULLIF($2,'') WHERE id=$1`, id, parentRef)
+	_, err := d.Exec(`UPDATE tasks SET parent_ref=NULLIF(?2,'') WHERE id=?1`, id, parentRef)
 	return err
 }
 
@@ -394,13 +394,13 @@ type TaskPatch struct {
 // Re-pinning an already pinned task preserves its original position.
 func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
 	task, err := scanTask(d.QueryRow(`UPDATE tasks SET
-	name = CASE WHEN $2 THEN $3 ELSE name END,
+	name = CASE WHEN ?2 THEN ?3 ELSE name END,
 	pinned_at = CASE
-		WHEN $4 IS NULL THEN pinned_at
-		WHEN $4 THEN COALESCE(pinned_at, utc_now())
+		WHEN ?4 IS NULL THEN pinned_at
+		WHEN ?4 THEN COALESCE(pinned_at, utc_now())
 		ELSE NULL
 	END
-WHERE id=$1 AND deleted_at IS NULL
+WHERE id=?1 AND deleted_at IS NULL
 RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned))
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -413,7 +413,7 @@ RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned))
 
 // GetTask returns one alive task (nil if not found/deleted).
 func (d *DB) GetTask(id int64) (*Task, error) {
-	t, err := scanTask(d.QueryRow(`SELECT `+taskCols+` FROM tasks WHERE id=$1 AND deleted_at IS NULL`, id))
+	t, err := scanTask(d.QueryRow(`SELECT `+taskCols+` FROM tasks WHERE id=?1 AND deleted_at IS NULL`, id))
 	if err != nil {
 		if err.Error() == "sql: no rows in result set" {
 			return nil, nil
@@ -428,7 +428,7 @@ func (d *DB) GetTask(id int64) (*Task, error) {
 
 // SetPaused persists a task's paused flag.
 func (d *DB) SetPaused(id int64, paused bool) error {
-	_, err := d.Exec(`UPDATE tasks SET paused=$1 WHERE id=$2`, paused, id)
+	_, err := d.Exec(`UPDATE tasks SET paused=?1 WHERE id=?2`, paused, id)
 	return err
 }
 
@@ -442,10 +442,10 @@ func (d *DB) Enqueue(id int64, mode string) error {
 SET queued=true,
     queued_at=CASE WHEN queued THEN COALESCE(queued_at, utc_now()) ELSE utc_now() END,
     queue_mode=CASE
-        WHEN queue_mode='bootstrap' OR $2='bootstrap' THEN 'bootstrap'
+        WHEN queue_mode='bootstrap' OR ?2='bootstrap' THEN 'bootstrap'
         ELSE 'resume'
     END
-WHERE id=$1`, id, mode)
+WHERE id=?1`, id, mode)
 	return err
 }
 
@@ -455,8 +455,8 @@ func (d *DB) Dequeue(id int64, clearMode bool) error {
 	_, err := d.Exec(`UPDATE tasks
 SET queued=false,
     queued_at=NULL,
-    queue_mode=CASE WHEN $2 THEN '' ELSE queue_mode END
-WHERE id=$1`, id, clearMode)
+    queue_mode=CASE WHEN ?2 THEN '' ELSE queue_mode END
+WHERE id=?1`, id, clearMode)
 	return err
 }
 
@@ -476,9 +476,9 @@ func (d *DB) SetQueued(id int64, queued bool) error {
 func (d *DB) SetStatus(id int64, status string) error {
 	_, err := d.Exec(`
 UPDATE tasks
-   SET status = $1,
-       completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, utc_now()) ELSE NULL END
- WHERE id = $2`, status, id)
+   SET status = ?1,
+       completed_at = CASE WHEN ?1 IN ('done','failed','timeout') THEN COALESCE(completed_at, utc_now()) ELSE NULL END
+ WHERE id = ?2`, status, id)
 	return err
 }
 
@@ -489,9 +489,9 @@ UPDATE tasks
 func (d *DB) SetTerminalStatusGuarded(id int64, status string) (won bool, err error) {
 	res, err := d.Exec(`
 UPDATE tasks
-   SET status = $1,
+   SET status = ?1,
        completed_at = COALESCE(completed_at, utc_now())
- WHERE id = $2 AND status NOT IN ('done','failed','timeout')`, status, id)
+ WHERE id = ?2 AND status NOT IN ('done','failed','timeout')`, status, id)
 	if err != nil {
 		return false, err
 	}
@@ -510,9 +510,9 @@ UPDATE tasks
    SET first_run_at = COALESCE(first_run_at, utc_now()),
        deadline_at  = CASE
            WHEN first_run_at IS NOT NULL THEN deadline_at            -- 已盖过章：不动
-           WHEN $2 > 0 THEN datetime(utc_now(), '+' || $2 || ' seconds')
+           WHEN ?2 > 0 THEN datetime(utc_now(), '+' || ?2 || ' seconds')
            ELSE NULL END
- WHERE id = $1
+ WHERE id = ?1
  RETURNING deadline_at`, id, timeoutSeconds).Scan(&deadline)
 	return deadline, err
 }
@@ -555,7 +555,7 @@ func (d *DB) DeleteTaskCascadePrepared(
 	}
 	defer tx.Rollback()
 	var expID int64
-	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1 `, id).Scan(&expID); err != nil {
+	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=?1 `, id).Scan(&expID); err != nil {
 		if err == sql.ErrNoRows {
 			return result, nil // already gone
 		}
@@ -586,12 +586,12 @@ func (d *DB) DeleteTaskCascadePrepared(
 		// evidence anchored by another task.
 		res, err := tx.Exec(`
 WITH candidate_assets AS (
-  SELECT id FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))
+  SELECT id FROM assets WHERE ?1 IN (SELECT value FROM json_each(task_ids))
   UNION
   SELECT ea.asset_id
   FROM exploration_anchors ea
   JOIN exploration_nodes n ON n.id=ea.node_id
-  WHERE n.exploration_id=$2
+  WHERE n.exploration_id=?2
 ),
 deletable AS (
   SELECT a.id
@@ -599,13 +599,13 @@ deletable AS (
   JOIN candidate_assets c ON c.id=a.id
   WHERE NOT EXISTS (
     SELECT 1 FROM tasks t
-    WHERE t.id<>$1 AND t.deleted_at IS NULL AND t.id IN (SELECT value FROM json_each(a.task_ids))
+    WHERE t.id<>?1 AND t.deleted_at IS NULL AND t.id IN (SELECT value FROM json_each(a.task_ids))
   ) AND NOT EXISTS (
     SELECT 1
     FROM exploration_anchors ea
     JOIN exploration_nodes n ON n.id=ea.node_id
     JOIN tasks t ON t.exploration_id=n.exploration_id
-    WHERE ea.asset_id=a.id AND t.id<>$1 AND t.deleted_at IS NULL
+    WHERE ea.asset_id=a.id AND t.id<>?1 AND t.deleted_at IS NULL
   )
 )
 DELETE FROM assets WHERE id IN (SELECT id FROM deletable)`, id, expID)
@@ -614,21 +614,21 @@ DELETE FROM assets WHERE id IN (SELECT id FROM deletable)`, id, expID)
 		}
 		result.AssetsDeleted, _ = res.RowsAffected()
 
-		res, err = tx.Exec(`UPDATE assets SET task_ids = json_array_remove(task_ids, $1) WHERE $1 IN (SELECT value FROM json_each(task_ids))`, id)
+		res, err = tx.Exec(`UPDATE assets SET task_ids = json_array_remove(task_ids, ?1) WHERE ?1 IN (SELECT value FROM json_each(task_ids))`, id)
 		if err != nil {
 			return result, err
 		}
 		result.AssetsDetached, _ = res.RowsAffected()
 	}
 	if deleteFindings {
-		res, err := tx.Exec(`DELETE FROM findings WHERE task_id = $1`, id)
+		res, err := tx.Exec(`DELETE FROM findings WHERE task_id = ?1`, id)
 		if err != nil {
 			return result, err
 		}
 		result.FindingsDeleted, _ = res.RowsAffected()
 	}
 	if deleteLLMRecords {
-		res, err := tx.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'')=$1`, strconv.FormatInt(id, 10))
+		res, err := tx.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'')=?1`, strconv.FormatInt(id, 10))
 		if err != nil {
 			return result, err
 		}
@@ -636,10 +636,10 @@ DELETE FROM assets WHERE id IN (SELECT id FROM deletable)`, id, expID)
 	}
 	// llm_usage (the token metering ledger) is intentionally NOT deleted with the
 	// task — it is kept as historical accounting even after the task is gone.
-	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=$1`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=?1`, id); err != nil {
 		return result, err
 	}
-	if _, err := tx.Exec(`DELETE FROM explorations WHERE id=$1`, expID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM explorations WHERE id=?1`, expID); err != nil {
 		return result, err
 	}
 	return result, tx.Commit()

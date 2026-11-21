@@ -66,8 +66,8 @@ func (s *Server) seedFindingTrafficTools() {
 		if len(properties[name]) == 0 {
 			return
 		}
-		_, err = s.m.pg.Exec(`UPDATE tools SET schema=json_set(schema,'$.properties.'||$2,json($3)),updated_at=utc_now()
-WHERE key=$1 AND system AND json_type(schema,'$.properties.'||$2) IS NULL`, key, name, string(properties[name]))
+		_, err = s.m.pg.Exec(`UPDATE tools SET schema=json_set(schema,'$.properties.'||?2,json(?3)),updated_at=utc_now()
+WHERE key=?1 AND system AND json_type(schema,'$.properties.'||?2) IS NULL`, key, name, string(properties[name]))
 		if err != nil {
 			log.Printf("[evidence] upgrade tool %s: %v", key, err)
 			return

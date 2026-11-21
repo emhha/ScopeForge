@@ -44,7 +44,7 @@ func (d *DB) CompleteTaskArchive(
 	var state string
 	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
+WHERE archive.id=?1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
 		return err
 	}
 	if state != Archiving || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
@@ -53,7 +53,7 @@ WHERE archive.id=$1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
 	var dependent int64
 	err = tx.QueryRow(`SELECT child.id FROM task_relations relation
 JOIN tasks child ON child.id=relation.task_id AND child.deleted_at IS NULL
-WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
+WHERE relation.source_task_id=?1 LIMIT 1`, taskID).Scan(&dependent)
 	if err == nil {
 		return fmt.Errorf("%w: task %d", ErrTaskArchiveDependent, dependent)
 	}
@@ -61,54 +61,54 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 		return err
 	}
 	// Prevent task/asset ownership from changing while exclusivity is rechecked.
-	if _, err := tx.Exec(`DELETE FROM intercept_pending WHERE COALESCE(task_id,'')=$1`, strconv.FormatInt(taskID, 10)); err != nil {
+	if _, err := tx.Exec(`DELETE FROM intercept_pending WHERE COALESCE(task_id,'')=?1`, strconv.FormatInt(taskID, 10)); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'')=$1`, strconv.FormatInt(taskID, 10)); err != nil {
+	if _, err := tx.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'')=?1`, strconv.FormatInt(taskID, 10)); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2`, strconv.FormatInt(taskID, 10), expID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM llm_usage WHERE COALESCE(task_id,'')=?1 OR exploration_id=?2`, strconv.FormatInt(taskID, 10), expID); err != nil {
 		return err
 	}
 	for _, table := range []string{"skill_usage", "tool_usage"} {
-		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE task_id=$1 OR exploration_id=$2`, taskID, expID); err != nil {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE task_id=?1 OR exploration_id=?2`, taskID, expID); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM findings WHERE task_id=$1`, taskID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM findings WHERE task_id=?1`, taskID); err != nil {
 		return err
 	}
 	for _, statement := range []struct {
 		query string
 		args  []any
 	}{
-		{`DELETE FROM task_relations WHERE task_id=$1 OR source_task_id=$1`, []any{taskID}},
-		{`DELETE FROM task_asset_links WHERE task_id=$1`, []any{taskID}},
-		{`DELETE FROM task_llm_profiles WHERE task_id=$1`, []any{taskID}},
-		{`DELETE FROM task_scope WHERE task_id=$1`, []any{taskID}},
-		{`DELETE FROM task_constraints WHERE exploration_id=$1`, []any{expID}},
-		{`DELETE FROM activity WHERE exploration_id=$1`, []any{expID}},
-		{`DELETE FROM exploration_nodes WHERE exploration_id=$1`, []any{expID}},
+		{`DELETE FROM task_relations WHERE task_id=?1 OR source_task_id=?1`, []any{taskID}},
+		{`DELETE FROM task_asset_links WHERE task_id=?1`, []any{taskID}},
+		{`DELETE FROM task_llm_profiles WHERE task_id=?1`, []any{taskID}},
+		{`DELETE FROM task_scope WHERE task_id=?1`, []any{taskID}},
+		{`DELETE FROM task_constraints WHERE exploration_id=?1`, []any{expID}},
+		{`DELETE FROM activity WHERE exploration_id=?1`, []any{expID}},
+		{`DELETE FROM exploration_nodes WHERE exploration_id=?1`, []any{expID}},
 	} {
 		if _, err := tx.Exec(statement.query, statement.args...); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE assets SET task_ids=json_array_remove(task_ids,$1) WHERE $1 IN (SELECT value FROM json_each(task_ids))`, taskID); err != nil {
+	if _, err := tx.Exec(`UPDATE assets SET task_ids=json_array_remove(task_ids,?1) WHERE ?1 IN (SELECT value FROM json_each(task_ids))`, taskID); err != nil {
 		return err
 	}
 	if len(snapshot.ExclusiveAssetIDs) > 0 {
-		if _, err := tx.Exec(`DELETE FROM assets AS asset WHERE asset.id IN (SELECT value FROM json_each($2)) AND asset.company_id IS NULL
-AND NOT EXISTS (SELECT 1 FROM tasks task WHERE task.id<>$1 AND task.deleted_at IS NULL AND task.id IN (SELECT value FROM json_each(asset.task_ids)))
+		if _, err := tx.Exec(`DELETE FROM assets AS asset WHERE asset.id IN (SELECT value FROM json_each(?2)) AND asset.company_id IS NULL
+AND NOT EXISTS (SELECT 1 FROM tasks task WHERE task.id<>?1 AND task.deleted_at IS NULL AND task.id IN (SELECT value FROM json_each(asset.task_ids)))
 AND NOT EXISTS (
  SELECT 1 FROM exploration_anchors anchor JOIN exploration_nodes node ON node.id=anchor.node_id
  JOIN tasks task ON task.exploration_id=node.exploration_id
- WHERE anchor.asset_id=asset.id AND task.id<>$1 AND task.deleted_at IS NULL
+ WHERE anchor.asset_id=asset.id AND task.id<>?1 AND task.deleted_at IS NULL
 )`, taskID, snapshot.ExclusiveAssetIDs); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE explorations SET description='',goal='',status='open' WHERE id=$1`, expID); err != nil {
+	if _, err := tx.Exec(`UPDATE explorations SET description='',goal='',status='open' WHERE id=?1`, expID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE tasks SET
@@ -116,14 +116,14 @@ AND NOT EXISTS (
  llm_profile_id=NULL,active_llm_profile_id=NULL,llm_chain_revision=llm_chain_revision+1,
  company_id=NULL,parent_ref=NULL,timeout_seconds=0,coverage_enabled=true,pinned_at=NULL,
  first_run_at=NULL,deadline_at=NULL,archived_at=utc_now(),deleted_at=utc_now()
-WHERE id=$1`, taskID); err != nil {
+WHERE id=?1`, taskID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE task_archives SET
-	 state=$2,phase='ready',progress=100,error='',archive_path=$3,sha256=$4,
-	 original_size=$5,compressed_size=$6,data_counts=$7,aggregate_stats=$8,
-	 format_version=$9,archived_at=utc_now(),warnings='[]'
-WHERE id=$1`, archiveID, ArchiveReady, archivePath, sha256, originalSize, compressedSize,
+	 state=?2,phase='ready',progress=100,error='',archive_path=?3,sha256=?4,
+	 original_size=?5,compressed_size=?6,data_counts=?7,aggregate_stats=?8,
+	 format_version=?9,archived_at=utc_now(),warnings='[]'
+WHERE id=?1`, archiveID, ArchiveReady, archivePath, sha256, originalSize, compressedSize,
 		string(countsRaw), string(statsRaw), snapshot.FormatVersion); err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func (d *DB) restoreTaskArchive(
 	var state string
 	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
+WHERE archive.id=?1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
 		return nil, err
 	}
 	if state != Restoring || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
@@ -288,7 +288,7 @@ WHERE archive.id=$1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
 		return nil, err
 	}
 	warningsRaw, _ := json.Marshal(warnings)
-	if _, err := tx.Exec(`UPDATE task_archives SET warnings=$2,phase='database_restored',progress=85,error='' WHERE id=$1`, archiveID, string(warningsRaw)); err != nil {
+	if _, err := tx.Exec(`UPDATE task_archives SET warnings=?2,phase='database_restored',progress=85,error='' WHERE id=?1`, archiveID, string(warningsRaw)); err != nil {
 		return nil, err
 	}
 	return warnings, tx.Commit()
@@ -350,7 +350,7 @@ func rowExists(tx *Tx, table string, id int64) bool {
 		return false
 	}
 	var exists bool
-	_ = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM `+table+` WHERE id=$1)`, id).Scan(&exists)
+	_ = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM `+table+` WHERE id=?1)`, id).Scan(&exists)
 	return exists
 }
 
@@ -433,7 +433,7 @@ func restoreArchiveAssets(tx *Tx, taskID int64, raw json.RawMessage) (map[int64]
 			return nil, nil, err
 		} else if found {
 			mapping[oldID] = existing
-			if _, err := tx.Exec(`UPDATE assets SET task_ids=CASE WHEN $1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids ELSE json_array_add(task_ids,$1) END WHERE id=$2`, taskID, existing); err != nil {
+			if _, err := tx.Exec(`UPDATE assets SET task_ids=CASE WHEN ?1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids ELSE json_array_add(task_ids,?1) END WHERE id=?2`, taskID, existing); err != nil {
 				return nil, nil, err
 			}
 			continue
@@ -458,7 +458,7 @@ func restoreArchiveAssets(tx *Tx, taskID int64, raw json.RawMessage) (map[int64]
 				return nil, nil, errors.Join(findErr, fmt.Errorf("could not restore asset %d", oldID))
 			}
 			candidate = existing
-			if _, err := tx.Exec(`UPDATE assets SET task_ids=CASE WHEN $1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids ELSE json_array_add(task_ids,$1) END WHERE id=$2`, taskID, existing); err != nil {
+			if _, err := tx.Exec(`UPDATE assets SET task_ids=CASE WHEN ?1 IN (SELECT value FROM json_each(task_ids)) THEN task_ids ELSE json_array_add(task_ids,?1) END WHERE id=?2`, taskID, existing); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -494,26 +494,26 @@ func findArchiveAssetNaturalID(tx *Tx, row map[string]any) (int64, bool, error) 
 	var args []any
 	switch typeName {
 	case "root_domain":
-		query, args = `SELECT id FROM assets WHERE type='root_domain' AND domain=$1`, []any{stringValue("domain")}
+		query, args = `SELECT id FROM assets WHERE type='root_domain' AND domain=?1`, []any{stringValue("domain")}
 	case "ip":
-		query, args = `SELECT id FROM assets WHERE type='ip' AND ip=$1`, []any{stringValue("ip")}
+		query, args = `SELECT id FROM assets WHERE type='ip' AND ip=?1`, []any{stringValue("ip")}
 	case "subdomain":
-		query, args = `SELECT id FROM assets WHERE type='subdomain' AND domain=$1 AND COALESCE(record_type,'')=$2`, []any{stringValue("domain"), stringValue("record_type")}
+		query, args = `SELECT id FROM assets WHERE type='subdomain' AND domain=?1 AND COALESCE(record_type,'')=?2`, []any{stringValue("domain"), stringValue("record_type")}
 	case "app":
 		if bundle := stringValue("bundle_id"); bundle != "" {
-			query, args = `SELECT id FROM assets WHERE type='app' AND bundle_id=$1`, []any{bundle}
+			query, args = `SELECT id FROM assets WHERE type='app' AND bundle_id=?1`, []any{bundle}
 		} else {
-			query, args = `SELECT id FROM assets WHERE type='app' AND bundle_id IS NULL AND app_name=$1`, []any{stringValue("app_name")}
+			query, args = `SELECT id FROM assets WHERE type='app' AND bundle_id IS NULL AND app_name=?1`, []any{stringValue("app_name")}
 		}
 	case "service":
 		if stringValue("service_type") == "http" {
-			query, args = `SELECT id FROM assets WHERE type='service' AND service_type='http' AND url=$1`, []any{stringValue("url")}
+			query, args = `SELECT id FROM assets WHERE type='service' AND service_type='http' AND url=?1`, []any{stringValue("url")}
 		} else {
 			port, _ := jsonInt64(row["port"])
-			query, args = `SELECT id FROM assets WHERE type='service' AND service_type='other' AND COALESCE(domain,'')=$1 AND COALESCE(ip,'')=$2 AND port=$3 AND service_name=$4`, []any{stringValue("domain"), stringValue("ip"), port, stringValue("service_name")}
+			query, args = `SELECT id FROM assets WHERE type='service' AND service_type='other' AND COALESCE(domain,'')=?1 AND COALESCE(ip,'')=?2 AND port=?3 AND service_name=?4`, []any{stringValue("domain"), stringValue("ip"), port, stringValue("service_name")}
 		}
 	case "endpoint":
-		query, args = `SELECT id FROM assets WHERE type='endpoint' AND url=$1 AND method=$2`, []any{stringValue("url"), stringValue("method")}
+		query, args = `SELECT id FROM assets WHERE type='endpoint' AND url=?1 AND method=?2`, []any{stringValue("url"), stringValue("method")}
 	default:
 		return 0, false, fmt.Errorf("unsupported archived asset type %q", typeName)
 	}
@@ -588,7 +588,7 @@ func restoreTaskRelations(tx *Tx, taskID int64, raw json.RawMessage) ([]string, 
 			continue
 		}
 		created, _ := row["created_at"].(string)
-		if _, err := tx.Exec(`INSERT INTO task_relations(task_id,source_task_id,created_at) VALUES($1,$2,COALESCE($3,utc_now())) ON CONFLICT DO NOTHING`, taskID, sourceID, nilIfEmptyString(created)); err != nil {
+		if _, err := tx.Exec(`INSERT INTO task_relations(task_id,source_task_id,created_at) VALUES(?1,?2,COALESCE(?3,utc_now())) ON CONFLICT DO NOTHING`, taskID, sourceID, nilIfEmptyString(created)); err != nil {
 			return nil, err
 		}
 	}
@@ -640,7 +640,7 @@ func restoreTaskLLMProfiles(tx *Tx, raw json.RawMessage) ([]string, error) {
 		createdAt, _ := row["created_at"].(string)
 		updatedAt, _ := row["updated_at"].(string)
 		if _, err := tx.Exec(`INSERT INTO task_llm_profiles(task_id,profile_id,position,status,last_error,exhausted_at,created_at,updated_at)
-	VALUES($1,$2,$3,$4,NULLIF($5,''),$6,COALESCE($7,utc_now()),COALESCE($8,utc_now()))
+	VALUES(?1,?2,?3,?4,NULLIF(?5,''),?6,COALESCE(?7,utc_now()),COALESCE(?8,utc_now()))
 	ON CONFLICT DO NOTHING`, taskID, profileID, position, status, lastError,
 			nilIfEmptyString(exhaustedAt), nilIfEmptyString(createdAt), nilIfEmptyString(updatedAt)); err != nil {
 			return nil, err
@@ -693,7 +693,7 @@ func restoreInterceptRows(tx *Tx, raw json.RawMessage) error {
 
 func liveTaskExists(tx *Tx, id int64) bool {
 	var exists bool
-	_ = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND deleted_at IS NULL)`, id).Scan(&exists)
+	_ = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND deleted_at IS NULL)`, id).Scan(&exists)
 	return exists
 }
 
@@ -710,7 +710,7 @@ func nilIfEmptyString(value string) any {
 // CompleteTaskArchiveRestore removes compact metadata after every external
 // component has been verified and the package has been consumed.
 func (d *DB) CompleteTaskArchiveRestore(archiveID int64) error {
-	res, err := d.Exec(`DELETE FROM task_archives WHERE id=$1 AND task_id IN (SELECT id FROM tasks WHERE deleted_at IS NULL AND archived_at IS NULL)`, archiveID)
+	res, err := d.Exec(`DELETE FROM task_archives WHERE id=?1 AND task_id IN (SELECT id FROM tasks WHERE deleted_at IS NULL AND archived_at IS NULL)`, archiveID)
 	if err != nil {
 		return err
 	}
@@ -736,24 +736,24 @@ func (d *DB) DeleteTaskArchiveStub(archiveID int64) error {
 	var state string
 	if err := tx.QueryRow(`SELECT archive.task_id,task.exploration_id,archive.state
 FROM task_archives archive JOIN tasks task ON task.id=archive.task_id
-WHERE archive.id=$1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
+WHERE archive.id=?1 `, archiveID).Scan(&taskID, &expID, &state); err != nil {
 		return err
 	}
 	if state != Deleting {
 		return ErrTaskArchiveState
 	}
 	var dependent int64
-	err = tx.QueryRow(`SELECT task_id FROM task_archives WHERE id<>$1 AND $2 IN (SELECT value FROM json_each(source_task_ids)) LIMIT 1`, archiveID, taskID).Scan(&dependent)
+	err = tx.QueryRow(`SELECT task_id FROM task_archives WHERE id<>?1 AND ?2 IN (SELECT value FROM json_each(source_task_ids)) LIMIT 1`, archiveID, taskID).Scan(&dependent)
 	if err == nil {
 		return fmt.Errorf("%w: task %d", ErrTaskArchiveDeleteBlocked, dependent)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=$1 AND archived_at IS NOT NULL`, taskID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=?1 AND archived_at IS NOT NULL`, taskID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM explorations WHERE id=$1`, expID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM explorations WHERE id=?1`, expID); err != nil {
 		return err
 	}
 	return tx.Commit()

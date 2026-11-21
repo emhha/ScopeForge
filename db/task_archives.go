@@ -168,7 +168,7 @@ remaining_timeout_seconds, data_counts, aggregate_stats, archived_at,
 requested_at, created_at, updated_at`
 
 func (d *DB) GetTaskArchive(id int64) (*TaskArchive, error) {
-	item, err := scanTaskArchive(d.QueryRow(`SELECT `+taskArchiveCols+` FROM task_archives WHERE id=$1`, id))
+	item, err := scanTaskArchive(d.QueryRow(`SELECT `+taskArchiveCols+` FROM task_archives WHERE id=?1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -176,7 +176,7 @@ func (d *DB) GetTaskArchive(id int64) (*TaskArchive, error) {
 }
 
 func (d *DB) GetTaskArchiveByTask(taskID int64) (*TaskArchive, error) {
-	item, err := scanTaskArchive(d.QueryRow(`SELECT `+taskArchiveCols+` FROM task_archives WHERE task_id=$1`, taskID))
+	item, err := scanTaskArchive(d.QueryRow(`SELECT `+taskArchiveCols+` FROM task_archives WHERE task_id=?1`, taskID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -192,15 +192,15 @@ func (d *DB) ListTaskArchives(search, state string, page, size int) (TaskArchive
 	}
 	search = strings.TrimSpace(search)
 	state = strings.TrimSpace(state)
-	where := `WHERE ($1='' OR task_id LIKE '%'||$1||'%' OR task_name LIKE '%'||$1||'%' OR task_description LIKE '%'||$1||'%')
-AND ($2='' OR state=$2)`
+	where := `WHERE (?1='' OR task_id LIKE '%'||?1||'%' OR task_name LIKE '%'||?1||'%' OR task_description LIKE '%'||?1||'%')
+AND (?2='' OR state=?2)`
 	var out TaskArchivePage
 	out.Page, out.Size = page, size
 	if err := d.QueryRow(`SELECT count(*) FROM task_archives `+where, search, state).Scan(&out.Total); err != nil {
 		return out, err
 	}
 	rows, err := d.Query(`SELECT `+taskArchiveCols+` FROM task_archives `+where+`
-ORDER BY COALESCE(archived_at, requested_at) DESC, id DESC LIMIT $3 OFFSET $4`, search, state, size, (page-1)*size)
+ORDER BY COALESCE(archived_at, requested_at) DESC, id DESC LIMIT ?3 OFFSET ?4`, search, state, size, (page-1)*size)
 	if err != nil {
 		return out, err
 	}
@@ -230,7 +230,7 @@ func (d *DB) QueueTaskArchive(taskID int64) (*TaskArchive, error) {
 	err = tx.QueryRow(`SELECT COALESCE(t.name,''), t.description, t.goal, t.status,
  t.category_id, COALESCE(c.name,''), t.paused, t.queued, t.deadline_at
 FROM tasks t LEFT JOIN task_categories c ON c.id=t.category_id
-WHERE t.id=$1 AND t.deleted_at IS NULL `, taskID).Scan(
+WHERE t.id=?1 AND t.deleted_at IS NULL `, taskID).Scan(
 		&name, &description, &goal, &status, &categoryID, &categoryName, &paused, &queued, &deadline,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -249,7 +249,7 @@ WHERE t.id=$1 AND t.deleted_at IS NULL `, taskID).Scan(
 	err = tx.QueryRow(`SELECT child.id FROM task_relations relation
 JOIN tasks child ON child.id=relation.task_id AND child.deleted_at IS NULL
 LEFT JOIN task_archives pending ON pending.task_id=child.id
-WHERE relation.source_task_id=$1
+WHERE relation.source_task_id=?1
   AND (pending.id IS NULL OR pending.state NOT IN ('archive_queued','archiving'))
 LIMIT 1`, taskID).Scan(&dependent)
 	if err == nil {
@@ -259,7 +259,7 @@ LIMIT 1`, taskID).Scan(&dependent)
 		return nil, err
 	}
 	var sources []int64
-	rows, err := tx.Query(`SELECT source_task_id FROM task_relations WHERE task_id=$1 ORDER BY created_at, source_task_id`, taskID)
+	rows, err := tx.Query(`SELECT source_task_id FROM task_relations WHERE task_id=?1 ORDER BY created_at, source_task_id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +288,7 @@ LIMIT 1`, taskID).Scan(&dependent)
  task_id,state,phase,progress,error,warnings,format_version,task_name,
  task_description,task_goal,original_status,category_id_snapshot,
  category_name_snapshot,source_task_ids,remaining_timeout_seconds,requested_at)
-VALUES ($1,$2,'queued',0,'','[]',$3,$4,$5,$6,$7,$8,$9,$10,$11,utc_now())
+VALUES (?1,?2,'queued',0,'','[]',?3,?4,?5,?6,?7,?8,?9,?10,?11,utc_now())
 	ON CONFLICT (task_id) DO UPDATE SET
 	 state=CASE WHEN task_archives.state IN ('archive_failed') THEN EXCLUDED.state ELSE task_archives.state END,
 	 phase=CASE WHEN task_archives.state IN ('archive_failed') THEN 'queued' ELSE task_archives.phase END,
@@ -301,7 +301,7 @@ VALUES ($1,$2,'queued',0,'','[]',$3,$4,$5,$6,$7,$8,$9,$10,$11,utc_now())
 	if err != nil {
 		return nil, err
 	}
-	item, err := scanTaskArchive(tx.QueryRow(`SELECT `+taskArchiveCols+` FROM task_archives WHERE task_id=$1`, taskID))
+	item, err := scanTaskArchive(tx.QueryRow(`SELECT `+taskArchiveCols+` FROM task_archives WHERE task_id=?1`, taskID))
 	if err != nil {
 		return nil, err
 	}
@@ -313,8 +313,8 @@ VALUES ($1,$2,'queued',0,'','[]',$3,$4,$5,$6,$7,$8,$9,$10,$11,utc_now())
 
 func (d *DB) QueueTaskArchiveRestore(id int64) (*TaskArchive, error) {
 	item, err := scanTaskArchive(d.QueryRow(`UPDATE task_archives
-SET state=$2, phase='queued', progress=0, error='', requested_at=utc_now()
-WHERE id=$1 AND state IN ('ready','restore_failed') RETURNING `+taskArchiveCols, id, RestoreQueued))
+SET state=?2, phase='queued', progress=0, error='', requested_at=utc_now()
+WHERE id=?1 AND state IN ('ready','restore_failed') RETURNING `+taskArchiveCols, id, RestoreQueued))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTaskArchiveState
 	}
@@ -328,7 +328,7 @@ func (d *DB) QueueTaskArchiveDelete(id int64) (*TaskArchive, error) {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	var taskID int64
-	if err := tx.QueryRow(`SELECT task_id FROM task_archives WHERE id=$1 AND state IN ('ready','delete_failed') `, id).Scan(&taskID); err != nil {
+	if err := tx.QueryRow(`SELECT task_id FROM task_archives WHERE id=?1 AND state IN ('ready','delete_failed') `, id).Scan(&taskID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskArchiveState
 		}
@@ -336,7 +336,7 @@ func (d *DB) QueueTaskArchiveDelete(id int64) (*TaskArchive, error) {
 	}
 	var dependent int64
 	err = tx.QueryRow(`SELECT task_id FROM task_archives
-WHERE id<>$1 AND $2 IN (SELECT value FROM json_each(source_task_ids)) AND state NOT IN ('delete_queued','deleting') LIMIT 1`, id, taskID).Scan(&dependent)
+WHERE id<>?1 AND ?2 IN (SELECT value FROM json_each(source_task_ids)) AND state NOT IN ('delete_queued','deleting') LIMIT 1`, id, taskID).Scan(&dependent)
 	if err == nil {
 		return nil, fmt.Errorf("%w: task %d", ErrTaskArchiveDeleteBlocked, dependent)
 	}
@@ -344,8 +344,8 @@ WHERE id<>$1 AND $2 IN (SELECT value FROM json_each(source_task_ids)) AND state 
 		return nil, err
 	}
 	item, err := scanTaskArchive(tx.QueryRow(`UPDATE task_archives
-SET state=$2, phase='queued', progress=0, error='', requested_at=utc_now()
-WHERE id=$1 RETURNING `+taskArchiveCols, id, DeleteQueued))
+SET state=?2, phase='queued', progress=0, error='', requested_at=utc_now()
+WHERE id=?1 RETURNING `+taskArchiveCols, id, DeleteQueued))
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +387,7 @@ ORDER BY requested_at,id  LIMIT 1`).Scan(&id, &queuedState)
 	}
 	active := map[string]string{ArchiveQueued: Archiving, RestoreQueued: Restoring, DeleteQueued: Deleting}[queuedState]
 	item, err := scanTaskArchive(tx.QueryRowContext(ctx, `UPDATE task_archives
-SET state=$2,phase='starting',progress=1,error='' WHERE id=$1 RETURNING `+taskArchiveCols, id, active))
+SET state=?2,phase='starting',progress=1,error='' WHERE id=?1 RETURNING `+taskArchiveCols, id, active))
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +401,7 @@ func (d *DB) UpdateTaskArchiveProgress(id int64, phase string, progress int) err
 	if progress > 100 {
 		progress = 100
 	}
-	_, err := d.Exec(`UPDATE task_archives SET phase=$2,progress=$3 WHERE id=$1`, id, phase, progress)
+	_, err := d.Exec(`UPDATE task_archives SET phase=?2,progress=?3 WHERE id=?1`, id, phase, progress)
 	return err
 }
 
@@ -409,14 +409,14 @@ func (d *DB) AppendTaskArchiveWarning(id int64, warning string) error {
 	if strings.TrimSpace(warning) == "" {
 		return nil
 	}
-	_, err := d.Exec(`UPDATE task_archives SET warnings=json_array_add(warnings,$2) WHERE id=$1`, id, warning)
+	_, err := d.Exec(`UPDATE task_archives SET warnings=json_array_add(warnings,?2) WHERE id=?1`, id, warning)
 	return err
 }
 
 func (d *DB) IsTaskArchiveRestored(id int64) (bool, error) {
 	var restored bool
 	err := d.QueryRow(`SELECT task.deleted_at IS NULL AND task.archived_at IS NULL
-FROM task_archives archive JOIN tasks task ON task.id=archive.task_id WHERE archive.id=$1`, id).Scan(&restored)
+FROM task_archives archive JOIN tasks task ON task.id=archive.task_id WHERE archive.id=?1`, id).Scan(&restored)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrTaskArchiveNotFound
 	}
@@ -432,7 +432,7 @@ func (d *DB) FailTaskArchiveJob(id int64, activeState string, cause error) error
 	if cause != nil {
 		message = cause.Error()
 	}
-	_, err := d.Exec(`UPDATE task_archives SET state=$2,phase='failed',error=$3 WHERE id=$1`, id, failed, message)
+	_, err := d.Exec(`UPDATE task_archives SET state=?2,phase='failed',error=?3 WHERE id=?1`, id, failed, message)
 	return err
 }
 
@@ -531,14 +531,14 @@ func rawRowCount(raw json.RawMessage) int64 {
 }
 
 func archiveAssetIDsQuery() string {
-	return `SELECT id FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))
-UNION SELECT link.asset_id FROM task_asset_links link WHERE link.task_id=$1
+	return `SELECT id FROM assets WHERE ?1 IN (SELECT value FROM json_each(task_ids))
+UNION SELECT link.asset_id FROM task_asset_links link WHERE link.task_id=?1
 UNION SELECT anchor.asset_id FROM exploration_anchors anchor
-      JOIN exploration_nodes node ON node.id=anchor.node_id WHERE node.exploration_id=$2
+      JOIN exploration_nodes node ON node.id=anchor.node_id WHERE node.exploration_id=?2
 UNION SELECT item.value FROM findings finding
       CROSS JOIN json_each(
         CASE WHEN json_type(finding.asset_ids)='array' THEN finding.asset_ids ELSE '[]' END
-      ) item WHERE finding.task_id=$1 AND regexp('^[0-9]+$',CAST(item.value AS TEXT))`
+      ) item WHERE finding.task_id=?1 AND regexp('^[0-9]+$',CAST(item.value AS TEXT))`
 }
 
 // SnapshotTaskArchive reads one repeatable SQLite snapshot. Task-owned Agent
@@ -568,7 +568,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		return nil, err
 	}
 	var expID int64
-	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
+	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=?1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskArchiveNotFound
 		}
@@ -580,26 +580,26 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		query string
 		args  []any
 	}{
-		{"tasks", `SELECT * FROM tasks WHERE id=$1`, []any{taskID}},
-		{"explorations", `SELECT * FROM explorations WHERE id=$1`, []any{expID}},
-		{"exploration_nodes", `SELECT * FROM exploration_nodes WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
-		{"exploration_edges", `SELECT * FROM exploration_edges WHERE exploration_id=$1 ORDER BY src_id,dst_id`, []any{expID}},
-		{"exploration_anchors", `SELECT anchor.* FROM exploration_anchors anchor JOIN exploration_nodes node ON node.id=anchor.node_id WHERE node.exploration_id=$1 ORDER BY node_id,asset_id`, []any{expID}},
-		{"task_constraints", `SELECT * FROM task_constraints WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
-		{"activity", `SELECT * FROM activity WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
-		{"node_sources", `SELECT ns.* FROM node_sources ns JOIN activity a ON a.id=ns.activity_id WHERE a.exploration_id=$1 ORDER BY ns.activity_id,ns.node_id,ns.relation`, []any{expID}},
-		{"task_relations", `SELECT * FROM task_relations WHERE task_id=$1 ORDER BY created_at,source_task_id`, []any{taskID}},
-		{"task_asset_links", `SELECT * FROM task_asset_links WHERE task_id=$1 ORDER BY asset_id`, []any{taskID}},
-		{"task_llm_profiles", `SELECT * FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`, []any{taskID}},
-		{"task_scope", `SELECT * FROM task_scope WHERE task_id=$1 ORDER BY id`, []any{taskID}},
-		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
-		{"finding_traffic_bindings", `SELECT b.* FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE f.task_id=$1 ORDER BY b.finding_id,b.position,b.id`, []any{taskID}},
-		{"traffic_evidence_snapshots", `SELECT s.* FROM traffic_evidence_snapshots s WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE b.snapshot_id=s.id AND f.task_id=$1) ORDER BY s.id`, []any{taskID}},
-		{"llm_records", `SELECT * FROM llm_records WHERE COALESCE(task_id,'')=$1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},
-		{"llm_usage", `SELECT * FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2 ORDER BY id`, []any{strconv.FormatInt(taskID, 10), expID}},
-		{"skill_usage", `SELECT * FROM skill_usage WHERE task_id=$1 OR exploration_id=$2 ORDER BY id`, []any{taskID, expID}},
-		{"tool_usage", `SELECT * FROM tool_usage WHERE task_id=$1 OR exploration_id=$2 ORDER BY id`, []any{taskID, expID}},
-		{"intercept_pending", `SELECT * FROM intercept_pending WHERE COALESCE(task_id,'')=$1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},
+		{"tasks", `SELECT * FROM tasks WHERE id=?1`, []any{taskID}},
+		{"explorations", `SELECT * FROM explorations WHERE id=?1`, []any{expID}},
+		{"exploration_nodes", `SELECT * FROM exploration_nodes WHERE exploration_id=?1 ORDER BY id`, []any{expID}},
+		{"exploration_edges", `SELECT * FROM exploration_edges WHERE exploration_id=?1 ORDER BY src_id,dst_id`, []any{expID}},
+		{"exploration_anchors", `SELECT anchor.* FROM exploration_anchors anchor JOIN exploration_nodes node ON node.id=anchor.node_id WHERE node.exploration_id=?1 ORDER BY node_id,asset_id`, []any{expID}},
+		{"task_constraints", `SELECT * FROM task_constraints WHERE exploration_id=?1 ORDER BY id`, []any{expID}},
+		{"activity", `SELECT * FROM activity WHERE exploration_id=?1 ORDER BY id`, []any{expID}},
+		{"node_sources", `SELECT ns.* FROM node_sources ns JOIN activity a ON a.id=ns.activity_id WHERE a.exploration_id=?1 ORDER BY ns.activity_id,ns.node_id,ns.relation`, []any{expID}},
+		{"task_relations", `SELECT * FROM task_relations WHERE task_id=?1 ORDER BY created_at,source_task_id`, []any{taskID}},
+		{"task_asset_links", `SELECT * FROM task_asset_links WHERE task_id=?1 ORDER BY asset_id`, []any{taskID}},
+		{"task_llm_profiles", `SELECT * FROM task_llm_profiles WHERE task_id=?1 ORDER BY position`, []any{taskID}},
+		{"task_scope", `SELECT * FROM task_scope WHERE task_id=?1 ORDER BY id`, []any{taskID}},
+		{"findings", `SELECT * FROM findings WHERE task_id=?1 ORDER BY id`, []any{taskID}},
+		{"finding_traffic_bindings", `SELECT b.* FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE f.task_id=?1 ORDER BY b.finding_id,b.position,b.id`, []any{taskID}},
+		{"traffic_evidence_snapshots", `SELECT s.* FROM traffic_evidence_snapshots s WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE b.snapshot_id=s.id AND f.task_id=?1) ORDER BY s.id`, []any{taskID}},
+		{"llm_records", `SELECT * FROM llm_records WHERE COALESCE(task_id,'')=?1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},
+		{"llm_usage", `SELECT * FROM llm_usage WHERE COALESCE(task_id,'')=?1 OR exploration_id=?2 ORDER BY id`, []any{strconv.FormatInt(taskID, 10), expID}},
+		{"skill_usage", `SELECT * FROM skill_usage WHERE task_id=?1 OR exploration_id=?2 ORDER BY id`, []any{taskID, expID}},
+		{"tool_usage", `SELECT * FROM tool_usage WHERE task_id=?1 OR exploration_id=?2 ORDER BY id`, []any{taskID, expID}},
+		{"intercept_pending", `SELECT * FROM intercept_pending WHERE COALESCE(task_id,'')=?1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},
 		{"assets", `SELECT asset.* FROM assets asset WHERE asset.id IN (` + archiveAssetIDsQuery() + `) ORDER BY asset.id`, []any{taskID, expID}},
 	}
 	counts := make(map[string]int64, len(queries))
@@ -629,7 +629,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 	}
 	_ = assetIDs // retained in the assets table payload; only exclusive ids need a side channel.
 	var sources []int64
-	rows, err := tx.Query(`SELECT source_task_id FROM task_relations WHERE task_id=$1 ORDER BY created_at,source_task_id`, taskID)
+	rows, err := tx.Query(`SELECT source_task_id FROM task_relations WHERE task_id=?1 ORDER BY created_at,source_task_id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -686,11 +686,11 @@ func archiveAssetMetadata(tx *Tx, taskID, expID int64, assetRows json.RawMessage
 	rowsID, err := tx.Query(`WITH candidate AS (`+archiveAssetIDsQuery()+`)
 SELECT asset.id FROM assets asset JOIN candidate ON candidate.id=asset.id
 WHERE asset.company_id IS NULL
-AND NOT EXISTS (SELECT 1 FROM tasks task WHERE task.id<>$1 AND task.deleted_at IS NULL AND task.id IN (SELECT value FROM json_each(asset.task_ids)))
+AND NOT EXISTS (SELECT 1 FROM tasks task WHERE task.id<>?1 AND task.deleted_at IS NULL AND task.id IN (SELECT value FROM json_each(asset.task_ids)))
 AND NOT EXISTS (
  SELECT 1 FROM exploration_anchors anchor JOIN exploration_nodes node ON node.id=anchor.node_id
  JOIN tasks task ON task.exploration_id=node.exploration_id
- WHERE anchor.asset_id=asset.id AND task.id<>$1 AND task.deleted_at IS NULL
+ WHERE anchor.asset_id=asset.id AND task.id<>?1 AND task.deleted_at IS NULL
 ) ORDER BY asset.id`, taskID, expID)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -720,7 +720,7 @@ func taskArchiveAggregates(tx *Tx, taskID, expID int64) (map[string]any, error) 
 	var calls, input, output, cacheRead, cacheWrite int64
 	if err := tx.QueryRow(`SELECT count(*),COALESCE(sum(input_tokens),0),COALESCE(sum(output_tokens),0),
 COALESCE(sum(cache_read),0),COALESCE(sum(cache_write),0)
-FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2`, strconv.FormatInt(taskID, 10), expID).
+FROM llm_usage WHERE COALESCE(task_id,'')=?1 OR exploration_id=?2`, strconv.FormatInt(taskID, 10), expID).
 		Scan(&calls, &input, &output, &cacheRead, &cacheWrite); err != nil {
 		return nil, err
 	}
@@ -733,30 +733,30 @@ FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2`, strconv.Form
 		{"token_profiles", `SELECT COALESCE(profile_name,'') profile_name,count(*) calls,1 tasks,
        COALESCE(sum(input_tokens),0) input_tokens,COALESCE(sum(output_tokens),0) output_tokens,
        COALESCE(sum(cache_read),0) cache_read_tokens,COALESCE(sum(cache_write),0) cache_write_tokens
-FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2
+FROM llm_usage WHERE COALESCE(task_id,'')=?1 OR exploration_id=?2
 GROUP BY profile_name ORDER BY sum(input_tokens)+sum(output_tokens) DESC`, []any{strconv.FormatInt(taskID, 10), expID}},
 		{"token_daily", `SELECT COALESCE(profile_name,'') profile_name,date(ts) date,
        COALESCE(sum(input_tokens),0) input_tokens,COALESCE(sum(output_tokens),0) output_tokens,
        COALESCE(sum(cache_read),0) cache_read_tokens
-FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2
+FROM llm_usage WHERE COALESCE(task_id,'')=?1 OR exploration_id=?2
 GROUP BY profile_name,date ORDER BY date`, []any{strconv.FormatInt(taskID, 10), expID}},
-		{"skills", `SELECT COALESCE(json_group_object(name,n),'{}') FROM (SELECT skill name,count(*) n FROM skill_usage WHERE (task_id=$1 OR exploration_id=$2) AND found GROUP BY skill) x`, []any{taskID, expID}},
+		{"skills", `SELECT COALESCE(json_group_object(name,n),'{}') FROM (SELECT skill name,count(*) n FROM skill_usage WHERE (task_id=?1 OR exploration_id=?2) AND found GROUP BY skill) x`, []any{taskID, expID}},
 		{"skill_stats", `SELECT skill,count(*) calls,1 tasks,
        COALESCE(json_group_array(DISTINCT agent_key) FILTER (WHERE agent_key IS NOT NULL),json_array()) agents,
        max(ts) last_used
-FROM skill_usage WHERE (task_id=$1 OR exploration_id=$2) AND found GROUP BY skill`, []any{taskID, expID}},
+FROM skill_usage WHERE (task_id=?1 OR exploration_id=?2) AND found GROUP BY skill`, []any{taskID, expID}},
 		{"missing_skill_stats", `SELECT skill,count(*) calls,0 tasks,
        COALESCE(json_group_array(DISTINCT agent_key) FILTER (WHERE agent_key IS NOT NULL),json_array()) agents,
        max(ts) last_used
-FROM skill_usage WHERE (task_id=$1 OR exploration_id=$2) AND NOT found GROUP BY skill`, []any{taskID, expID}},
-		{"tools", `SELECT COALESCE(json_group_object(name,n),'{}') FROM (SELECT tool_key name,count(*) n FROM tool_usage WHERE task_id=$1 OR exploration_id=$2 GROUP BY tool_key) x`, []any{taskID, expID}},
-		{"findings", `SELECT COALESCE(json_group_object(name,n),'{}') FROM (SELECT COALESCE(NULLIF(severity,''),'unknown') name,count(*) n FROM findings WHERE task_id=$1 GROUP BY severity) x`, []any{taskID}},
+FROM skill_usage WHERE (task_id=?1 OR exploration_id=?2) AND NOT found GROUP BY skill`, []any{taskID, expID}},
+		{"tools", `SELECT COALESCE(json_group_object(name,n),'{}') FROM (SELECT tool_key name,count(*) n FROM tool_usage WHERE task_id=?1 OR exploration_id=?2 GROUP BY tool_key) x`, []any{taskID, expID}},
+		{"findings", `SELECT COALESCE(json_group_object(name,n),'{}') FROM (SELECT COALESCE(NULLIF(severity,''),'unknown') name,count(*) n FROM findings WHERE task_id=?1 GROUP BY severity) x`, []any{taskID}},
 		{"finding_stats", `SELECT json_object(
  'total',count(*),'pending',count(*) FILTER (WHERE status='pending'),
  'critical',count(*) FILTER (WHERE severity='critical'),'high',count(*) FILTER (WHERE severity='high'),
  'medium',count(*) FILTER (WHERE severity='medium'),'low',count(*) FILTER (WHERE severity='low'),
  'vulnclasses',COALESCE(json_group_array(DISTINCT vulnclass) FILTER (WHERE vulnclass<>''),'[]'))
-FROM findings WHERE task_id=$1`, []any{taskID}},
+FROM findings WHERE task_id=?1`, []any{taskID}},
 	} {
 		var raw []byte
 		if item.name == "token_profiles" || item.name == "token_daily" || item.name == "skill_stats" || item.name == "missing_skill_stats" {

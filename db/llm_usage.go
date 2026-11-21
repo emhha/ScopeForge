@@ -35,7 +35,7 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 	}
 	_, err := d.Exec(`
 INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
+VALUES (NULLIF(?1,''),?2,NULLIF(?3,''),NULLIF(?4,''),NULLIF(?5,''),?6,?7,?8,?9,?10,?11)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
 		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
 	return err
@@ -51,7 +51,7 @@ SELECT COALESCE(NULLIF(model,''),'(unknown)') AS model, COUNT(*) AS calls,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
        COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
 FROM llm_usage
-WHERE COALESCE(task_id,'') = $1
+WHERE COALESCE(task_id,'') = ?1
 GROUP BY model
 ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
 	if err != nil {
@@ -167,7 +167,7 @@ SELECT COALESCE(profile_name,'') AS profile_name,
        date(ts) AS day,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cache_read),0)
 FROM llm_usage
-WHERE ts >= datetime(utc_now(), '-' || $1 || ' days')
+WHERE ts >= datetime(utc_now(), '-' || ?1 || ' days')
 GROUP BY profile_name, day
 ORDER BY day`, days)
 	if err != nil {
@@ -265,7 +265,7 @@ WHERE worker = 'judge'`).Scan(&u.Calls, &u.InputTokens, &u.OutputTokens,
 SELECT date(ts) AS day,
        COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
 FROM llm_usage
-WHERE worker = 'judge' AND ts >= datetime(utc_now(), '-' || $1 || ' days')
+WHERE worker = 'judge' AND ts >= datetime(utc_now(), '-' || ?1 || ' days')
 GROUP BY day
 ORDER BY day`, days)
 	if err != nil {

@@ -170,8 +170,8 @@ func TestEvidenceAtomicFailuresAndLegacy(t *testing.T) {
 	ctx := context.Background()
 	seedExchange(t, s, "valid", []byte("OK"), false)
 	counts := func() (findings, nodes int) {
-		s.DB.QueryRow(`SELECT count(*) FROM findings WHERE task_id=$1`, in.TaskID).Scan(&findings)
-		s.DB.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='finding'`, in.ExplorationID).Scan(&nodes)
+		s.DB.QueryRow(`SELECT count(*) FROM findings WHERE task_id=?1`, in.TaskID).Scan(&findings)
+		s.DB.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=?1 AND kind='finding'`, in.ExplorationID).Scan(&nodes)
 		return
 	}
 	for _, kind := range []string{"missing_id", "missing_body", "disk_failure", "database_failure"} {

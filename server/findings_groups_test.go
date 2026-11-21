@@ -45,7 +45,7 @@ func TestFindingGroupsReturnsTaskBucketsAndNormalizesPagination(t *testing.T) {
 	marker := fmt.Sprintf("__server_finding_groups_%d__", time.Now().UnixNano())
 	createdTaskIDs := []int64{}
 	defer func() {
-		_, _ = m.pg.Exec(`DELETE FROM findings WHERE vulnclass=$1`, marker)
+		_, _ = m.pg.Exec(`DELETE FROM findings WHERE vulnclass=?1`, marker)
 		for _, taskID := range createdTaskIDs {
 			_ = m.pg.DeleteTask(taskID)
 		}
@@ -287,7 +287,7 @@ func TestDeepenAdmissionFailureDiscardsFollowUpIntent(t *testing.T) {
 	}
 	taskID, _ := strconv.ParseInt(task.ID, 10, 64)
 	defer func() {
-		_, _ = m.pg.Exec(`UPDATE tasks SET deleted_at=NULL WHERE id=$1`, taskID)
+		_, _ = m.pg.Exec(`UPDATE tasks SET deleted_at=NULL WHERE id=?1`, taskID)
 		_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{})
 	}()
 	findingNodeID, err := task.Store.AddNode(db.KindFinding, map[string]any{"summary": "source"}, 5, "confirmed", "worker", nil)
@@ -303,7 +303,7 @@ func TestDeepenAdmissionFailureDiscardsFollowUpIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var activitiesBefore int
-	if err := m.pg.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=$1`, task.Store.ID()).Scan(&activitiesBefore); err != nil {
+	if err := m.pg.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=?1`, task.Store.ID()).Scan(&activitiesBefore); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.SetTaskStatus(task.ID, "done"); err != nil {
@@ -311,7 +311,7 @@ func TestDeepenAdmissionFailureDiscardsFollowUpIntent(t *testing.T) {
 	}
 	// Keep the in-memory handle and graph available while forcing the atomic
 	// admission UPDATE to reject this soft-deleted row.
-	if _, err := m.pg.Exec(`UPDATE tasks SET deleted_at=utc_now() WHERE id=$1`, taskID); err != nil {
+	if _, err := m.pg.Exec(`UPDATE tasks SET deleted_at=utc_now() WHERE id=?1`, taskID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,7 +334,7 @@ func TestDeepenAdmissionFailureDiscardsFollowUpIntent(t *testing.T) {
 		t.Fatalf("failed admission left an orphan follow-up: before=%d after=%d nodes=%+v", len(before), len(after), after)
 	}
 	var activitiesAfter int
-	if err := m.pg.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=$1`, task.Store.ID()).Scan(&activitiesAfter); err != nil {
+	if err := m.pg.QueryRow(`SELECT COUNT(*) FROM activity WHERE exploration_id=?1`, task.Store.ID()).Scan(&activitiesAfter); err != nil {
 		t.Fatal(err)
 	}
 	if activitiesAfter != activitiesBefore {

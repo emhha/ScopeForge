@@ -194,7 +194,7 @@ func (t *turn) Run(ctx context.Context, input string, settling bool) (<-chan *ev
 		opts = append(opts, llmagent.WithInstruction(instructions))
 	}
 	ag := llmagent.New("scopeforge", opts...)
-	ropts := []runner.Option{runner.WithSessionService(t.service)}
+	ropts := []runner.Option{runner.WithSessionService(t.service), runner.WithPersistInterruptedAssistant(true)}
 	if cfg.Memory != nil {
 		ropts = append(ropts, runner.WithMemoryService(cfg.Memory))
 	}

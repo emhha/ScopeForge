@@ -500,7 +500,7 @@ func TestRerunAdmissionFailureRestoresIntentState(t *testing.T) {
 	}
 	taskID, _ := strconv.ParseInt(task.ID, 10, 64)
 	defer func() {
-		_, _ = m.pg.Exec(`UPDATE tasks SET deleted_at=NULL WHERE id=$1`, taskID)
+		_, _ = m.pg.Exec(`UPDATE tasks SET deleted_at=NULL WHERE id=?1`, taskID)
 		_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{})
 	}()
 	intentID, err := task.Store.AddIntent(map[string]any{"summary": "retry"}, 1, nil, "planner")
@@ -513,7 +513,7 @@ func TestRerunAdmissionFailureRestoresIntentState(t *testing.T) {
 	if err := m.SetTaskStatus(task.ID, "done"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.pg.Exec(`UPDATE tasks SET deleted_at=utc_now() WHERE id=$1`, taskID); err != nil {
+	if _, err := m.pg.Exec(`UPDATE tasks SET deleted_at=utc_now() WHERE id=?1`, taskID); err != nil {
 		t.Fatal(err)
 	}
 

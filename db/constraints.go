@@ -21,7 +21,7 @@ type Constraint struct {
 func (s *ExplorationStore) ListConstraints() ([]Constraint, error) {
 	rows, err := s.db.Query(`
 SELECT id, kind, text, COALESCE(origin,''), created_at
-FROM task_constraints WHERE exploration_id=$1
+FROM task_constraints WHERE exploration_id=?1
 ORDER BY (kind='deny'), id`, s.expID)
 	if err != nil {
 		return nil, err
@@ -49,7 +49,7 @@ func (s *ExplorationStore) AddConstraint(kind, text, origin string) (int64, erro
 	var id int64
 	err := s.db.QueryRow(`
 INSERT INTO task_constraints(exploration_id, kind, text, origin)
-VALUES ($1, $2, $3, $4) RETURNING id`, s.expID, kind, text, origin).Scan(&id)
+VALUES (?1, ?2, ?3, ?4) RETURNING id`, s.expID, kind, text, origin).Scan(&id)
 	return id, err
 }
 
@@ -60,8 +60,8 @@ func (s *ExplorationStore) UpdateConstraint(id int64, kind, text string) error {
 		return fmt.Errorf("kind 必须是 allow 或 deny")
 	}
 	res, err := s.db.Exec(`
-UPDATE task_constraints SET kind=$1, text=$2, updated_at=utc_now()
-WHERE id=$3 AND exploration_id=$4`, kind, text, id, s.expID)
+UPDATE task_constraints SET kind=?1, text=?2, updated_at=utc_now()
+WHERE id=?3 AND exploration_id=?4`, kind, text, id, s.expID)
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ WHERE id=$3 AND exploration_id=$4`, kind, text, id, s.expID)
 // DeleteConstraint removes a constraint; scoped to this exploration. Returns an
 // error if no such constraint exists.
 func (s *ExplorationStore) DeleteConstraint(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM task_constraints WHERE id=$1 AND exploration_id=$2`, id, s.expID)
+	res, err := s.db.Exec(`DELETE FROM task_constraints WHERE id=?1 AND exploration_id=?2`, id, s.expID)
 	if err != nil {
 		return err
 	}

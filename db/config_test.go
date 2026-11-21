@@ -27,7 +27,7 @@ func TestPoolProfilesOrder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id) })
+		t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=?1`, id) })
 		return id
 	}
 	lo := mk("t-pool-lo", 1, false, "k1")
@@ -76,7 +76,7 @@ func TestConfigStores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, pid)
+	defer d.Exec(`DELETE FROM llm_profiles WHERE id=?1`, pid)
 	if err := d.SetActiveProfile(pid); err != nil {
 		t.Fatal(err)
 	}
@@ -127,8 +127,8 @@ func TestConfigStores(t *testing.T) {
 	if len(pv) < 2 {
 		t.Fatalf("planner catalog want >=2 vars, got %d", len(pv))
 	}
-	d.Exec(`DELETE FROM agent_prompts WHERE agent_id=$1`, ag.ID)
-	d.Exec(`UPDATE agents SET current_prompt_id=NULL WHERE id=$1`, ag.ID)
+	d.Exec(`DELETE FROM agent_prompts WHERE agent_id=?1`, ag.ID)
+	d.Exec(`UPDATE agents SET current_prompt_id=NULL WHERE id=?1`, ag.ID)
 
 	// mcp + skill + visibility (bidirectional via one join)
 	// Clean up any leftover MCP from prior runs to keep this test idempotent.
@@ -141,7 +141,7 @@ func TestConfigStores(t *testing.T) {
 	// filesystem-based, so their visibility is keyed by skill (directory) name in a
 	// dedicated table. Clear any pre-existing MCP visibility rows so the assertions
 	// below isolate on exactly what this test sets.
-	d.Exec(`DELETE FROM agent_visibility WHERE agent_id = $1 AND resource_kind = 'mcp'`, ag.ID)
+	d.Exec(`DELETE FROM agent_visibility WHERE agent_id = ?1 AND resource_kind = 'mcp'`, ag.ID)
 	if err := d.ToggleVisibility(ag.ID, "mcp", mid, true); err != nil {
 		t.Fatal(err)
 	}

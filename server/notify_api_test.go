@@ -62,7 +62,7 @@ func newNotifyFixture(t *testing.T) *notifyFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { pg.Exec(`DELETE FROM tasks WHERE id=$1`, taskID) })
+	t.Cleanup(func() { pg.Exec(`DELETE FROM tasks WHERE id=?1`, taskID) })
 
 	var mark int64
 	if err := pg.QueryRow(`SELECT COALESCE(max(id),0) FROM notification_events`).Scan(&mark); err != nil {
@@ -75,13 +75,13 @@ func newNotifyFixture(t *testing.T) *notifyFixture {
 	// （正是它返回的那个初始 finding），其它用例也可能有残留。不隔离的话，
 	// 这些杂散事件会被分派到本用例的渠道上，让「应有 N 条投递」这类断言
 	// 时对时错——而且错法取决于用例执行顺序，比直接失败更难查。
-	if _, err := pg.Exec(`UPDATE notification_events SET fanned_out = true WHERE id <= $1 AND NOT fanned_out`, mark); err != nil {
+	if _, err := pg.Exec(`UPDATE notification_events SET fanned_out = true WHERE id <= ?1 AND NOT fanned_out`, mark); err != nil {
 		t.Fatal(err)
 	}
 
 	f := &notifyFixture{s: s, pg: pg, request: request, n: newNotifier(s), taskID: taskID, expID: task.ExpID, cleanupMark: mark}
 	t.Cleanup(func() {
-		if _, err := pg.Exec(`DELETE FROM notification_events WHERE id > $1`, f.cleanupMark); err != nil {
+		if _, err := pg.Exec(`DELETE FROM notification_events WHERE id > ?1`, f.cleanupMark); err != nil {
 			t.Logf("清理通知事件失败: %v", err)
 		}
 	})
@@ -146,7 +146,7 @@ func (f *notifyFixture) createChannel(t *testing.T, payload map[string]any) int6
 	if err := json.Unmarshal(r.Body.Bytes(), &res); err != nil || res.ID == 0 {
 		t.Fatalf("建渠道返回异常: %s (%v)", r.Body, err)
 	}
-	t.Cleanup(func() { f.pg.Exec(`DELETE FROM notification_channels WHERE id=$1`, res.ID) })
+	t.Cleanup(func() { f.pg.Exec(`DELETE FROM notification_channels WHERE id=?1`, res.ID) })
 	return res.ID
 }
 
@@ -221,7 +221,7 @@ func markdownText(t *testing.T, body map[string]any) string {
 func (f *notifyFixture) agePendingBatch(t *testing.T, chID int64) {
 	t.Helper()
 	if _, err := f.pg.Exec(`UPDATE notification_deliveries SET created_at = datetime(utc_now(), '-2 hours')
-WHERE channel_id=$1 AND state=$2`, chID, db.NotifyStatePending); err != nil {
+WHERE channel_id=?1 AND state=?2`, chID, db.NotifyStatePending); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -248,7 +248,7 @@ func TestNotifyEndToEndRealtimeDelivery(t *testing.T) {
 	}
 	// 投递应流转为 sent。
 	var pending int
-	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=$1 AND state <> $2`,
+	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=?1 AND state <> ?2`,
 		chID, db.NotifyStateSent).Scan(&pending); err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestNotifyFilterBlocksBelowThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=$1`, chID).Scan(&n); err != nil {
+	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=?1`, chID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -437,7 +437,7 @@ func TestNotifyDigestBatchesMultipleFindingsIntoOneMessage(t *testing.T) {
 	}
 	// 同一批次应共享 batch_id。
 	var distinct, total int
-	if err := f.pg.QueryRow(`SELECT count(DISTINCT batch_id), count(*) FROM notification_deliveries WHERE channel_id=$1`, chID).Scan(&distinct, &total); err != nil {
+	if err := f.pg.QueryRow(`SELECT count(DISTINCT batch_id), count(*) FROM notification_deliveries WHERE channel_id=?1`, chID).Scan(&distinct, &total); err != nil {
 		t.Fatal(err)
 	}
 	if total != 3 || distinct != 1 {
@@ -459,7 +459,7 @@ func TestNotifyDisabledChannelDoesNotSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=$1`, chID).Scan(&n); err != nil {
+	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=?1`, chID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -515,7 +515,7 @@ func TestNotifyStatusChangeSuppressedByDefault(t *testing.T) {
 	var n int
 	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries d
 JOIN notification_events e ON e.id = d.event_id
-WHERE d.channel_id=$1 AND e.kind=$2`, chID, notify.EventFindingStatusChanged).Scan(&n); err != nil {
+WHERE d.channel_id=?1 AND e.kind=?2`, chID, notify.EventFindingStatusChanged).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -569,12 +569,12 @@ func TestNotifyDeliveriesHistoryAndRetry(t *testing.T) {
 	// 连投到耗尽重试预算。
 	for i := 0; i < db.MaxNotifyAttempts; i++ {
 		f.n.stepRealtime(ctx, ch, 50, "")
-		if _, err := f.pg.Exec(`UPDATE notification_deliveries SET next_attempt_at = datetime(utc_now(), '-1 minute') WHERE channel_id=$1`, chID); err != nil {
+		if _, err := f.pg.Exec(`UPDATE notification_deliveries SET next_attempt_at = datetime(utc_now(), '-1 minute') WHERE channel_id=?1`, chID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var state string
-	if err := f.pg.QueryRow(`SELECT state FROM notification_deliveries WHERE channel_id=$1`, chID).Scan(&state); err != nil {
+	if err := f.pg.QueryRow(`SELECT state FROM notification_deliveries WHERE channel_id=?1`, chID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != db.NotifyStateFailed {
@@ -616,7 +616,7 @@ func TestNotifyDeliveriesHistoryAndRetry(t *testing.T) {
 		t.Fatalf("重发失败 %d: %s", r.Code, r.Body)
 	}
 	var attempts int
-	if err := f.pg.QueryRow(`SELECT state, attempts FROM notification_deliveries WHERE id=$1`, hist.Deliveries[0].ID).Scan(&state, &attempts); err != nil {
+	if err := f.pg.QueryRow(`SELECT state, attempts FROM notification_deliveries WHERE id=?1`, hist.Deliveries[0].ID).Scan(&state, &attempts); err != nil {
 		t.Fatal(err)
 	}
 	if state != db.NotifyStatePending || attempts != 0 {
@@ -653,7 +653,7 @@ func TestNotifyMetaAndSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("写设置失败 %d: %s", r.Code, r.Body)
 	}
 	t.Cleanup(func() {
-		f.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2)`, settingNotifyPublicBaseURL, settingNotifyDigestMinutes)
+		f.pg.Exec(`DELETE FROM settings WHERE key IN (?1,?2)`, settingNotifyPublicBaseURL, settingNotifyDigestMinutes)
 	})
 	payload := f.s.settingsPayload()
 	if payload["notify_public_base_url"] != "https://scopeforge.example.com" {
@@ -760,9 +760,9 @@ func TestNotifyDigestSegmentsAndDefersRemainder(t *testing.T) {
 
 	var sent, pending int
 	if err := f.pg.QueryRow(`SELECT
-    count(*) FILTER (WHERE state=$2),
-    count(*) FILTER (WHERE state=$3)
-  FROM notification_deliveries WHERE channel_id=$1`, chID, db.NotifyStateSent, db.NotifyStatePending).
+    count(*) FILTER (WHERE state=?2),
+    count(*) FILTER (WHERE state=?3)
+  FROM notification_deliveries WHERE channel_id=?1`, chID, db.NotifyStateSent, db.NotifyStatePending).
 		Scan(&sent, &pending); err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +783,7 @@ func TestNotifyDigestSegmentsAndDefersRemainder(t *testing.T) {
 	// 被推迟的条目不得消耗重试预算：领取时 attempts 已乐观 +1，推迟时要减回去。
 	var maxAttempts int
 	if err := f.pg.QueryRow(`SELECT COALESCE(max(attempts),0) FROM notification_deliveries
-WHERE channel_id=$1 AND state=$2`, chID, db.NotifyStatePending).Scan(&maxAttempts); err != nil {
+WHERE channel_id=?1 AND state=?2`, chID, db.NotifyStatePending).Scan(&maxAttempts); err != nil {
 		t.Fatal(err)
 	}
 	if maxAttempts > 0 {
@@ -796,7 +796,7 @@ WHERE channel_id=$1 AND state=$2`, chID, db.NotifyStatePending).Scan(&maxAttempt
 	for {
 		var undelivered int
 		if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries
-WHERE channel_id=$1 AND state <> $2 AND state <> $3`, chID, db.NotifyStateSent, db.NotifyStateFailed).
+WHERE channel_id=?1 AND state <> ?2 AND state <> ?3`, chID, db.NotifyStateSent, db.NotifyStateFailed).
 			Scan(&undelivered); err != nil {
 			t.Fatal(err)
 		}
@@ -818,7 +818,7 @@ WHERE channel_id=$1 AND state <> $2 AND state <> $3`, chID, db.NotifyStateSent, 
 	}
 	// 首轮之后的每一轮都应是**纯续发**，不存在被渠道拒绝的条目。
 	var failed int
-	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=$1 AND state=$2`,
+	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=?1 AND state=?2`,
 		chID, db.NotifyStateFailed).Scan(&failed); err != nil {
 		t.Fatal(err)
 	}

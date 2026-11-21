@@ -68,7 +68,7 @@ func scanTrigger(sc interface{ Scan(...any) error }) (*AgentTrigger, error) {
 func (d *DB) CreateTrigger(t *AgentTrigger) (*AgentTrigger, error) {
 	row := d.QueryRow(`
 INSERT INTO agent_triggers(agent_key, enabled, interval_sec, on_finding, on_goal_met, on_task_timeout, on_tool_call, on_task_create, interval_message, finding_message, goal_message, task_timeout_message, tool_call_message, task_create_message, tool_names)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING `+triggerCols,
+VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) RETURNING `+triggerCols,
 		t.AgentKey, t.Enabled, t.IntervalSec, t.OnFinding, t.OnGoalMet, t.OnTaskTimeout, t.OnToolCall, t.OnTaskCreate,
 		t.IntervalMessage, t.FindingMessage, t.GoalMessage, t.TaskTimeoutMessage, t.ToolCallMessage, t.TaskCreateMessage, marshalToolNames(t.ToolNames))
 	return scanTrigger(row)
@@ -76,7 +76,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING `+triggerC
 
 // UpdateTrigger updates a trigger's fields (not last_fire).
 func (d *DB) UpdateTrigger(t *AgentTrigger) error {
-	_, err := d.Exec(`UPDATE agent_triggers SET enabled=$2, interval_sec=$3, on_finding=$4, on_goal_met=$5, on_task_timeout=$6, on_tool_call=$7, on_task_create=$8, interval_message=$9, finding_message=$10, goal_message=$11, task_timeout_message=$12, tool_call_message=$13, task_create_message=$14, tool_names=$15 WHERE id=$1`,
+	_, err := d.Exec(`UPDATE agent_triggers SET enabled=?2, interval_sec=?3, on_finding=?4, on_goal_met=?5, on_task_timeout=?6, on_tool_call=?7, on_task_create=?8, interval_message=?9, finding_message=?10, goal_message=?11, task_timeout_message=?12, tool_call_message=?13, task_create_message=?14, tool_names=?15 WHERE id=?1`,
 		t.ID, t.Enabled, t.IntervalSec, t.OnFinding, t.OnGoalMet, t.OnTaskTimeout, t.OnToolCall, t.OnTaskCreate,
 		t.IntervalMessage, t.FindingMessage, t.GoalMessage, t.TaskTimeoutMessage, t.ToolCallMessage, t.TaskCreateMessage, marshalToolNames(t.ToolNames))
 	return err
@@ -84,13 +84,13 @@ func (d *DB) UpdateTrigger(t *AgentTrigger) error {
 
 // DeleteTrigger removes a trigger.
 func (d *DB) DeleteTrigger(id int64) error {
-	_, err := d.Exec(`DELETE FROM agent_triggers WHERE id=$1`, id)
+	_, err := d.Exec(`DELETE FROM agent_triggers WHERE id=?1`, id)
 	return err
 }
 
 // ListTriggersFor returns an agent's triggers.
 func (d *DB) ListTriggersFor(agentKey string) ([]*AgentTrigger, error) {
-	return d.queryTriggers(`SELECT `+triggerCols+` FROM agent_triggers WHERE agent_key=$1 ORDER BY id`, agentKey)
+	return d.queryTriggers(`SELECT `+triggerCols+` FROM agent_triggers WHERE agent_key=?1 ORDER BY id`, agentKey)
 }
 
 // ListEnabledTriggers returns all enabled triggers (for the scheduler).
@@ -117,13 +117,13 @@ func (d *DB) queryTriggers(q string, args ...any) ([]*AgentTrigger, error) {
 
 // TouchTriggerFire records an interval trigger's fire time (now).
 func (d *DB) TouchTriggerFire(id int64) error {
-	_, err := d.Exec(`UPDATE agent_triggers SET last_fire=utc_now() WHERE id=$1`, id)
+	_, err := d.Exec(`UPDATE agent_triggers SET last_fire=utc_now() WHERE id=?1`, id)
 	return err
 }
 
 // DeleteTriggersForAgent removes all triggers of an agent (custom agent delete).
 func (d *DB) DeleteTriggersForAgent(agentKey string) error {
-	_, err := d.Exec(`DELETE FROM agent_triggers WHERE agent_key=$1`, agentKey)
+	_, err := d.Exec(`DELETE FROM agent_triggers WHERE agent_key=?1`, agentKey)
 	return err
 }
 
@@ -131,7 +131,7 @@ func (d *DB) DeleteTriggersForAgent(agentKey string) error {
 
 func (d *DB) GetSchedState(key string) (string, error) {
 	var v string
-	err := d.QueryRow(`SELECT value FROM scheduler_state WHERE key=$1`, key).Scan(&v)
+	err := d.QueryRow(`SELECT value FROM scheduler_state WHERE key=?1`, key).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -139,7 +139,7 @@ func (d *DB) GetSchedState(key string) (string, error) {
 }
 
 func (d *DB) SetSchedState(key, value string) error {
-	_, err := d.Exec(`INSERT INTO scheduler_state(key,value) VALUES ($1,$2)
+	_, err := d.Exec(`INSERT INTO scheduler_state(key,value) VALUES (?1,?2)
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, value)
 	return err
 }
@@ -168,7 +168,7 @@ func (d *DB) NewFindingsSince(lastID int64) ([]TaskEvent, error) {
 	rows, err := d.Query(`
 SELECT n.id, t.id, t.description, t.goal, n.payload
 FROM exploration_nodes n JOIN tasks t ON t.exploration_id = n.exploration_id
-WHERE n.kind='finding' AND n.id > $1 AND t.deleted_at IS NULL
+WHERE n.kind='finding' AND n.id > ?1 AND t.deleted_at IS NULL
 ORDER BY n.id`, lastID)
 	if err != nil {
 		return nil, err
@@ -194,7 +194,7 @@ ORDER BY n.id`, lastID)
 func (d *DB) TimedOutTasksSince(lastID int64) ([]TaskEvent, error) {
 	rows, err := d.Query(`
 SELECT id, description, goal FROM tasks
-WHERE status='timeout' AND deleted_at IS NULL AND id > $1
+WHERE status='timeout' AND deleted_at IS NULL AND id > ?1
 ORDER BY id`, lastID)
 	if err != nil {
 		return nil, err
@@ -219,7 +219,7 @@ ORDER BY id`, lastID)
 func (d *DB) NewTasksSince(lastID int64) ([]TaskEvent, error) {
 	rows, err := d.Query(`
 SELECT id, description, goal FROM tasks
-WHERE deleted_at IS NULL AND id > $1
+WHERE deleted_at IS NULL AND id > ?1
 ORDER BY id`, lastID)
 	if err != nil {
 		return nil, err
@@ -250,7 +250,7 @@ SELECT r.id, t.id, t.description, t.goal, r.tool, COALESCE(u.detail,''), COALESC
 FROM activity r
 JOIN tasks t ON t.exploration_id = r.exploration_id
 LEFT JOIN activity u ON u.exploration_id = r.exploration_id AND u.tool_use_id = r.tool_use_id AND u.kind='tool_use'
-WHERE r.kind='tool_result' AND r.id > $1 AND r.tool <> '' AND t.deleted_at IS NULL
+WHERE r.kind='tool_result' AND r.id > ?1 AND r.tool <> '' AND t.deleted_at IS NULL
 ORDER BY r.id`, lastID)
 	if err != nil {
 		return nil, err

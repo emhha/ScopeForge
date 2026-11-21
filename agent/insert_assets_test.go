@@ -347,13 +347,13 @@ func TestInsertAssetsMixedBatch(t *testing.T) {
 		var cnt int
 		switch typ {
 		case "root_domain":
-			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=$1 AND domain='batch-test.org'`, typ).Scan(&cnt)
+			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=?1 AND domain='batch-test.org'`, typ).Scan(&cnt)
 		case "subdomain":
-			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=$1 AND domain='batch-sub.batch-test.org'`, typ).Scan(&cnt)
+			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=?1 AND domain='batch-sub.batch-test.org'`, typ).Scan(&cnt)
 		case "service":
-			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=$1 AND url='https://batch-test.org/api'`, typ).Scan(&cnt)
+			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=?1 AND url='https://batch-test.org/api'`, typ).Scan(&cnt)
 		case "endpoint":
-			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=$1 AND url='https://batch-test.org/api/users'`, typ).Scan(&cnt)
+			d.QueryRow(`SELECT COUNT(*) FROM assets WHERE type=?1 AND url='https://batch-test.org/api/users'`, typ).Scan(&cnt)
 		}
 		if cnt != 1 {
 			t.Errorf("mixed batch: %s not found in DB", typ)

@@ -20,7 +20,7 @@ func TestSkillUsageLedger(t *testing.T) {
 		missing = "zz-test-skill-missing"
 	)
 	cleanup := func() {
-		_, _ = d.Exec(`DELETE FROM skill_usage WHERE skill IN ($1,$2)`, skillA, missing)
+		_, _ = d.Exec(`DELETE FROM skill_usage WHERE skill IN (?1,?2)`, skillA, missing)
 	}
 	cleanup()
 	defer cleanup()

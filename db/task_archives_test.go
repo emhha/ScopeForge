@@ -131,31 +131,31 @@ func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var companyID, llmProfileID int64
-	if err := d.QueryRow(`INSERT INTO companies(name,nkey) VALUES($1,$2) RETURNING id`,
+	if err := d.QueryRow(`INSERT INTO companies(name,nkey) VALUES(?1,?2) RETURNING id`,
 		fmt.Sprintf("archive-company-%d", task.ID), fmt.Sprintf("archive-company-%d", task.ID)).Scan(&companyID); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`INSERT INTO llm_profiles(name,format,model) VALUES($1,'openai','archive-model') RETURNING id`,
+	if err := d.QueryRow(`INSERT INTO llm_profiles(name,format,model) VALUES(?1,'openai','archive-model') RETURNING id`,
 		fmt.Sprintf("archive-chain-%d", task.ID)).Scan(&llmProfileID); err != nil {
 		t.Fatal(err)
 	}
 	exhaustedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	chainCreatedAt := exhaustedAt.Add(-time.Hour)
-	if _, err := d.Exec(`UPDATE tasks SET company_id=$2,llm_profile_id=$3,active_llm_profile_id=$3 WHERE id=$1`, task.ID, companyID, llmProfileID); err != nil {
+	if _, err := d.Exec(`UPDATE tasks SET company_id=?2,llm_profile_id=?3,active_llm_profile_id=?3 WHERE id=?1`, task.ID, companyID, llmProfileID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`INSERT INTO task_llm_profiles(task_id,profile_id,position,status,last_error,exhausted_at,created_at,updated_at)
-VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmProfileID, exhaustedAt, chainCreatedAt); err != nil {
+VALUES(?1,?2,0,'quota_exhausted','balance exhausted',?3,?4,?3)`, task.ID, llmProfileID, exhaustedAt, chainCreatedAt); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = d.Exec(`DELETE FROM llm_usage WHERE task_id=$1 OR exploration_id=$2`, fmt.Sprint(task.ID), task.ExplorationID)
-		_, _ = d.Exec(`DELETE FROM skill_usage WHERE task_id=$1 OR exploration_id=$2`, task.ID, task.ExplorationID)
-		_, _ = d.Exec(`DELETE FROM tool_usage WHERE task_id=$1 OR exploration_id=$2`, task.ID, task.ExplorationID)
-		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
+		_, _ = d.Exec(`DELETE FROM llm_usage WHERE task_id=?1 OR exploration_id=?2`, fmt.Sprint(task.ID), task.ExplorationID)
+		_, _ = d.Exec(`DELETE FROM skill_usage WHERE task_id=?1 OR exploration_id=?2`, task.ID, task.ExplorationID)
+		_, _ = d.Exec(`DELETE FROM tool_usage WHERE task_id=?1 OR exploration_id=?2`, task.ID, task.ExplorationID)
+		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=?1`, task.ID)
 		_ = d.DeleteTask(task.ID)
-		_, _ = d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, llmProfileID)
-		_, _ = d.Exec(`DELETE FROM companies WHERE id=$1`, companyID)
+		_, _ = d.Exec(`DELETE FROM llm_profiles WHERE id=?1`, llmProfileID)
+		_, _ = d.Exec(`DELETE FROM companies WHERE id=?1`, companyID)
 	}()
 	if err := d.SetPaused(task.ID, true); err != nil {
 		t.Fatal(err)
@@ -223,13 +223,13 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 		t.Fatalf("archived task must be hidden, got %+v, %v", live, err)
 	}
 	var nodes, assets, usage int
-	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodes); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=?1`, task.ExplorationID).Scan(&nodes); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT count(*) FROM assets WHERE id=$1`, assetID).Scan(&assets); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM assets WHERE id=?1`, assetID).Scan(&assets); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT count(*) FROM llm_usage WHERE task_id=$1`, fmt.Sprint(task.ID)).Scan(&usage); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM llm_usage WHERE task_id=?1`, fmt.Sprint(task.ID)).Scan(&usage); err != nil {
 		t.Fatal(err)
 	}
 	if nodes != 0 || assets != 0 || usage != 0 {
@@ -247,7 +247,7 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 		t.Fatalf("archive token summary missing: %#v", stats)
 	}
 	assertArchiveGlobalStats(t, d, profileName, skillName, toolName, vulnclass)
-	if _, err := d.Exec(`DELETE FROM companies WHERE id=$1`, companyID); err != nil {
+	if _, err := d.Exec(`DELETE FROM companies WHERE id=?1`, companyID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.QueueTaskArchiveRestore(archive.ID); err != nil {
@@ -279,20 +279,20 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if live.Name != "cold task" || !live.Paused {
 		t.Fatalf("restored task metadata mismatch: %+v", live)
 	}
-	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodes); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=?1`, task.ExplorationID).Scan(&nodes); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT count(*) FROM assets WHERE id=$1 AND $2 IN (SELECT value FROM json_each(task_ids))`, assetID, task.ID).Scan(&assets); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM assets WHERE id=?1 AND ?2 IN (SELECT value FROM json_each(task_ids))`, assetID, task.ID).Scan(&assets); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.QueryRow(`SELECT count(*) FROM llm_usage WHERE task_id=$1`, fmt.Sprint(task.ID)).Scan(&usage); err != nil {
+	if err := d.QueryRow(`SELECT count(*) FROM llm_usage WHERE task_id=?1`, fmt.Sprint(task.ID)).Scan(&usage); err != nil {
 		t.Fatal(err)
 	}
 	if nodes < 2 || assets != 1 || usage != 1 {
 		t.Fatalf("restore incomplete nodes=%d assets=%d usage=%d", nodes, assets, usage)
 	}
 	var restoredRawRequest, restoredRawResponse string
-	if err := d.QueryRow(`SELECT COALESCE(raw_request,''),COALESCE(raw_response,'') FROM llm_records WHERE task_id=$1`, fmt.Sprint(task.ID)).
+	if err := d.QueryRow(`SELECT COALESCE(raw_request,''),COALESCE(raw_response,'') FROM llm_records WHERE task_id=?1`, fmt.Sprint(task.ID)).
 		Scan(&restoredRawRequest, &restoredRawResponse); err != nil {
 		t.Fatal(err)
 	}
@@ -302,13 +302,13 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	var restoredCompanyID *int64
 	var restoredStatus, restoredError string
 	var restoredExhaustedAt, restoredCreatedAt time.Time
-	if err := d.QueryRow(`SELECT company_id FROM tasks WHERE id=$1`, task.ID).Scan(&restoredCompanyID); err != nil {
+	if err := d.QueryRow(`SELECT company_id FROM tasks WHERE id=?1`, task.ID).Scan(&restoredCompanyID); err != nil {
 		t.Fatal(err)
 	}
 	if restoredCompanyID != nil {
 		t.Fatalf("deleted legacy company restored as %v", *restoredCompanyID)
 	}
-	if err := d.QueryRow(`SELECT status,COALESCE(last_error,''),exhausted_at,created_at FROM task_llm_profiles WHERE task_id=$1 AND profile_id=$2`,
+	if err := d.QueryRow(`SELECT status,COALESCE(last_error,''),exhausted_at,created_at FROM task_llm_profiles WHERE task_id=?1 AND profile_id=?2`,
 		task.ID, llmProfileID).Scan(&restoredStatus, &restoredError, &restoredExhaustedAt, &restoredCreatedAt); err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestTaskArchiveBlockersIgnoreQueuedDependents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id IN ($1,$2)`, source.ID, dependent.ID)
+		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id IN (?1,?2)`, source.ID, dependent.ID)
 		_ = d.DeleteTask(dependent.ID)
 		_ = d.DeleteTask(source.ID)
 	}()
@@ -382,7 +382,7 @@ func TestRecoverInterruptedArchiveRequiresManualRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
+		_, _ = d.Exec(`DELETE FROM task_archives WHERE task_id=?1`, task.ID)
 		_ = d.DeleteTask(task.ID)
 	}()
 	if err := d.SetPaused(task.ID, true); err != nil {
@@ -392,7 +392,7 @@ func TestRecoverInterruptedArchiveRequiresManualRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`UPDATE task_archives SET state=$2,phase='snapshot_database',progress=10 WHERE id=$1`, queued.ID, Archiving); err != nil {
+	if _, err := d.Exec(`UPDATE task_archives SET state=?2,phase='snapshot_database',progress=10 WHERE id=?1`, queued.ID, Archiving); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.RecoverTaskArchiveJobs(); err != nil {

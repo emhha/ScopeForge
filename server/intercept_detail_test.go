@@ -32,7 +32,7 @@ func TestInterceptDetailHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = m.pg.Exec(`DELETE FROM intercept_pending WHERE id=$1`, id) })
+	t.Cleanup(func() { _, _ = m.pg.Exec(`DELETE FROM intercept_pending WHERE id=?1`, id) })
 	do := func(method, path, body string, authenticated bool) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		if authenticated {
@@ -66,7 +66,7 @@ func TestInterceptDetailHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM conversations WHERE id=$1`, conv.ID) })
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM conversations WHERE id=?1`, conv.ID) })
 	seq, err := d.AppendConvActivity(conv.ID, db.Activity{Worker: "test", Kind: "tool_use", Tool: "Bash", ToolUseID: "http-source", Summary: "pwd"})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestInterceptDetailHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_pending WHERE id=$1`, sourceID) })
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM intercept_pending WHERE id=?1`, sourceID) })
 	sourceReply := do(http.MethodGet, fmt.Sprintf("/api/intercept/history/%d/execution", sourceID), "", true)
 	var execution struct {
 		Seq            int64         `json:"seq"`

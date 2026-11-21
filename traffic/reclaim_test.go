@@ -117,7 +117,7 @@ func TestReclaimOnLegacyIndexIsHarmless(t *testing.T) {
 	}
 	// Create the tables first, with auto_vacuum left at its default 0 — exactly the
 	// shape Open used to leave behind.
-	legacy, err := sql.Open("sqlite", filepath.Join(dir, "_index", "index.sqlite"))
+	legacy, err := sql.Open("sqlite3", filepath.Join(dir, "_index", "index.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

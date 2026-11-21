@@ -1071,6 +1071,7 @@ export interface LLMProfile {
   context_window_k?: number;
   // 思考开关(thinking.type): ""=不发送(默认) | "disabled"=关闭 | "enabled"=开启
   thinking_type?: string;
+  thinking_budget?: number;
   // 思考强度: ""=不发送(默认) | "low"/"medium"/"high"/"xhigh"/"max"
   reasoning_effort?: string;
   is_default: boolean;
@@ -1622,4 +1623,36 @@ export interface MappingSourcePatch {
   timeout_seconds?: number;
   key?: string;
   email?: string;
+}
+export interface CatalogReasoning {
+  supported: boolean;
+  toggle: boolean;
+  effort: string[] | null;
+  budget?: { min?: number; max?: number };
+}
+export interface CatalogAPI {
+  format: "openai" | "openai-responses" | "anthropic";
+  base_url: string;
+  max_tokens_field?: string;
+  reasoning: CatalogReasoning;
+}
+export interface CatalogModel {
+  id: string;
+  name: string;
+  context: number;
+  output: number;
+  apis: CatalogAPI[];
+}
+export interface CatalogProvider {
+  id: string;
+  name: string;
+  models: CatalogModel[];
+}
+export interface ModelCatalog {
+  source: string;
+  origin: "bundled" | "online";
+  updated_at: string;
+  providers: CatalogProvider[];
+  stale?: boolean;
+  warning?: string;
 }

@@ -14,7 +14,7 @@ func TestToolUsageLedger(t *testing.T) {
 		toolB = "zz_test_tool_usage_b"
 	)
 	cleanup := func() {
-		_, _ = d.Exec(`DELETE FROM tool_usage WHERE tool_key IN ($1,$2)`, toolA, toolB)
+		_, _ = d.Exec(`DELETE FROM tool_usage WHERE tool_key IN (?1,?2)`, toolA, toolB)
 	}
 	cleanup()
 	defer cleanup()

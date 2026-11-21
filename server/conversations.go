@@ -320,12 +320,18 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	// poll and the post-send fetch. A generous cap so a burst is never dropped.
 	if sv := q.Get("since"); sv != "" {
 		since, _ := strconv.ParseInt(sv, 10, 64)
-		items, cursor, err := pg.ConvActivityList(c.ID, since, max(limit, 1000))
+		pageSize := min(max(limit, 1000), 5000)
+		items, cursor, err := pg.ConvActivityList(c.ID, since, pageSize+1)
 		if err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "hasMore": false})
+		hasMore := len(items) > pageSize
+		if hasMore {
+			items = items[:pageSize]
+			cursor = items[len(items)-1].ID
+		}
+		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "hasMore": hasMore})
 		return
 	}
 

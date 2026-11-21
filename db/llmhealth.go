@@ -42,7 +42,7 @@ FROM llm_profile_health WHERE open_until IS NOT NULL AND open_until > utc_now()`
 func (d *DB) SaveLLMHealth(h LLMHealth) error {
 	_, err := d.Exec(`
 INSERT INTO llm_profile_health(profile_id,fails,trips,open_until,last_error,last_at)
-VALUES ($1,$2,$3,$4,$5,utc_now())
+VALUES (?1,?2,?3,?4,?5,utc_now())
 ON CONFLICT (profile_id) DO UPDATE SET
   fails=EXCLUDED.fails, trips=EXCLUDED.trips, open_until=EXCLUDED.open_until,
   last_error=EXCLUDED.last_error, last_at=utc_now()`,
@@ -52,6 +52,6 @@ ON CONFLICT (profile_id) DO UPDATE SET
 
 // ClearLLMHealth drops one profile's state (manual "recover now" from the UI).
 func (d *DB) ClearLLMHealth(profileID int64) error {
-	_, err := d.Exec(`DELETE FROM llm_profile_health WHERE profile_id=$1`, profileID)
+	_, err := d.Exec(`DELETE FROM llm_profile_health WHERE profile_id=?1`, profileID)
 	return err
 }

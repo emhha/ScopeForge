@@ -158,14 +158,14 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	if c.guard != nil {
 		opts.Hooks = c.guard.Hooks()
 	}
-	if c.sessions != nil { // Continue the shared in-memory session.
+	if c.sessions != nil { // Continue the shared native session, including persisted history.
 		opts.Sessions = c.sessions
 		opts.SessionID = sessionID
 	}
 	ctx = attachSideCapture(ctx, &opts)
 	s := newTurn(opts)
 	defer s.Close()
-	// Runner reads the shared in-memory history and native skill activation state.
+	// Runner reads native history and skill activation state from the session service.
 	text, _, err := captureRunSession(ctx, s, message, func(r db.Activity) {
 		if emit != nil {
 			r.Worker = agentKey

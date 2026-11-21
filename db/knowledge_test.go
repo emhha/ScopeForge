@@ -16,7 +16,7 @@ func TestLearningUpgradePreservesExistingV3Data(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.Close()
-	raw, err := sql.Open("sqlite", path)
+	raw, err := sql.Open(BusinessSQLiteDriver, path)
 	if err != nil {
 		t.Fatal(err)
 	}

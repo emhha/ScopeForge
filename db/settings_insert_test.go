@@ -18,7 +18,7 @@ func TestInsertSettingIfAbsentDoesNotOverwrite(t *testing.T) {
 
 	// 用测试专属 key，绝不碰开发库里真实的 auth.password_hash。
 	key := fmt.Sprintf("test.insert_if_absent.%d", time.Now().UnixNano())
-	defer func() { _, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, key) }()
+	defer func() { _, _ = d.Exec(`DELETE FROM settings WHERE key=?1`, key) }()
 
 	inserted, err := d.InsertSettingIfAbsent(key, "first")
 	if err != nil {

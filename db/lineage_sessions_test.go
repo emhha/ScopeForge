@@ -129,10 +129,10 @@ func TestAppendActivitySourcesAtomicAndExplorationScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var persisted int64
-	if err = d.QueryRow(`SELECT activity_id FROM node_sources WHERE node_id=$1`, good).Scan(&persisted); err != nil || persisted != id {
+	if err = d.QueryRow(`SELECT activity_id FROM node_sources WHERE node_id=?1`, good).Scan(&persisted); err != nil || persisted != id {
 		t.Fatalf("source activity %d want %d err %v", persisted, id, err)
 	}
-	if _, err = d.Exec(`DELETE FROM activity WHERE id=$1`, id); err != nil {
+	if _, err = d.Exec(`DELETE FROM activity WHERE id=?1`, id); err != nil {
 		t.Fatal(err)
 	}
 	var count int

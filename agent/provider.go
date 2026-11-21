@@ -50,7 +50,8 @@ type Config struct {
 	//   "" = 不发送(默认,兼容不支持该字段的模型); "disabled" = 显式关闭;
 	//   "enabled" = 开启. 与 ReasoningEffort 完全解耦——有些接口没有 thinking 字段、
 	//   只靠强度参数就能激活思考,故两者可各自单独设置.
-	ThinkingType string
+	ThinkingType   string
+	ThinkingBudget int
 	// ReasoningEffort 独立控制思考「强度」字段:
 	//   "" = 不发送(默认); "low"/"medium"/"high"/"xhigh"/"max" = 对应强度.
 	//   OpenAI 映射为顶层 reasoning_effort;Anthropic 映射为 output_config.effort.
@@ -104,14 +105,14 @@ type RetryConfig struct {
 // threshold math (window − summary reserve − buffer) would go non-positive and
 // compaction would fire every turn; above the cap it would never fire.
 const (
-	defaultWindowK = 200  // unset → assume a 200K window (Claude default)
-	minWindowK     = 32   // floor so effectiveWindow stays comfortably positive
-	maxWindowK     = 1000 // cap at 1M tokens (user request)
+	defaultWindowK = 200    // unset → assume a 200K window (Claude default)
+	minWindowK     = 32     // floor so effectiveWindow stays comfortably positive
+	maxWindowK     = 100000 // accommodate catalog models beyond 1M tokens
 )
 
 // CompactionWindow returns the model context window in TOKENS for compaction
 // thresholds, resolved from the user-configured size (ContextWindowK). 0/unset →
-// a 200K default; otherwise clamped to [32K, 1M] so compaction stays effective.
+// a 200K default; otherwise clamped to [32K, 100M].
 func (c Config) CompactionWindow() int {
 	k := c.ContextWindowK
 	if k <= 0 {
@@ -280,9 +281,25 @@ func (m *configuredModel) GenerateContent(ctx context.Context, req *llm.Request)
 	for k, v := range req.ExtraFields {
 		copy.ExtraFields[k] = v
 	}
-	if m.config.ThinkingType != "" {
-		copy.ExtraFields["thinking"] = map[string]string{"type": m.config.ThinkingType}
+	if copy.ThinkingEnabled == nil && m.config.ThinkingType != "" {
+		enabled := m.config.ThinkingType != "disabled"
+		copy.ThinkingEnabled = &enabled
+		if enabled && m.config.Format == "anthropic" && m.config.ThinkingType != "adaptive" {
+			budget := m.config.ThinkingBudget
+			if budget <= 0 {
+				budget = 2048
+			}
+			if copy.MaxTokens != nil && budget >= *copy.MaxTokens {
+				return nil, fmt.Errorf("thinking budget must be smaller than max tokens")
+			}
+			copy.ThinkingTokens = &budget
+		}
 	}
+	if m.config.Format == "anthropic" && copy.ThinkingEnabled == nil && m.config.ReasoningEffort != "" {
+		enabled := true
+		copy.ThinkingEnabled = &enabled
+	}
+
 	if m.config.ReasoningEffort != "" {
 		copy.ReasoningEffort = &m.config.ReasoningEffort
 	}

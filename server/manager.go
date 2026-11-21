@@ -376,12 +376,18 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		pg.Close()
 		return nil, fmt.Errorf("recover finding retests: %w", err)
 	}
-	m := &Manager{sessions: agent.NewSessionService(), dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	sessions, err := agent.OpenSessionService(filepath.Join(dir, "sessions.sqlite"))
+	if err != nil {
+		pg.Close()
+		return nil, fmt.Errorf("open native sessions: %w", err)
+	}
+	m := &Manager{sessions: sessions, dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
 	initialized := false
 	defer func() {
 		if initialized {
 			return
 		}
+		_ = m.sessions.Close()
 		if m.knowledge != nil {
 			_ = m.knowledge.Close()
 		}
@@ -1216,32 +1222,32 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	var queuedAt, completedAt, firstRunAt, deadlineAt sql.NullTime
 	var committedMode string
 	err = m.pg.QueryRow(`UPDATE tasks
-	SET status=$2,
+	SET status=?2,
 	    completed_at=CASE
-	        WHEN $2 IN ('done','failed','timeout') THEN COALESCE(completed_at, utc_now())
+	        WHEN ?2 IN ('done','failed','timeout') THEN COALESCE(completed_at, utc_now())
 	        ELSE NULL
 	    END,
 	    paused=false,
-	    queued=$3,
+	    queued=?3,
 	    queued_at=CASE
-	        WHEN NOT $3 THEN NULL
-	        WHEN $5 AND queued THEN COALESCE(queued_at, utc_now())
+	        WHEN NOT ?3 THEN NULL
+	        WHEN ?5 AND queued THEN COALESCE(queued_at, utc_now())
 	        ELSE utc_now()
 	    END,
 	    queue_mode=CASE
-	        WHEN NOT $3 THEN ''
-	        WHEN ($5 AND queued AND queue_mode='bootstrap') OR $4='bootstrap' THEN 'bootstrap'
+	        WHEN NOT ?3 THEN ''
+	        WHEN (?5 AND queued AND queue_mode='bootstrap') OR ?4='bootstrap' THEN 'bootstrap'
 	        ELSE 'resume'
 	    END,
 	    first_run_at=CASE
-	        WHEN $6='timeout' AND $2 NOT IN ('done','failed','timeout') THEN NULL
+	        WHEN ?6='timeout' AND ?2 NOT IN ('done','failed','timeout') THEN NULL
 	        ELSE first_run_at
 	    END,
 	    deadline_at=CASE
-	        WHEN $6='timeout' AND $2 NOT IN ('done','failed','timeout') THEN NULL
+	        WHEN ?6='timeout' AND ?2 NOT IN ('done','failed','timeout') THEN NULL
 	        ELSE deadline_at
 	    END
-	WHERE id=$1 AND deleted_at IS NULL AND status=$6
+	WHERE id=?1 AND deleted_at IS NULL AND status=?6
 	RETURNING queued_at, queue_mode, completed_at, first_run_at, deadline_at`, n, status, queued, mode, preservePosition, expectedStatus).
 		Scan(&queuedAt, &committedMode, &completedAt, &firstRunAt, &deadlineAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1294,7 +1300,7 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	var mode string
 	err = m.pg.QueryRow(`UPDATE tasks
 		SET paused=true, queued=false, queued_at=NULL
-		WHERE id=$1 AND deleted_at IS NULL AND paused=false
+		WHERE id=?1 AND deleted_at IS NULL AND paused=false
 		  AND status NOT IN ('done','failed','timeout')
 		RETURNING COALESCE(queue_mode,'')`, n).Scan(&mode)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1333,10 +1339,10 @@ func (m *Manager) EnqueueTask(id, mode string) error {
 		SET queued=true,
 		    queued_at=CASE WHEN queued THEN COALESCE(queued_at, utc_now()) ELSE utc_now() END,
 		    queue_mode=CASE
-		        WHEN queue_mode='bootstrap' OR $2='bootstrap' THEN 'bootstrap'
+		        WHEN queue_mode='bootstrap' OR ?2='bootstrap' THEN 'bootstrap'
 		        ELSE 'resume'
 		    END
-		WHERE id=$1 AND deleted_at IS NULL
+		WHERE id=?1 AND deleted_at IS NULL
 		RETURNING queued_at, queue_mode`, n, mode).Scan(&queuedAt, &committedMode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s is unavailable for enqueue", id)

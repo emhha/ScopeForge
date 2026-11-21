@@ -65,11 +65,11 @@ AI 自主渗透测试系统（Go 后端 + Vite 前端）
 
 ## 本地构建
 
-需要 Go 1.26.3+、Node.js 22.22+、npm 和 GNU Make。
+需要 Go 1.26.3+、Node.js 22.22+、npm、GNU Make 和目标平台的 C 编译器（Linux GCC、macOS Xcode Command Line Tools、Windows MSYS2 UCRT64 GCC / ARM64 Clang）。全部 SQLite 连接统一使用 `github.com/mattn/go-sqlite3`，构建和测试必须启用 `CGO_ENABLED=1` 与 `sqlite_fts5` 标签；Make 已设置。
 
 ```sh
 make build           # 当前系统：./dist/scopeforge（Windows 为 scopeforge.exe）
-make build all       # Linux、Windows、macOS，各构建 amd64 / arm64
+make build all       # 已备齐六个平台 C 工具链时批量构建
 make build-backend   # 只构建后端，适合配合前端开发服务
 make run             # 开发运行后端，可加 ARGS="-addr :8787"
 make dev-web         # 另一个终端运行前端开发服务
@@ -88,9 +88,24 @@ dist/scopeforge-darwin-amd64
 dist/scopeforge-darwin-arm64
 ```
 
-单独交叉编译可用 `make build GOOS=windows GOARCH=amd64`。`darwin` 表示 macOS。
+CGO 交叉编译必须显式指定目标编译器，例如 Linux 上安装 MinGW 后：
 
-可通过 `VERSION=v1.0.0`、`BINARY=dist/custom-scopeforge`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 SQLite，模型会话仅保存在进程内存中；实现与后续扩展方案见 [迁移说明](MIGRATION_PLAN.md)。
+```sh
+make build GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc
+```
+
+`make build all` 在构建前检查 `CC_linux_amd64`、`CC_linux_arm64`、`CC_windows_amd64`、`CC_windows_arm64`、`CC_darwin_amd64`、`CC_darwin_arm64` 环境变量（值为编译器可执行文件路径）；当前平台可沿用 `CC`。未配置目标工具链会直接报错。macOS 需要对应 SDK，推荐使用对应平台构建。发布流水线在六种系统/架构的原生 runner 构建并执行 SQLite 测试。Linux 发行包采用 Ubuntu 22.04 的 glibc 基线；使用更旧发行版时需本机重新构建。`darwin` 表示 macOS。
+
+可通过 `VERSION=v1.0.0`、`BINARY=dist/custom-scopeforge`、`GO=go`、`NPM=npm` 覆盖构建参数。业务数据使用本地 `scopeforge.sqlite`，模型会话使用 tRPC 原生 SQLite 服务，单独保存在数据目录的 `sessions.sqlite`；实现说明见 [迁移说明](MIGRATION_PLAN.md)。
+
+
+模型配置默认读取随程序内置的 models.dev JSON 目录，打开表单无需联网，也不将目录入库。选择提供商后填写 Key，模型可从目录选择或直接输入。目录填入的接口、上下文和输出上限可在同一份「自定义设置」中修改，选择模型会保留已编辑的中转地址；思考选项按该模型的接口能力显示。点击「在线更新」可临时获取新目录，失败保留当前目录；在线结果仅供当前打开的表单使用，不修改内置文件。Key 不发送给 models.dev。在线更新优先使用应用显式配置的全局代理，否则沿用进程的 HTTPS_PROXY / HTTP_PROXY / NO_PROXY 环境配置。
+
+内置原始目录位于 `server/modelcatalog/models.dev.v2.json`，来源时间与校验值在同目录 `metadata.json`。维护者可运行 `python3 scripts/update-model-catalog.py` 更新源快照，然后重新构建；正常构建不下载目录，发布包也无需额外分发 JSON 文件。
+
+普通对话与任务 Agent 默认使用持久化会话，事件、工具结果、技能状态、模型附加数据和压缩摘要由 tRPC 原生服务保存。摘要用于控制后续模型上下文，原始事件仍保留。暂停后以同一会话继续，重启不会自动重放工具；强制中断时无法确认的外部操作仍需人工核实。任务归档包含只属于该任务的原生会话数据库快照，恢复后继续使用原会话；旧归档没有此文件仍可还原。页面展开状态保存在当前浏览器标签页中，执行记录本身从服务器分页加载。
+
+升级前已丢失的内存会话无法恢复；旧版本自定义 JSONL transcripts 不会自动转换为 tRPC 会话。请完整备份数据目录，不要只复制业务数据库。会话库由 SDK 独立管理连接与表结构，避免共享连接关闭或业务 schema 迁移影响它。
 
 ## 安装
 
@@ -149,7 +164,7 @@ make
 
 不设置 `path` 时使用 `-data` 目录下的 `scopeforge.sqlite`。数据库启用 WAL、外键和忙等待，使用单写连接协调并发写入。数据库文件应放在本地磁盘。
 
-**会话**：原生 Runner 会话、摘要、待办及旁路问答 checkpoint 使用内存服务，保留期为 24 小时，重启后清空；删除任务或对话时同步清理。任务、聊天展示记录、审批、活动和用量属于业务审计数据，仍保存在 SQLite，不用于还原模型上下文。Memory 和 Knowledge 当前不启用，预留方案见 [迁移说明](MIGRATION_PLAN.md)。
+**会话**：生产 Runner 使用 tRPC 原生 SQLite 服务，持久化会话事件、摘要和待办状态，重启后继续使用原会话。删除任务或对话时清理对应原生会话；归档保留任务会话快照。旁路问答的运行中 checkpoint 仍是进程内快照，重启后由后续模型调用重新产生，不从页面活动拼装。业务审计记录与模型上下文分别保存。任务记忆和共享经验默认开启，知识库配置见 [记忆与知识库说明](MEMORY_KNOWLEDGE.md)。
 
 **LLM**：`export ANTHROPIC_API_KEY=sk-...`（或 `OPENAI_API_KEY`），也可在 UI 的「LLM 配置」页填写。
 可选：`SCOPEFORGE_LLM_PROVIDER` / `SCOPEFORGE_LLM_MODEL` / `SCOPEFORGE_LLM_BASE_URL` / `SCOPEFORGE_LLM_PROXY`。

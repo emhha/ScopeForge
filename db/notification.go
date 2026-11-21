@@ -111,7 +111,7 @@ ORDER BY enabled DESC, id`)
 
 // NotificationChannelByID 取单个渠道。
 func (d *DB) NotificationChannelByID(ctx context.Context, id int64) (*NotificationChannel, error) {
-	row := d.QueryRowContext(ctx, `SELECT `+notificationChannelCols+` FROM notification_channels WHERE id=$1`, id)
+	row := d.QueryRowContext(ctx, `SELECT `+notificationChannelCols+` FROM notification_channels WHERE id=?1`, id)
 	c, err := scanNotificationChannel(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotificationChannelNotFound
@@ -151,13 +151,13 @@ func (d *DB) SaveNotificationChannel(ctx context.Context, c *NotificationChannel
 	if c.ID == 0 {
 		var id int64
 		err := d.QueryRowContext(ctx, `INSERT INTO notification_channels(name,kind,enabled,config,mode,filter,rate_per_min)
-VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+VALUES(?1,?2,?3,?4,?5,?6,?7) RETURNING id`,
 			c.Name, c.Kind, enabled, string(c.Config), c.Mode, string(c.Filter), c.RatePerMin).Scan(&id)
 		return id, err
 	}
 	res, err := d.ExecContext(ctx, `UPDATE notification_channels
-SET name=$2, kind=$3, enabled=$4, config=$5, mode=$6, filter=$7, rate_per_min=$8
-WHERE id=$1`,
+SET name=?2, kind=?3, enabled=?4, config=?5, mode=?6, filter=?7, rate_per_min=?8
+WHERE id=?1`,
 		c.ID, c.Name, c.Kind, enabled, string(c.Config), c.Mode, string(c.Filter), c.RatePerMin)
 	if err != nil {
 		return 0, err
@@ -174,7 +174,7 @@ WHERE id=$1`,
 // 会突然收到一批「停用期间积压」的旧漏洞，时效已失且容易误判为新增。
 func (d *DB) SetNotificationChannelEnabled(ctx context.Context, id int64, enabled bool) error {
 	return d.WithEvidenceTx(ctx, func(tx *Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE notification_channels SET enabled=$2 WHERE id=$1`, id, enabled)
+		res, err := tx.ExecContext(ctx, `UPDATE notification_channels SET enabled=?2 WHERE id=?1`, id, enabled)
 		if err != nil {
 			return err
 		}
@@ -182,8 +182,8 @@ func (d *DB) SetNotificationChannelEnabled(ctx context.Context, id int64, enable
 			return ErrNotificationChannelNotFound
 		}
 		if !enabled {
-			if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET state=$2, last_error=$3
-WHERE channel_id=$1 AND state IN ($4,$5)`,
+			if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET state=?2, last_error=?3
+WHERE channel_id=?1 AND state IN (?4,?5)`,
 				id, NotifyStateSkipped, "渠道已停用", NotifyStatePending, NotifyStateSending); err != nil {
 				return err
 			}
@@ -195,7 +195,7 @@ WHERE channel_id=$1 AND state IN ($4,$5)`,
 // DeleteNotificationChannel 删除渠道。其投递历史随外键级联删除
 // （渠道配置都没了，历史无从解读）。
 func (d *DB) DeleteNotificationChannel(ctx context.Context, id int64) error {
-	res, err := d.ExecContext(ctx, `DELETE FROM notification_channels WHERE id=$1`, id)
+	res, err := d.ExecContext(ctx, `DELETE FROM notification_channels WHERE id=?1`, id)
 	if err != nil {
 		return err
 	}
@@ -232,7 +232,7 @@ func RecordNotificationEventTx(ctx context.Context, tx *Tx, kind string, finding
 		log.Printf("[notify] 建立保存点失败 finding=%d: %v", findingID, err)
 		return false
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO notification_events(kind,finding_id,snapshot) VALUES($1,$2,$3)`,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO notification_events(kind,finding_id,snapshot) VALUES(?1,?2,?3)`,
 		kind, findingID, string(raw)); err != nil {
 		log.Printf("[notify] 写入推送事件失败 finding=%d（漏洞记录不受影响）: %v", findingID, err)
 		// 回滚到保存点，把事务从 aborted 状态里救回来。
@@ -254,7 +254,7 @@ func (d *DB) AddNotificationEvent(ctx context.Context, kind string, findingID in
 		return 0, fmt.Errorf("序列化通知事件快照失败: %w", err)
 	}
 	var id int64
-	err = d.QueryRowContext(ctx, `INSERT INTO notification_events(kind,finding_id,snapshot) VALUES($1,$2,$3) RETURNING id`,
+	err = d.QueryRowContext(ctx, `INSERT INTO notification_events(kind,finding_id,snapshot) VALUES(?1,?2,?3) RETURNING id`,
 		kind, findingID, string(raw)).Scan(&id)
 	return id, err
 }
@@ -287,7 +287,7 @@ func (d *DB) FanOutPendingEvents(ctx context.Context, limit int) (eventCount, de
 		return 0, 0, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, finding_id, snapshot FROM notification_events
-WHERE NOT fanned_out ORDER BY id  LIMIT $1`, limit)
+WHERE NOT fanned_out ORDER BY id  LIMIT ?1`, limit)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -338,7 +338,7 @@ WHERE NOT fanned_out ORDER BY id  LIMIT $1`, limit)
 			args []any
 		)
 		for _, p := range toInsert {
-			vals = append(vals, fmt.Sprintf("($%d,$%d)", len(args)+1, len(args)+2))
+			vals = append(vals, fmt.Sprintf("(?%d,?%d)", len(args)+1, len(args)+2))
 			args = append(args, p.eventID, p.channelID)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO notification_deliveries(event_id,channel_id) VALUES `+strings.Join(vals, ","), args...); err != nil {
@@ -351,7 +351,7 @@ WHERE NOT fanned_out ORDER BY id  LIMIT $1`, limit)
 	markArgs := make([]any, 0, len(events))
 	for _, ev := range events {
 		markArgs = append(markArgs, ev.ID)
-		ids = append(ids, fmt.Sprintf("$%d", len(markArgs)))
+		ids = append(ids, fmt.Sprintf("?%d", len(markArgs)))
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE notification_events SET fanned_out=true WHERE id IN (`+strings.Join(ids, ",")+`)`, markArgs...); err != nil {
 		return 0, 0, err
@@ -487,7 +487,7 @@ func SetFindingStatusTx(ctx context.Context, tx *Tx, id int64, status string) (f
 		assetIDs                           []byte
 	)
 	scanErr := tx.QueryRowContext(ctx, `SELECT vulnclass, name, severity, summary, task_id, asset_ids, status
-FROM findings WHERE id=$1 `, id).
+FROM findings WHERE id=?1 `, id).
 		Scan(&vulnclass, &name, &severity, &summary, &taskID, &assetIDs, &from)
 	if scanErr == sql.ErrNoRows {
 		return "", false, false, false, nil
@@ -501,7 +501,7 @@ FROM findings WHERE id=$1 `, id).
 		// 产生推送噪音。
 		return from, true, false, false, nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE findings SET status=$2 WHERE id=$1`, id, status); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE findings SET status=?2 WHERE id=?1`, id, status); err != nil {
 		return from, true, false, false, err
 	}
 	var assets []int64
@@ -539,10 +539,10 @@ func (d *DB) NotificationStatsSnapshot(ctx context.Context) (*NotificationStats,
 	if err := d.QueryRowContext(ctx, `SELECT
     (SELECT count(*) FROM notification_channels),
     (SELECT count(*) FROM notification_channels WHERE enabled),
-    (SELECT count(*) FROM notification_deliveries WHERE state IN ($1,$2)),
-    (SELECT count(*) FROM notification_deliveries WHERE state=$3),
-    (SELECT count(*) FROM notification_deliveries WHERE state=$4 AND sent_at >= date(utc_now())),
-    COALESCE((SELECT (unixepoch(utc_now()) - unixepoch(min(created_at))) * 1000 FROM notification_deliveries WHERE state=$1), 0)`,
+    (SELECT count(*) FROM notification_deliveries WHERE state IN (?1,?2)),
+    (SELECT count(*) FROM notification_deliveries WHERE state=?3),
+    (SELECT count(*) FROM notification_deliveries WHERE state=?4 AND sent_at >= date(utc_now())),
+    COALESCE((SELECT (unixepoch(utc_now()) - unixepoch(min(created_at))) * 1000 FROM notification_deliveries WHERE state=?1), 0)`,
 		NotifyStatePending, NotifyStateSending, NotifyStateFailed, NotifyStateSent).
 		Scan(&s.Channels, &s.ChannelsOn, &s.Pending, &s.Failed, &s.SentToday, &s.BacklogAgeMS); err != nil {
 		return nil, err

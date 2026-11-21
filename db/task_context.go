@@ -140,7 +140,7 @@ SELECT t.id, t.llm_profile_id, t.active_llm_profile_id, t.llm_chain_revision,
        p.profile_id, p.position, p.status, COALESCE(p.last_error,''), p.exhausted_at
 FROM tasks t
 LEFT JOIN task_llm_profiles p ON p.task_id=t.id
-WHERE t.id IN (SELECT value FROM json_each($1))
+WHERE t.id IN (SELECT value FROM json_each(?1))
 ORDER BY t.id, p.position NULLS LAST`, ids)
 	if err != nil {
 		return err
@@ -193,7 +193,7 @@ ORDER BY t.id, p.position NULLS LAST`, ids)
 	rows, err = d.Query(`
 SELECT task_id, source_task_id
 FROM task_relations
-WHERE task_id IN (SELECT value FROM json_each($1))
+WHERE task_id IN (SELECT value FROM json_each(?1))
 ORDER BY task_id, created_at, source_task_id`, ids)
 	if err != nil {
 		return err
@@ -217,7 +217,7 @@ ORDER BY task_id, created_at, source_task_id`, ids)
 	rows, err = d.Query(`
 SELECT task_id, company_id
 FROM task_scope
-WHERE task_id IN (SELECT value FROM json_each($1)) AND kind='company' AND company_id IS NOT NULL
+WHERE task_id IN (SELECT value FROM json_each(?1)) AND kind='company' AND company_id IS NOT NULL
 ORDER BY task_id, id`, ids)
 	if err != nil {
 		return err
@@ -263,7 +263,7 @@ SELECT t.llm_profile_id, t.active_llm_profile_id, t.llm_chain_revision,
        p.profile_id, p.position, p.status, COALESCE(p.last_error,''), p.exhausted_at
 FROM tasks t
 LEFT JOIN task_llm_profiles p ON p.task_id=t.id
-WHERE t.id=$1
+WHERE t.id=?1
 ORDER BY p.position NULLS LAST`, taskID)
 	if err != nil {
 		return nil, nil, 0, nil, err
@@ -321,7 +321,7 @@ ORDER BY p.position NULLS LAST`, taskID)
 }
 
 func (d *DB) TaskSourceIDs(taskID int64) ([]int64, error) {
-	rows, err := d.Query(`SELECT source_task_id FROM task_relations WHERE task_id=$1 ORDER BY created_at, source_task_id`, taskID)
+	rows, err := d.Query(`SELECT source_task_id FROM task_relations WHERE task_id=?1 ORDER BY created_at, source_task_id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +342,7 @@ func (d *DB) TaskSourceIDs(taskID int64) ([]int64, error) {
 func (d *DB) TaskCompanyIDs(taskID int64) ([]int64, error) {
 	rows, err := d.Query(`
 SELECT company_id FROM task_scope
-WHERE task_id=$1 AND kind='company' AND company_id IS NOT NULL
+WHERE task_id=?1 AND kind='company' AND company_id IS NOT NULL
 ORDER BY id`, taskID)
 	if err != nil {
 		return nil, err
@@ -364,7 +364,7 @@ func (d *DB) TaskSources(taskID int64) ([]TaskSource, error) {
 SELECT t.id, t.exploration_id, t.description, t.goal, t.status
 FROM task_relations r
 JOIN tasks t ON t.id=r.source_task_id AND t.deleted_at IS NULL
-WHERE r.task_id=$1
+WHERE r.task_id=?1
 ORDER BY r.created_at, r.source_task_id`, taskID)
 	if err != nil {
 		return nil, err
@@ -383,7 +383,7 @@ ORDER BY r.created_at, r.source_task_id`, taskID)
 
 func (d *DB) TaskLLMProfiles(taskID int64) ([]TaskLLMProfile, error) {
 	rows, err := d.Query(`SELECT profile_id, position, status, COALESCE(last_error,''), exhausted_at
-FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`, taskID)
+FROM task_llm_profiles WHERE task_id=?1 ORDER BY position`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -414,13 +414,13 @@ func (d *DB) ReplaceTaskLLMProfiles(taskID int64, profileIDs []int64, activeProf
 	// DeleteProfile. Inserts below may take KEY SHARE locks on llm_profiles for
 	// their foreign keys, so the task row must be locked before any of them.
 	var lockedID int64
-	if err := tx.QueryRow(`SELECT id FROM tasks WHERE id=$1 AND deleted_at IS NULL `, taskID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM tasks WHERE id=?1 AND deleted_at IS NULL `, taskID).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("task %d not found", taskID)
 		}
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM task_llm_profiles WHERE task_id=$1`, taskID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM task_llm_profiles WHERE task_id=?1`, taskID); err != nil {
 		return err
 	}
 	if err := insertTaskLLMProfiles(tx, taskID, profileIDs); err != nil {
@@ -445,8 +445,8 @@ func (d *DB) ReplaceTaskLLMProfiles(taskID int64, profileIDs []int64, activeProf
 		active = activeProfileID
 	}
 	if _, err := tx.Exec(`UPDATE tasks
-SET active_llm_profile_id=$2, llm_profile_id=$2, llm_chain_revision=llm_chain_revision+1
-WHERE id=$1`, taskID, active); err != nil {
+SET active_llm_profile_id=?2, llm_profile_id=?2, llm_chain_revision=llm_chain_revision+1
+WHERE id=?1`, taskID, active); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -476,7 +476,7 @@ func (d *DB) markTaskLLMProfileQuotaExhausted(taskID, profileID, revision int64,
 		active          sql.NullInt64
 		currentRevision int64
 	)
-	if err := tx.QueryRow(`SELECT active_llm_profile_id, llm_chain_revision FROM tasks WHERE id=$1 `, taskID).Scan(&active, &currentRevision); err != nil {
+	if err := tx.QueryRow(`SELECT active_llm_profile_id, llm_chain_revision FROM tasks WHERE id=?1 `, taskID).Scan(&active, &currentRevision); err != nil {
 		return out, err
 	}
 	out.PreviousProfileID = profileID
@@ -488,7 +488,7 @@ func (d *DB) markTaskLLMProfileQuotaExhausted(taskID, profileID, revision int64,
 		position    int
 		entryStatus string
 	)
-	if err := tx.QueryRow(`SELECT position, status FROM task_llm_profiles WHERE task_id=$1 AND profile_id=$2`, taskID, profileID).
+	if err := tx.QueryRow(`SELECT position, status FROM task_llm_profiles WHERE task_id=?1 AND profile_id=?2`, taskID, profileID).
 		Scan(&position, &entryStatus); err != nil {
 		if err == sql.ErrNoRows {
 			// The chain was edited while this request was in flight. Its provider
@@ -507,8 +507,8 @@ func (d *DB) markTaskLLMProfileQuotaExhausted(taskID, profileID, revision int64,
 	reason = truncateUTF8(strings.TrimSpace(reason), 1000)
 	if entryStatus != "quota_exhausted" {
 		if _, err := tx.Exec(`UPDATE task_llm_profiles
-SET status='quota_exhausted', last_error=$3, exhausted_at=utc_now()
-WHERE task_id=$1 AND profile_id=$2`, taskID, profileID, reason); err != nil {
+SET status='quota_exhausted', last_error=?3, exhausted_at=utc_now()
+WHERE task_id=?1 AND profile_id=?2`, taskID, profileID, reason); err != nil {
 			return out, err
 		}
 	}
@@ -519,15 +519,15 @@ WHERE task_id=$1 AND profile_id=$2`, taskID, profileID, reason); err != nil {
 	}
 	var next int64
 	err = tx.QueryRow(`SELECT profile_id FROM task_llm_profiles
-WHERE task_id=$1 AND position>$2 AND status='ready'
+WHERE task_id=?1 AND position>?2 AND status='ready'
 ORDER BY position LIMIT 1`, taskID, position).Scan(&next)
 	switch err {
 	case nil:
 		out.Advanced = true
 		out.NextProfileID = &next
 		if _, err := tx.Exec(`UPDATE tasks
-				SET active_llm_profile_id=$2, llm_profile_id=$2, llm_chain_revision=llm_chain_revision+1
-				WHERE id=$1`, taskID, next); err != nil {
+				SET active_llm_profile_id=?2, llm_profile_id=?2, llm_chain_revision=llm_chain_revision+1
+				WHERE id=?1`, taskID, next); err != nil {
 			return out, err
 		}
 	case sql.ErrNoRows:
@@ -535,7 +535,7 @@ ORDER BY position LIMIT 1`, taskID, position).Scan(&next)
 		out.ChainExhausted = true
 		if _, err := tx.Exec(`UPDATE tasks
 				SET active_llm_profile_id=NULL, llm_profile_id=NULL, llm_chain_revision=llm_chain_revision+1
-				WHERE id=$1`, taskID); err != nil {
+				WHERE id=?1`, taskID); err != nil {
 			return out, err
 		}
 	default:
@@ -561,15 +561,15 @@ func truncateUTF8(value string, maxBytes int) string {
 
 func (s *ExplorationStore) SetIntentBlockedReason(id int64, reason string) error {
 	_, err := s.db.Exec(`UPDATE exploration_nodes
-SET state='blocked', blocked_reason=NULLIF($1,''), completed_at=utc_now()
-WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, reason, id, s.expID)
+SET state='blocked', blocked_reason=NULLIF(?1,''), completed_at=utc_now()
+WHERE id=?2 AND exploration_id=?3 AND kind='intent'`, reason, id, s.expID)
 	return err
 }
 
 func (s *ExplorationStore) ReopenIntentsByBlockedReason(reason string) (int64, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes
 SET state='open', blocked_reason=NULL, completed_at=NULL
-WHERE exploration_id=$1 AND kind='intent' AND state='blocked' AND blocked_reason=$2`, s.expID, reason)
+WHERE exploration_id=?1 AND kind='intent' AND state='blocked' AND blocked_reason=?2`, s.expID, reason)
 	if err != nil {
 		return 0, err
 	}

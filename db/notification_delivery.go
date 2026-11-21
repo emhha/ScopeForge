@@ -128,11 +128,11 @@ func (d *DB) ClaimRealtimeDeliveries(ctx context.Context, channelID int64, limit
 	return d.claimDeliveries(ctx, lease, claimQuery{
 		sql: `SELECT dd.id FROM notification_deliveries dd
 JOIN notification_channels c ON c.id = dd.channel_id
-WHERE dd.channel_id = $1 AND dd.state IN ($2,$3) AND dd.next_attempt_at <= utc_now()
-  AND c.enabled AND c.mode = $4
+WHERE dd.channel_id = ?1 AND dd.state IN (?2,?3) AND dd.next_attempt_at <= utc_now()
+  AND c.enabled AND c.mode = ?4
 ORDER BY dd.next_attempt_at, dd.id
 
-LIMIT $5`,
+LIMIT ?5`,
 		args: []any{channelID, NotifyStatePending, NotifyStateSending, NotifyModeRealtime, limit},
 	}, nil)
 }
@@ -151,9 +151,9 @@ func (d *DB) DigestBatchDue(ctx context.Context, channelID int64, minAge time.Du
 	err := d.QueryRowContext(ctx, `SELECT EXISTS (
   SELECT 1 FROM notification_deliveries d
   JOIN notification_channels c ON c.id = d.channel_id
-  WHERE d.channel_id = $1 AND d.state IN ($2,$3) AND c.enabled
+  WHERE d.channel_id = ?1 AND d.state IN (?2,?3) AND c.enabled
   GROUP BY d.channel_id
-  HAVING min(d.created_at) <= datetime(utc_now(), '-' || $4 || ' seconds')
+  HAVING min(d.created_at) <= datetime(utc_now(), '-' || ?4 || ' seconds')
 )`, channelID, NotifyStatePending, NotifyStateSending, int64(minAge.Seconds())).Scan(&due)
 	return due, err
 }
@@ -186,10 +186,10 @@ func (d *DB) ClaimDigestBatch(ctx context.Context, channelID int64, limit int, l
 	out, err := d.claimDeliveries(ctx, lease, claimQuery{
 		sql: `SELECT dd.id FROM notification_deliveries dd
 JOIN notification_channels c ON c.id = dd.channel_id
-WHERE dd.channel_id = $1 AND dd.state IN ($2,$3) AND dd.next_attempt_at <= utc_now() AND c.enabled
+WHERE dd.channel_id = ?1 AND dd.state IN (?2,?3) AND dd.next_attempt_at <= utc_now() AND c.enabled
 ORDER BY dd.id
 
-LIMIT $4`,
+LIMIT ?4`,
 		args: []any{channelID, NotifyStatePending, NotifyStateSending, limit},
 	}, func(tx *Tx, ids []int64) error {
 		batchID := ids[0]
@@ -199,7 +199,7 @@ LIMIT $4`,
 			}
 		}
 		ph, idArgs := placeholders(2, ids)
-		_, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET batch_id = COALESCE(batch_id, $1)
+		_, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET batch_id = COALESCE(batch_id, ?1)
 WHERE id IN (`+ph+`)`, append([]any{batchID}, idArgs...)...)
 		return err
 	})
@@ -226,7 +226,7 @@ func (d *DB) claimDeliveries(ctx context.Context, lease time.Duration, cq claimQ
 	// 「租约未到期」与「未到重试时间」因此共用同一个条件表达，不需要新增列。
 	ph, idArgs := placeholders(3, ids)
 	if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries
-SET state=$1, attempts=attempts+1, next_attempt_at=datetime(utc_now(), '+' || $2 || ' seconds')
+SET state=?1, attempts=attempts+1, next_attempt_at=datetime(utc_now(), '+' || ?2 || ' seconds')
 WHERE id IN (`+ph+`)`,
 		append([]any{NotifyStateSending, lease.Seconds()}, idArgs...)...); err != nil {
 		return nil, err
@@ -285,7 +285,7 @@ func (d *DB) MarkDeliveriesSent(ctx context.Context, ids []int64) error {
 		return nil
 	}
 	_, err := d.ExecContext(ctx, `UPDATE notification_deliveries
-SET state=$1, sent_at=utc_now(), last_error='' WHERE id IN (`+ph+`)`, append([]any{NotifyStateSent}, args...)...)
+SET state=?1, sent_at=utc_now(), last_error='' WHERE id IN (`+ph+`)`, append([]any{NotifyStateSent}, args...)...)
 	return err
 }
 
@@ -299,7 +299,7 @@ func (d *DB) RescheduleDeliveries(ctx context.Context, ids []int64, delay time.D
 		return nil
 	}
 	_, err := d.ExecContext(ctx, `UPDATE notification_deliveries
-SET state=$1, next_attempt_at=datetime(utc_now(), '+' || $2 || ' seconds'), last_error=$3
+SET state=?1, next_attempt_at=datetime(utc_now(), '+' || ?2 || ' seconds'), last_error=?3
 WHERE id IN (`+ph+`)`,
 		append([]any{NotifyStatePending, delay.Seconds(), truncateNotifyError(errMsg)}, args...)...)
 	return err
@@ -320,7 +320,7 @@ func (d *DB) DeferDeliveries(ctx context.Context, ids []int64, reason string) er
 		return nil
 	}
 	_, err := d.ExecContext(ctx, `UPDATE notification_deliveries
-SET state=$1, attempts=max(attempts-1, 0), next_attempt_at=utc_now(), last_error=$2
+SET state=?1, attempts=max(attempts-1, 0), next_attempt_at=utc_now(), last_error=?2
 WHERE id IN (`+ph+`)`,
 		append([]any{NotifyStatePending, truncateNotifyError(reason)}, args...)...)
 	return err
@@ -333,7 +333,7 @@ func (d *DB) FailDeliveries(ctx context.Context, ids []int64, errMsg string) err
 	if len(args) == 0 {
 		return nil
 	}
-	_, err := d.ExecContext(ctx, `UPDATE notification_deliveries SET state=$1, last_error=$2 WHERE id IN (`+ph+`)`,
+	_, err := d.ExecContext(ctx, `UPDATE notification_deliveries SET state=?1, last_error=?2 WHERE id IN (`+ph+`)`,
 		append([]any{NotifyStateFailed, truncateNotifyError(errMsg)}, args...)...)
 	return err
 }
@@ -343,8 +343,8 @@ func (d *DB) FailDeliveries(ctx context.Context, ids []int64, errMsg string) err
 // 再拿旧计数限制它没有道理。
 func (d *DB) RetryNotificationDelivery(ctx context.Context, id int64) error {
 	res, err := d.ExecContext(ctx, `UPDATE notification_deliveries
-SET state=$2, attempts=0, next_attempt_at=utc_now(), last_error=''
-WHERE id=$1 AND state IN ($3,$4)`, id, NotifyStatePending, NotifyStateFailed, NotifyStateSkipped)
+SET state=?2, attempts=0, next_attempt_at=utc_now(), last_error=''
+WHERE id=?1 AND state IN (?3,?4)`, id, NotifyStatePending, NotifyStateFailed, NotifyStateSkipped)
 	if err != nil {
 		return err
 	}
@@ -366,15 +366,15 @@ func (f NotificationDeliveryFilter) where() (string, []any) {
 	var args []any
 	if f.ChannelID > 0 {
 		args = append(args, f.ChannelID)
-		conds = append(conds, fmt.Sprintf("d.channel_id=$%d", len(args)))
+		conds = append(conds, fmt.Sprintf("d.channel_id=?%d", len(args)))
 	}
 	if f.State != "" {
 		args = append(args, f.State)
-		conds = append(conds, fmt.Sprintf("d.state=$%d", len(args)))
+		conds = append(conds, fmt.Sprintf("d.state=?%d", len(args)))
 	}
 	if f.EventKind != "" {
 		args = append(args, f.EventKind)
-		conds = append(conds, fmt.Sprintf("e.kind=$%d", len(args)))
+		conds = append(conds, fmt.Sprintf("e.kind=?%d", len(args)))
 	}
 	if len(conds) == 0 {
 		return "", nil
@@ -398,7 +398,7 @@ JOIN notification_events e ON e.id = d.event_id`+where, args...).Scan(&total); e
 		return nil, 0, err
 	}
 
-	q := fmt.Sprintf("%s%s ORDER BY d.id DESC LIMIT $%d OFFSET $%d",
+	q := fmt.Sprintf("%s%s ORDER BY d.id DESC LIMIT ?%d OFFSET ?%d",
 		joinedDeliveryQuery, where, len(args)+1, len(args)+2)
 	rows, err := d.QueryContext(ctx, q, append(args, pageSize, (page-1)*pageSize)...)
 	if err != nil {
@@ -439,7 +439,7 @@ func placeholders(start int, ids []int64) (string, []any) {
 	ph := make([]string, 0, len(ids))
 	args := make([]any, 0, len(ids))
 	for i, id := range ids {
-		ph = append(ph, fmt.Sprintf("$%d", start+i))
+		ph = append(ph, fmt.Sprintf("?%d", start+i))
 		args = append(args, id)
 	}
 	return strings.Join(ph, ","), args

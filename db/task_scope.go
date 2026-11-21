@@ -78,7 +78,7 @@ func (s *AssetStore) upsertTaskScopeResult(ts TaskScope) (bool, error) {
 	}
 	query := `
 INSERT INTO task_scope(task_id, kind, company_id, domain, net, value, source, reason)
-VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''))
+VALUES (?1,?2,?3,?4,?5,?6,?7,NULLIF(?8,''))
 ON CONFLICT DO NOTHING`
 	var (
 		result sql.Result
@@ -223,7 +223,7 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 // DeleteTaskScope removes a single scope row by id, scoped to the given task.
 // Returns whether a row was actually deleted.
 func (s *AssetStore) DeleteTaskScope(taskID, scopeID int64) (bool, error) {
-	res, err := s.db.Exec(`DELETE FROM task_scope WHERE id=$1 AND task_id=$2`, scopeID, taskID)
+	res, err := s.db.Exec(`DELETE FROM task_scope WHERE id=?1 AND task_id=?2`, scopeID, taskID)
 	if err != nil {
 		return false, err
 	}
@@ -238,7 +238,7 @@ SELECT ts.id, ts.kind, COALESCE(ts.company_id,0), COALESCE(c.name,''), COALESCE(
        COALESCE(ts.net,''), COALESCE(ts.value,''), ts.source, COALESCE(ts.reason,'')
 FROM task_scope ts
 LEFT JOIN companies c ON c.id=ts.company_id
-WHERE ts.task_id=$1 ORDER BY ts.id`, taskID)
+WHERE ts.task_id=?1 ORDER BY ts.id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +293,7 @@ func (s *AssetStore) CoverageEnabled(taskID int64) bool {
 		return true
 	}
 	var enabled bool
-	if err := s.db.QueryRow(`SELECT COALESCE(coverage_enabled,true) FROM tasks WHERE id=$1`, taskID).Scan(&enabled); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(coverage_enabled,true) FROM tasks WHERE id=?1`, taskID).Scan(&enabled); err != nil {
 		return true
 	}
 	return enabled
@@ -305,7 +305,7 @@ target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
   FROM assets a
-  JOIN task_scope ts ON ts.task_id = $1 AND (
+  JOIN task_scope ts ON ts.task_id = ?1 AND (
        (ts.kind='company'     AND a.company_id = ts.company_id)
     OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
     OR (ts.kind='subdomain'   AND a.domain = ts.domain)
@@ -320,14 +320,14 @@ tested AS (
   SELECT DISTINCT ea.asset_id
   FROM exploration_anchors ea
   JOIN exploration_nodes en ON en.id = ea.node_id
-  WHERE en.exploration_id = $2 AND en.kind = 'fact'
+  WHERE en.exploration_id = ?2 AND en.kind = 'fact'
 )`
 
 // TaskCoverage computes rough per-type coverage for a task. taskID indexes
 // task_scope + assets; expID indexes the fact anchors. Reference figure only.
 func (s *AssetStore) TaskCoverage(taskID, expID int64) (*Coverage, error) {
 	cov := &Coverage{ByType: []CoverageByType{}}
-	_ = s.db.QueryRow(`SELECT count(*) FROM task_scope WHERE task_id=$1`, taskID).Scan(&cov.ScopeRows)
+	_ = s.db.QueryRow(`SELECT count(*) FROM task_scope WHERE task_id=?1`, taskID).Scan(&cov.ScopeRows)
 	rows, err := s.db.Query(`WITH `+covTargetCTE+`
 SELECT t.type, count(*) AS total,
        count(*) FILTER (WHERE t.id IN (SELECT asset_id FROM tested)) AS tested
@@ -511,7 +511,7 @@ ORDER BY a.id`, taskID)
 	for root := range missingRoots {
 		var id, companyID int64
 		err := s.db.QueryRow(`SELECT id, COALESCE(company_id,0) FROM assets
-WHERE type='root_domain' AND domain=$1 LIMIT 1`, root).Scan(&id, &companyID)
+WHERE type='root_domain' AND domain=?1 LIMIT 1`, root).Scan(&id, &companyID)
 		var node CoverageGraphNode
 		if err == nil && id > 0 {
 			node = CoverageGraphNode{Key: assetKey(id), Kind: "root_domain", AssetID: id,
@@ -533,7 +533,7 @@ WHERE type='root_domain' AND domain=$1 LIMIT 1`, root).Scan(&id, &companyID)
 			continue
 		}
 		var name string
-		if err := s.db.QueryRow(`SELECT name FROM companies WHERE id=$1`, id).Scan(&name); err != nil {
+		if err := s.db.QueryRow(`SELECT name FROM companies WHERE id=?1`, id).Scan(&name); err != nil {
 			continue
 		}
 		add(CoverageGraphNode{Key: key, Kind: "company", CompanyID: id,
@@ -615,7 +615,7 @@ func (s *AssetStore) ListUntestedAssets(taskID, expID int64, typ string, limit, 
 	typeFilter := ""
 	args := []any{taskID, expID}
 	if typ != "" {
-		typeFilter = " AND t.type = $3"
+		typeFilter = " AND t.type = ?3"
 		args = append(args, typ)
 	}
 	var total int
@@ -627,7 +627,7 @@ SELECT count(*) FROM target t WHERE t.id NOT IN (SELECT asset_id FROM tested)`+t
 	rows, err := s.db.Query(`WITH `+covTargetCTE+`
 SELECT t.id, t.type, t.label FROM target t
 WHERE t.id NOT IN (SELECT asset_id FROM tested)`+typeFilter+`
-ORDER BY t.id LIMIT $`+limPos+` OFFSET $`+offPos, pageArgs...)
+ORDER BY t.id LIMIT ?`+limPos+` OFFSET ?`+offPos, pageArgs...)
 	if err != nil {
 		return nil, total, err
 	}

@@ -72,7 +72,7 @@ func TestRecorderPersistsRawWireBodies(t *testing.T) {
 	// defer registered after `defer m.Close()` (LIFO puts it first) — a
 	// t.Cleanup would run after the manager already closed the pool.
 	defer func() {
-		if _, err := pg.Exec(`DELETE FROM llm_records WHERE session_id = $1`, session); err != nil {
+		if _, err := pg.Exec(`DELETE FROM llm_records WHERE session_id = ?1`, session); err != nil {
 			t.Logf("cleanup: %v", err)
 		}
 	}()
@@ -91,7 +91,7 @@ func TestRecorderPersistsRawWireBodies(t *testing.T) {
 	}
 
 	var id int64
-	if err := pg.QueryRow(`SELECT id FROM llm_records WHERE session_id=$1 ORDER BY id DESC LIMIT 1`, session).Scan(&id); err != nil {
+	if err := pg.QueryRow(`SELECT id FROM llm_records WHERE session_id=?1 ORDER BY id DESC LIMIT 1`, session).Scan(&id); err != nil {
 		t.Fatalf("no record written: %v", err)
 	}
 	got, err := pg.GetLLMRecord(id)

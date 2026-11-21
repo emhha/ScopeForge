@@ -74,7 +74,7 @@ func reviewCompletion(ctx context.Context, prov llm.Model, prompt string, input 
 // budget includes the explanation and complete closing JSON delimiters.
 func streamCollectText(ctx context.Context, prov llm.Model, system, user string) (string, error) {
 	tokens := 1024
-	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleSystem, Content: system}, {Role: llm.RoleUser, Content: user}}, GenerationConfig: llm.GenerationConfig{MaxTokens: &tokens}, ExtraFields: map[string]any{"thinking": map[string]string{"type": "disabled"}}}
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleSystem, Content: system}, {Role: llm.RoleUser, Content: user}}, GenerationConfig: llm.GenerationConfig{MaxTokens: &tokens,ThinkingEnabled: new(bool)}}
 	message, _, _, err := modelutil.Complete(ctx, prov, req)
 	return message.Content, err
 }

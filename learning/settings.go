@@ -27,7 +27,7 @@ func (m *Memories) Configure(c MemorySettings) error {
 		if v {
 			text = "true"
 		}
-		if _, err := tx.Exec(`INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, text); err != nil {
+		if _, err := tx.Exec(`INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, text); err != nil {
 			return err
 		}
 	}

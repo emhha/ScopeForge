@@ -21,7 +21,7 @@ func testSetup(t *testing.T) (*DB, *AssetStore, *CompanyStore) {
 
 // deleteAsset removes one v2 asset by id.
 func deleteAsset(d *DB, id int64) {
-	d.Exec(`DELETE FROM assets WHERE id = $1`, id)
+	d.Exec(`DELETE FROM assets WHERE id = ?1`, id)
 }
 
 // =====================================================================
@@ -52,11 +52,11 @@ func TestUpsertRootDomain(t *testing.T) {
 
 	// task_ids should now contain both 1 and 2
 	var taskIDs []byte
-	d.QueryRow(`SELECT task_ids FROM assets WHERE id = $1`, id1).Scan(&taskIDs)
+	d.QueryRow(`SELECT task_ids FROM assets WHERE id = ?1`, id1).Scan(&taskIDs)
 
 	// ICP should still be set (COALESCE keeps existing)
 	var icp *string
-	d.QueryRow(`SELECT icp FROM assets WHERE id = $1`, id1).Scan(&icp)
+	d.QueryRow(`SELECT icp FROM assets WHERE id = ?1`, id1).Scan(&icp)
 	if icp == nil || *icp != "A12345" {
 		t.Errorf("ICP not preserved: %v", icp)
 	}
@@ -92,7 +92,7 @@ func TestUpsertIP(t *testing.T) {
 
 	// c_segment should be 192.168.10.0/24
 	var cseg *string
-	d.QueryRow(`SELECT c_segment FROM assets WHERE id = $1`, id1).Scan(&cseg)
+	d.QueryRow(`SELECT c_segment FROM assets WHERE id = ?1`, id1).Scan(&cseg)
 	if cseg == nil || *cseg != "192.168.10.0/24" {
 		t.Errorf("c_segment: want 192.168.10.0/24, got %v", cseg)
 	}
@@ -112,7 +112,7 @@ func TestUpsertIP(t *testing.T) {
 
 	// verify all 3 ports present
 	var cnt int
-	d.QueryRow(`SELECT json_array_length(open_ports) FROM assets WHERE id = $1`, id1).Scan(&cnt)
+	d.QueryRow(`SELECT json_array_length(open_ports) FROM assets WHERE id = ?1`, id1).Scan(&cnt)
 	if cnt != 3 {
 		t.Errorf("open_ports merge: want 3 ports, got %d", cnt)
 	}
@@ -144,7 +144,7 @@ func TestUpsertIPBoundDomains(t *testing.T) {
 	}
 
 	var cnt int
-	d.QueryRow(`SELECT json_array_length(bound_domains) FROM assets WHERE id = $1`, id).Scan(&cnt)
+	d.QueryRow(`SELECT json_array_length(bound_domains) FROM assets WHERE id = ?1`, id).Scan(&cnt)
 	if cnt != 2 {
 		t.Errorf("bound_domains merge: want 2, got %d", cnt)
 	}
@@ -168,7 +168,7 @@ func TestAppendIPPort(t *testing.T) {
 	}
 
 	var cnt int
-	d.QueryRow(`SELECT json_array_length(open_ports) FROM assets WHERE id = $1`, id).Scan(&cnt)
+	d.QueryRow(`SELECT json_array_length(open_ports) FROM assets WHERE id = ?1`, id).Scan(&cnt)
 	if cnt != 2 {
 		t.Errorf("AppendIPPort: want 2 ports, got %d", cnt)
 	}
@@ -200,7 +200,7 @@ func TestUpsertSubdomain(t *testing.T) {
 
 	// verify root_domain auto-populated
 	var rootDomain string
-	d.QueryRow(`SELECT COALESCE(root_domain,'') FROM assets WHERE id = $1`, id).Scan(&rootDomain)
+	d.QueryRow(`SELECT COALESCE(root_domain,'') FROM assets WHERE id = ?1`, id).Scan(&rootDomain)
 	if rootDomain != "subdtest.com" {
 		t.Errorf("root_domain: want subdtest.com, got %q", rootDomain)
 	}
@@ -311,7 +311,7 @@ func TestUpsertHTTPService(t *testing.T) {
 
 	// verify technology was stored
 	var techCnt int
-	d.QueryRow(`SELECT json_array_length(technologies) FROM assets WHERE id = $1`, id1).Scan(&techCnt)
+	d.QueryRow(`SELECT json_array_length(technologies) FROM assets WHERE id = ?1`, id1).Scan(&techCnt)
 	if techCnt != 2 {
 		t.Errorf("technologies: want 2, got %d", techCnt)
 	}
@@ -329,7 +329,7 @@ func TestUpsertHTTPService(t *testing.T) {
 		t.Errorf("http service dedup failed: %d vs %d", id2, id1)
 	}
 
-	d.QueryRow(`SELECT json_array_length(technologies) FROM assets WHERE id = $1`, id1).Scan(&techCnt)
+	d.QueryRow(`SELECT json_array_length(technologies) FROM assets WHERE id = ?1`, id1).Scan(&techCnt)
 	if techCnt != 4 {
 		t.Errorf("technologies merge: want 4, got %d", techCnt)
 	}
@@ -365,7 +365,7 @@ func TestUpsertHTTPServiceAuthAppend(t *testing.T) {
 
 	// auth should have 2 items now
 	var authCnt int
-	d.QueryRow(`SELECT json_array_length(auth) FROM assets WHERE id = $1`, id1).Scan(&authCnt)
+	d.QueryRow(`SELECT json_array_length(auth) FROM assets WHERE id = ?1`, id1).Scan(&authCnt)
 	if authCnt != 2 {
 		t.Errorf("auth append: want 2, got %d", authCnt)
 	}
@@ -443,7 +443,7 @@ func TestUpsertOtherServiceAuthAppend(t *testing.T) {
 	}
 
 	var authCnt int
-	d.QueryRow(`SELECT json_array_length(auth) FROM assets WHERE id = $1`, id1).Scan(&authCnt)
+	d.QueryRow(`SELECT json_array_length(auth) FROM assets WHERE id = ?1`, id1).Scan(&authCnt)
 	if authCnt != 2 {
 		t.Errorf("auth append: want 2, got %d", authCnt)
 	}
@@ -489,7 +489,7 @@ func TestUpsertEndpoint(t *testing.T) {
 
 	// params should be merged (2 distinct params)
 	var paramCnt int
-	d.QueryRow(`SELECT json_array_length(params) FROM assets WHERE id = $1`, id1).Scan(&paramCnt)
+	d.QueryRow(`SELECT json_array_length(params) FROM assets WHERE id = ?1`, id1).Scan(&paramCnt)
 	if paramCnt != 2 {
 		t.Errorf("params merge: want 2, got %d", paramCnt)
 	}
@@ -836,7 +836,7 @@ func TestCompanyAttributionAtInsertTime(t *testing.T) {
 	defer deleteAsset(d, assetID)
 
 	var cid *int64
-	d.QueryRow(`SELECT company_id FROM assets WHERE id = $1`, assetID).Scan(&cid)
+	d.QueryRow(`SELECT company_id FROM assets WHERE id = ?1`, assetID).Scan(&cid)
 	if cid == nil || *cid != companyID {
 		t.Errorf("attribution at insert time: want company %d, got %v", companyID, cid)
 	}
@@ -913,13 +913,13 @@ func TestAssetPaginationUsesStableIDTieBreaker(t *testing.T) {
 		var id int64
 		domain := fmt.Sprintf("%s-%d.invalid", marker, i)
 		if err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain,task_ids,last_seen)
-			VALUES ('root_domain',$1,$1,json_array($2),$3) RETURNING id`,
+			VALUES ('root_domain',?1,?1,json_array(?2),?3) RETURNING id`,
 			domain, taskID, sharedSeen).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, id)
 	}
-	defer func() { _, _ = d.Exec(`DELETE FROM assets WHERE id IN (SELECT value FROM json_each($1))`, ids) }()
+	defer func() { _, _ = d.Exec(`DELETE FROM assets WHERE id IN (SELECT value FROM json_each(?1))`, ids) }()
 
 	want := slices.Clone(ids)
 	slices.Reverse(want)
@@ -1020,7 +1020,7 @@ func TestQueryDSLInScopeMembership(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.DeleteTask(task.ID); _ = d.DeleteTask(src.ID) })
 	// task ← src is a direct source relation.
-	if _, err := d.Exec(`INSERT INTO task_relations(task_id, source_task_id) VALUES ($1,$2)`, task.ID, src.ID); err != nil {
+	if _, err := d.Exec(`INSERT INTO task_relations(task_id, source_task_id) VALUES (?1,?2)`, task.ID, src.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1065,7 +1065,7 @@ func TestQueryDSLInScopeMembership(t *testing.T) {
 	for _, r := range rows {
 		var id int64
 		if err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain,url,method,ip,page_title,task_ids,last_seen)
-			VALUES ($1,NULLIF($2,''),NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),json_array($8),utc_now())
+			VALUES (?1,NULLIF(?2,''),NULLIF(?3,''),NULLIF(?4,''),NULLIF(?5,''),NULLIF(?6,''),NULLIF(?7,''),json_array(?8),utc_now())
 			RETURNING id`,
 			r.typ, r.domain, r.rootDom, r.url, r.method, r.ip, r.title, foreignTask).Scan(&id); err != nil {
 			t.Fatalf("insert %s: %v", r.domain, err)
@@ -1077,7 +1077,7 @@ func TestQueryDSLInScopeMembership(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = d.Exec(`DELETE FROM assets WHERE id IN (SELECT value FROM json_each($1)) OR id IN (SELECT value FROM json_each($2))`, inScopeIDs, outIDs)
+		_, _ = d.Exec(`DELETE FROM assets WHERE id IN (SELECT value FROM json_each(?1)) OR id IN (SELECT value FROM json_each(?2))`, inScopeIDs, outIDs)
 	})
 
 	got, err := assets.QueryDSLInScope(marker, "", task.ID, 50, 0)

@@ -12,22 +12,14 @@ import (
 
 type anthropicGenerationKey struct{}
 type anthropicGeneration struct {
-	thinking, effort string
-	headers          map[string]string
-	extra            map[string]any
+	headers map[string]string
+	extra   map[string]any
 }
 
-// WithAnthropicRequest carries explicit product settings to SDK hooks. The
-// pinned adapter ignores Request.Headers/ExtraFields and couples effort to its
-// adaptive-model allowlist. No history or executable tool is retained here.
+// WithAnthropicRequest carries explicit headers and tool declarations to native
+// request hooks. Thinking and effort use the SDK's typed request fields directly.
 func WithAnthropicRequest(ctx context.Context, req *model.Request) context.Context {
 	config := anthropicGeneration{extra: req.ExtraFields, headers: make(map[string]string, len(req.Headers))}
-	if thinking, ok := req.ExtraFields["thinking"].(map[string]string); ok {
-		config.thinking = thinking["type"]
-	}
-	if req.ReasoningEffort != nil {
-		config.effort = *req.ReasoningEffort
-	}
 	for key, val := range req.Headers {
 		config.headers[key] = val
 	}
@@ -55,16 +47,5 @@ func applyAnthropicGeneration(ctx context.Context, req *anthropicsdk.MessageNewP
 		}
 		fields["tools"] = tools
 		req.SetExtraFields(fields)
-	}
-	if config.thinking != "" {
-		fields := make(map[string]any)
-		for key, val := range req.ExtraFields() {
-			fields[key] = val
-		}
-		fields["thinking"] = map[string]string{"type": config.thinking}
-		req.SetExtraFields(fields)
-	}
-	if config.effort != "" {
-		req.OutputConfig.Effort = anthropicsdk.OutputConfigEffort(config.effort)
 	}
 }

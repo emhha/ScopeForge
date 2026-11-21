@@ -267,7 +267,7 @@ func (s *AssetStore) UpsertRootDomain(req UpsertRootDomainReq) (int64, error) {
 	var id int64
 	err = s.tx.QueryRow(`
 INSERT INTO assets(type, domain, root_domain, icp, company_id, company_source, task_ids)
-VALUES ('root_domain', $1, $1, $2, $3, 'scope', $4)
+VALUES ('root_domain', ?1, ?1, ?2, ?3, 'scope', ?4)
 ON CONFLICT (domain) WHERE type = 'root_domain' DO UPDATE SET
     icp        = COALESCE(EXCLUDED.icp, assets.icp),
     company_id = CASE
@@ -359,7 +359,7 @@ func (s *AssetStore) UpsertIP(req UpsertIPReq) (int64, error) {
 	var id int64
 	err = s.tx.QueryRow(`
 INSERT INTO assets(type, ip, c_segment, bound_domains, open_ports, company_id, company_source, task_ids)
-VALUES ('ip', $1, $2, $3, $4, $5, 'scope', $6)
+VALUES ('ip', ?1, ?2, ?3, ?4, ?5, 'scope', ?6)
 ON CONFLICT (ip) WHERE type = 'ip' DO UPDATE SET
     bound_domains = (SELECT json_array_union(assets.bound_domains , EXCLUDED.bound_domains)),
     open_ports = json_merge_ports(assets.open_ports,EXCLUDED.open_ports),
@@ -387,9 +387,9 @@ func (s *AssetStore) AppendIPPort(ipStr string, port int, serviceName string) er
 	entry, _ := json.Marshal(map[string]any{"port": port, "service": serviceName})
 	_, err := s.db.Exec(`
 UPDATE assets SET
-    open_ports = json_merge_ports(open_ports,json_array(json($1))),
+    open_ports = json_merge_ports(open_ports,json_array(json(?1))),
     last_seen = utc_now()
-WHERE type = 'ip' AND ip = $2`, string(entry), ipStr)
+WHERE type = 'ip' AND ip = ?2`, string(entry), ipStr)
 	return err
 }
 
@@ -400,9 +400,9 @@ func (s *AssetStore) AppendIPBoundDomain(ipStr, domain string) error {
 	}
 	_, err := s.db.Exec(`
 UPDATE assets SET
-    bound_domains = (SELECT json_array_union(bound_domains , json_array($1))),
+    bound_domains = (SELECT json_array_union(bound_domains , json_array(?1))),
     last_seen = utc_now()
-WHERE type = 'ip' AND ip = $2`, domain, ipStr)
+WHERE type = 'ip' AND ip = ?2`, domain, ipStr)
 	return err
 }
 
@@ -498,7 +498,7 @@ func (s *AssetStore) UpsertSubdomain(req UpsertSubdomainReq) (id int64, err erro
 
 	err = s.tx.QueryRow(`
 INSERT INTO assets(type, domain, root_domain, record_type, record_value, ip, c_segment, icp, company_id, company_source, task_ids)
-VALUES ('subdomain', $1, $2, $3, $4, $5, $6, $7, $8, 'scope', $9)
+VALUES ('subdomain', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'scope', ?9)
 ON CONFLICT (domain, COALESCE(record_type,'')) WHERE type = 'subdomain' DO UPDATE SET
     ip           = COALESCE(EXCLUDED.ip, assets.ip),
     c_segment    = COALESCE(EXCLUDED.c_segment, assets.c_segment),
@@ -586,7 +586,7 @@ func (s *AssetStore) UpsertApp(req UpsertAppReq) (int64, error) {
 	if req.BundleID != "" {
 		err = s.tx.QueryRow(`
 INSERT INTO assets(type, bundle_id, app_name, category, app_description, app_icp, company_id, company_source, task_ids)
-VALUES ('app', $1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ('app', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
 ON CONFLICT (bundle_id) WHERE type = 'app' AND bundle_id IS NOT NULL DO UPDATE SET
     app_name        = COALESCE(EXCLUDED.app_name, assets.app_name),
     category        = COALESCE(EXCLUDED.category, assets.category),
@@ -609,7 +609,7 @@ RETURNING id`, bundleVal, req.Name, catVal, descVal, icpVal, companyIDVal, compa
 	} else {
 		err = s.tx.QueryRow(`
 INSERT INTO assets(type, bundle_id, app_name, category, app_description, app_icp, company_id, company_source, task_ids)
-VALUES ('app', NULL, $1, $2, $3, $4, $5, $6, $7)
+VALUES ('app', NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT (app_name) WHERE type = 'app' AND bundle_id IS NULL DO UPDATE SET
     category        = COALESCE(EXCLUDED.category, assets.category),
     app_description = COALESCE(EXCLUDED.app_description, assets.app_description),
@@ -714,9 +714,9 @@ INSERT INTO assets(
     auth, company_id, company_source, task_ids
 )
 VALUES (
-    'service', $1, 'http', $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12,
-    $13, $14, 'scope', $15
+    'service', ?1, 'http', ?2, ?3, ?4, ?5, ?6,
+    ?7, ?8, ?9, ?10, ?11, ?12,
+    ?13, ?14, 'scope', ?15
 )
 ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
     status_code    = COALESCE(EXCLUDED.status_code,    assets.status_code),
@@ -852,7 +852,7 @@ INSERT INTO assets(
     type, service_type, service_name, domain, ip, port, root_domain,
     c_segment, auth, company_id, company_source, task_ids
 )
-VALUES ('service', 'other', $1, $2, $3, $4, $5, $6, $7, $8, 'scope', $9)
+VALUES ('service', 'other', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'scope', ?9)
 ON CONFLICT (COALESCE(domain,''), COALESCE(ip,''), port, service_name) WHERE type = 'service' AND service_type = 'other' DO UPDATE SET
     domain     = COALESCE(EXCLUDED.domain,     assets.domain),
     ip         = COALESCE(EXCLUDED.ip,         assets.ip),
@@ -982,7 +982,7 @@ INSERT INTO assets(
     type, url, method, domain, ip, port, root_domain,
     params, company_id, company_source, task_ids, c_segment
 )
-VALUES ('endpoint', $1, $2, $3, $4, $5, $6, $7, $8, 'scope', $9, $10)
+VALUES ('endpoint', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'scope', ?9, ?10)
 ON CONFLICT (url, method) WHERE type = 'endpoint' DO UPDATE SET
     params = json_merge_params(assets.params,EXCLUDED.params),
     ip         = COALESCE(EXCLUDED.ip,        assets.ip),
@@ -1038,9 +1038,9 @@ SELECT id, type, company_id, task_ids,
        COALESCE(page_title,''), technologies, auth,
        COALESCE(method,''), params, extra, last_seen
 FROM assets
-WHERE type = $1
+WHERE type = ?1
 ORDER BY last_seen DESC, id DESC
-LIMIT $2 OFFSET $3`, typ, limit, offset)
+LIMIT ?2 OFFSET ?3`, typ, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -1051,7 +1051,7 @@ LIMIT $2 OFFSET $3`, typ, limit, offset)
 // CountByType returns the total number of assets of a type (for server-side pagination).
 func (s *AssetStore) CountByType(typ string) (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT count(*) FROM assets WHERE type = $1`, typ).Scan(&n)
+	err := s.db.QueryRow(`SELECT count(*) FROM assets WHERE type = ?1`, typ).Scan(&n)
 	return n, err
 }
 
@@ -1068,11 +1068,11 @@ func (s *AssetStore) QueryByCompany(companyID int64, typ string, limit, offset i
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), technologies, auth,
        COALESCE(method,''), params, extra, last_seen
-FROM assets WHERE company_id = $1`
+FROM assets WHERE company_id = ?1`
 	args := []any{companyID}
 	if typ != "" {
 		args = append(args, typ)
-		q += fmt.Sprintf(` AND type = $%d`, len(args))
+		q += fmt.Sprintf(` AND type = ?%d`, len(args))
 	}
 	q += pageClause(&args, limit, offset)
 	rows, err := s.db.Query(q, args...)
@@ -1084,11 +1084,11 @@ FROM assets WHERE company_id = $1`
 }
 
 func (s *AssetStore) CountByCompany(companyID int64, typ string) (int, error) {
-	q := `SELECT count(*) FROM assets WHERE company_id = $1`
+	q := `SELECT count(*) FROM assets WHERE company_id = ?1`
 	args := []any{companyID}
 	if typ != "" {
 		args = append(args, typ)
-		q += fmt.Sprintf(` AND type = $%d`, len(args))
+		q += fmt.Sprintf(` AND type = ?%d`, len(args))
 	}
 	var n int
 	err := s.db.QueryRow(q, args...).Scan(&n)
@@ -1099,11 +1099,11 @@ func pageClause(args *[]any, limit, offset int) string {
 	q := ` ORDER BY last_seen DESC, id DESC`
 	if limit > 0 {
 		*args = append(*args, limit)
-		q += fmt.Sprintf(` LIMIT $%d`, len(*args))
+		q += fmt.Sprintf(` LIMIT ?%d`, len(*args))
 	}
 	if offset > 0 {
 		*args = append(*args, offset)
-		q += fmt.Sprintf(` OFFSET $%d`, len(*args))
+		q += fmt.Sprintf(` OFFSET ?%d`, len(*args))
 	}
 	return q
 }
@@ -1120,11 +1120,11 @@ func (s *AssetStore) QueryByTask(taskID int64, typ string, limit, offset int) ([
        COALESCE(favicon_mmh3,''), status_code, content_length,
        COALESCE(page_title,''), technologies, auth,
        COALESCE(method,''), params, extra, last_seen
-FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))`
+FROM assets WHERE ?1 IN (SELECT value FROM json_each(task_ids))`
 	args := []any{taskID}
 	if typ != "" {
 		args = append(args, typ)
-		q += fmt.Sprintf(` AND type = $%d`, len(args))
+		q += fmt.Sprintf(` AND type = ?%d`, len(args))
 	}
 	q += pageClause(&args, limit, offset)
 	rows, err := s.db.Query(q, args...)
@@ -1143,11 +1143,11 @@ FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))`
 }
 
 func (s *AssetStore) CountByTask(taskID int64, typ string) (int, error) {
-	q := `SELECT count(*) FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))`
+	q := `SELECT count(*) FROM assets WHERE ?1 IN (SELECT value FROM json_each(task_ids))`
 	args := []any{taskID}
 	if typ != "" {
 		args = append(args, typ)
-		q += fmt.Sprintf(` AND type = $%d`, len(args))
+		q += fmt.Sprintf(` AND type = ?%d`, len(args))
 	}
 	var n int
 	err := s.db.QueryRow(q, args...).Scan(&n)
@@ -1155,7 +1155,7 @@ func (s *AssetStore) CountByTask(taskID int64, typ string) (int, error) {
 }
 
 func (s *AssetStore) CountsByTypeForTask(taskID int64) (map[string]int, error) {
-	rows, err := s.db.Query(`SELECT type, COUNT(*) FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids)) GROUP BY type`, taskID)
+	rows, err := s.db.Query(`SELECT type, COUNT(*) FROM assets WHERE ?1 IN (SELECT value FROM json_each(task_ids)) GROUP BY type`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -1168,12 +1168,12 @@ func (s *AssetStore) CountsByTypeForTask(taskID int64) (map[string]int, error) {
 // transaction in DeleteTaskCascadePrepared; this method remains for callers
 // that explicitly manage only asset associations.
 func (s *AssetStore) DeleteByTaskID(taskID int64) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM assets WHERE task_ids = json_array($1)`, taskID)
+	res, err := s.db.Exec(`DELETE FROM assets WHERE task_ids = json_array(?1)`, taskID)
 	if err != nil {
 		return 0, err
 	}
 	deleted, _ := res.RowsAffected()
-	if _, err := s.db.Exec(`UPDATE assets SET task_ids = json_array_remove(task_ids, $1) WHERE $1 IN (SELECT value FROM json_each(task_ids))`, taskID); err != nil {
+	if _, err := s.db.Exec(`UPDATE assets SET task_ids = json_array_remove(task_ids, ?1) WHERE ?1 IN (SELECT value FROM json_each(task_ids))`, taskID); err != nil {
 		return deleted, err
 	}
 	return deleted, nil
@@ -1185,7 +1185,7 @@ func (s *AssetStore) DeleteByTaskID(taskID int64) (int64, error) {
 func (s *AssetStore) HostsByTask(taskID int64) ([]string, error) {
 	rows, err := s.db.Query(`
 SELECT COALESCE(domain,''), COALESCE(ip,''), COALESCE(url,'')
-FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))`, taskID)
+FROM assets WHERE ?1 IN (SELECT value FROM json_each(task_ids))`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -1240,25 +1240,25 @@ type rowsQuerier interface {
 func hostsForTaskDeletion(q rowsQuerier, taskID, explorationID int64) ([]string, error) {
 	rows, err := q.Query(`
 WITH current_assets AS (
-  SELECT id FROM assets WHERE $1 IN (SELECT value FROM json_each(task_ids))
+  SELECT id FROM assets WHERE ?1 IN (SELECT value FROM json_each(task_ids))
   UNION
   SELECT ea.asset_id
   FROM exploration_anchors ea
   JOIN exploration_nodes n ON n.id=ea.node_id
-  WHERE n.exploration_id=$2
+  WHERE n.exploration_id=?2
 ),
 other_assets AS (
   SELECT DISTINCT a.id
   FROM assets a
   WHERE EXISTS (
     SELECT 1 FROM tasks t
-    WHERE t.id<>$1 AND t.deleted_at IS NULL AND t.id IN (SELECT value FROM json_each(a.task_ids))
+    WHERE t.id<>?1 AND t.deleted_at IS NULL AND t.id IN (SELECT value FROM json_each(a.task_ids))
   ) OR EXISTS (
     SELECT 1
     FROM exploration_anchors ea
     JOIN exploration_nodes n ON n.id=ea.node_id
     JOIN tasks t ON t.exploration_id=n.exploration_id
-    WHERE ea.asset_id=a.id AND t.id<>$1 AND t.deleted_at IS NULL
+    WHERE ea.asset_id=a.id AND t.id<>?1 AND t.deleted_at IS NULL
   )
 )
 SELECT COALESCE(a.domain,''), COALESCE(a.ip,''), COALESCE(a.url,''), true
@@ -1328,7 +1328,7 @@ func (s *AssetStore) GetByIDs(ids []int64) ([]*Asset, error) {
 	placeholders := make([]string, len(ids))
 	args := make([]any, len(ids))
 	for i, id := range ids {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		placeholders[i] = fmt.Sprintf("?%d", i+1)
 		args[i] = id
 	}
 	sql := assetSelectCols + " WHERE id IN (" + strings.Join(placeholders, ",") + ") ORDER BY last_seen DESC"
@@ -1342,7 +1342,7 @@ func (s *AssetStore) GetByIDs(ids []int64) ([]*Asset, error) {
 
 // DeleteByCompanyID hard-deletes all assets belonging to a company. Returns rows deleted.
 func (s *AssetStore) DeleteByCompanyID(companyID int64) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM assets WHERE company_id = $1`, companyID)
+	res, err := s.db.Exec(`DELETE FROM assets WHERE company_id = ?1`, companyID)
 	if err != nil {
 		return 0, err
 	}
@@ -1364,7 +1364,7 @@ func (s *AssetStore) DeleteByHost(host string) (map[string]int64, error) {
 	}
 	rows, err := s.db.Query(`
 DELETE FROM assets
-WHERE domain = $1 OR root_domain = $1 OR ip = $1
+WHERE domain = ?1 OR root_domain = ?1 OR ip = ?1
 RETURNING type`, h)
 	if err != nil {
 		return nil, err
@@ -1389,7 +1389,7 @@ func (s *AssetStore) DeleteByIDs(ids []int64) (int64, error) {
 	placeholders := make([]string, len(ids))
 	args := make([]any, len(ids))
 	for i, id := range ids {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		placeholders[i] = fmt.Sprintf("?%d", i+1)
 		args[i] = id
 	}
 	res, err := s.db.Exec("DELETE FROM assets WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)

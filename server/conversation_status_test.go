@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -21,7 +23,7 @@ func TestConversationListRunningState(t *testing.T) {
 		clear(s.chatBusy)
 		s.chatMu.Unlock()
 		for _, id := range ids {
-			_, _ = s.m.pg.Exec(`DELETE FROM conversations WHERE id=$1`, id)
+			_, _ = s.m.pg.Exec(`DELETE FROM conversations WHERE id=?1`, id)
 		}
 	})
 	check := func(want map[int64]bool) {
@@ -60,4 +62,67 @@ func TestConversationListRunningState(t *testing.T) {
 	clear(s.chatBusy)
 	s.chatMu.Unlock()
 	check(map[int64]bool{ids[0]: false, ids[1]: false, ids[2]: false})
+}
+
+func TestCompletedConversationTailDrainsAllExecutionEvents(t *testing.T) {
+	s, _ := newRetestServer(t)
+	conv, err := s.m.pg.CreateConversation("auto", "burst", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Insert in a transaction so this test exercises pagination rather than disk fsync speed.
+	tx, err := s.m.pg.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i := 0; i < 1003; i++ {
+		if _, err = tx.Exec(`INSERT INTO conversation_activities(conversation_id,kind,summary) VALUES(?1,'text',?2)`, conv.ID, fmt.Sprint(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var cursor int64
+	total := 0
+	for page := 0; page < 3; page++ {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/?since=%d&limit=10", cursor), nil)
+		req.SetPathValue("id", fmt.Sprint(conv.ID))
+		w := httptest.NewRecorder()
+		s.pgConversationMessages(w, req)
+		var body struct {
+			Items []struct {
+				ID int64 `json:"seq"`
+			} `json:"items"`
+			Cursor  int64 `json:"cursor"`
+			HasMore bool  `json:"hasMore"`
+			Running bool  `json:"running"`
+		}
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		if err = json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Running {
+			t.Fatal("fixture unexpectedly running")
+		}
+		for _, item := range body.Items {
+			if item.ID <= cursor {
+				t.Fatal("duplicate or reversed cursor")
+			}
+			cursor = item.ID
+			total++
+		}
+		if body.Cursor != cursor {
+			t.Fatal("cursor skipped events")
+		}
+		if !body.HasMore {
+			break
+		}
+	}
+	if total != 1003 {
+		t.Fatalf("only loaded %d events after completion", total)
+	}
 }

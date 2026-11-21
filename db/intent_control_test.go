@@ -18,7 +18,7 @@ func TestCompareAndSetIntentStateAllowsSingleWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	store := d.Exploration(expID)
 	intentID, err := store.AddIntent(map[string]any{"summary": "controlled"}, 1, nil, "planner")
 	if err != nil {
@@ -68,7 +68,7 @@ func TestCancelIntentPreservesTokenMeteringWithoutDoubleCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	store := d.Exploration(expID)
 	intentID, err := store.AddIntent(map[string]any{"summary": "cancelled"}, 1, nil, "planner")
 	if err != nil {
@@ -94,7 +94,7 @@ func TestCancelIntentPreservesTokenMeteringWithoutDoubleCount(t *testing.T) {
 		if appendErr != nil {
 			t.Fatal(appendErr)
 		}
-		if _, updateErr := d.Exec(`UPDATE activity SET created_at=$1 WHERE id=$2`, at, activityID); updateErr != nil {
+		if _, updateErr := d.Exec(`UPDATE activity SET created_at=?1 WHERE id=?2`, at, activityID); updateErr != nil {
 			t.Fatal(updateErr)
 		}
 	}
@@ -171,8 +171,8 @@ func TestCancelIntentPreservesTokenMeteringWithoutDoubleCount(t *testing.T) {
 	if err := d.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (
 			WHERE metadata->>'token_day'=date(created_at)
 		) FROM activity
-		WHERE exploration_id=$1 AND worker='token-ledger' AND kind='result'
-		  AND CAST(metadata->>'cancelled_intent_id' AS TEXT)=$2`, expID, fmt.Sprint(intentID)).Scan(&rollups, &datedRollups); err != nil {
+		WHERE exploration_id=?1 AND worker='token-ledger' AND kind='result'
+		  AND CAST(metadata->>'cancelled_intent_id' AS TEXT)=?2`, expID, fmt.Sprint(intentID)).Scan(&rollups, &datedRollups); err != nil {
 		t.Fatal(err)
 	}
 	if rollups != 3 || datedRollups != rollups {
@@ -236,7 +236,7 @@ func TestCancelIntentPreservesOutputsYieldedByAnotherIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	store := d.Exploration(expID)
 	first, err := store.AddIntent(map[string]any{"summary": "first"}, 1, nil, "planner")
 	if err != nil {

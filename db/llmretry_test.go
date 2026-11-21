@@ -27,7 +27,7 @@ func TestProfileRetryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=?1`, id) })
 
 	got, err := d.ProfileByID(id)
 	if err != nil || got == nil {
@@ -80,7 +80,7 @@ func TestProfileRetryClampedOnSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id) })
+	t.Cleanup(func() { d.Exec(`DELETE FROM llm_profiles WHERE id=?1`, id) })
 	got, err := d.ProfileByID(id)
 	if err != nil || got == nil {
 		t.Fatalf("ProfileByID: %v", err)
@@ -107,7 +107,7 @@ func TestLLMRetryPolicyRoundTrip(t *testing.T) {
 		if hadBefore {
 			d.SetSetting(settingLLMRetryPolicy, before)
 		} else {
-			d.Exec(`DELETE FROM settings WHERE key=$1`, settingLLMRetryPolicy)
+			d.Exec(`DELETE FROM settings WHERE key=?1`, settingLLMRetryPolicy)
 		}
 	})
 
@@ -136,7 +136,7 @@ func TestLLMRetryPolicyRoundTrip(t *testing.T) {
 	}
 
 	// 键不存在 = 全默认。
-	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, settingLLMRetryPolicy); err != nil {
+	if _, err := d.Exec(`DELETE FROM settings WHERE key=?1`, settingLLMRetryPolicy); err != nil {
 		t.Fatal(err)
 	}
 	if got := d.LLMRetryPolicy(); got != (LLMRetryPolicy{}) {

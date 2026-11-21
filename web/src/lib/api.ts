@@ -794,7 +794,8 @@ export const api = {
 
   // ---- app settings (runtime toggles) ----
   mappingSources: () => get<{ sources: MappingSource[] }>("/discovery/sources").then((r) => arr(r.sources)),
-  saveMappingSource: (id: MappingSource["id"], patch: MappingSourcePatch) => put<MappingSource>(`/discovery/sources/${id}`, patch),
+  saveMappingSource: (id: MappingSource["id"], patch: MappingSourcePatch) =>
+    put<MappingSource>(`/discovery/sources/${id}`, patch),
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // Run a real "test" search with the given (or saved) config to verify it works.
@@ -809,8 +810,7 @@ export const api = {
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;
@@ -890,6 +890,8 @@ export const api = {
   gc: (ttl = 86400) => post<{ removed: number }>(`/gc?ttl=${ttl}`, {}),
 
   // ---- LLM ----
+  modelCatalog: (refresh = false) =>
+    get<import("./types").ModelCatalog>(`/llm/catalog${refresh ? "?refresh=true" : ""}`),
   getLLM: () =>
     get<{
       configured: boolean;
@@ -902,6 +904,7 @@ export const api = {
       rate_per_minute?: number;
       context_window_k?: number;
       thinking_type?: string;
+      thinking_budget?: number;
       reasoning_effort?: string;
     }>("/llm"),
   setLLM: (
@@ -924,6 +927,7 @@ export const api = {
     reasoning_effort = "",
     profile_id?: number,
     streaming = true, // 用该配置真实的收发模式来测，别让"流式能通、非流式不通"漏到会话里
+    thinking_budget = 0,
     session_header_key = "", // 非空=测试请求也带该自定义会话头（值为一次性 session id）
   ) =>
     // reply = 模型实际回复(已截断);一个字都不回的配置后端直接判失败
@@ -935,6 +939,7 @@ export const api = {
       api_key,
       thinking_type,
       reasoning_effort,
+      thinking_budget,
       profile_id,
       streaming,
       session_header_key,
@@ -951,7 +956,8 @@ export const api = {
     rate_per_second?: number;
     rate_per_minute?: number;
     context_window_k?: number;
-    thinking_type?: string; // ""(不发送)|"disabled"|"enabled"
+    thinking_type?: string; // ""（默认）| disabled | enabled | adaptive
+    thinking_budget?: number; // 固定思考预算；0 沿用默认值
     reasoning_effort?: string; // ""(不发送)|"low"|"medium"|"high"|"xhigh"|"max"
     priority?: number; // 轮询顺位，越大越先用
     pool_exclude?: boolean; // true=不作为故障转移目标
@@ -1002,9 +1008,9 @@ export const api = {
     post<{ items: { id: number; ok: boolean; error?: string }[] }>("/conversations/delete/batch", { ids }),
   // Incremental tail: steps after `since` (id ASC) — live poll + post-send fetch.
   conversationMessages: (id: number, since = 0) =>
-    get<{ items: Activity[]; cursor: number; running: boolean }>(`/conversations/${id}/messages?since=${since}`).then(
-      (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running }),
-    ),
+    get<{ items: Activity[]; cursor: number; running: boolean; hasMore?: boolean }>(
+      `/conversations/${id}/messages?since=${since}`,
+    ).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, hasMore: !!r.hasMore })),
   // Reverse pagination: the latest `limit` steps (before=0) or the page of older
   // steps ending before id `before`. hasMore = still-older steps exist.
   conversationHistory: (id: number, before = 0, limit = 200) => {
@@ -1286,6 +1292,4 @@ export const api = {
   // per-agent 绑定 / 轮询 / 中断消耗都覆盖）。
   tokensByModel: (task: string) =>
     get<{ models: ModelTokenStat[] }>(`/llm/records/by-model?task=${encodeURIComponent(task)}`),
-
-
 };

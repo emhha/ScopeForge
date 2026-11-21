@@ -167,11 +167,11 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Fatalf("finding should be deleted, got finding=%+v err=%v", finding, err)
 	}
 	var llmRecords int
-	if err := m.pg.QueryRow(`SELECT count(*) FROM llm_records WHERE task_id=$1`, id).Scan(&llmRecords); err != nil || llmRecords != 0 {
+	if err := m.pg.QueryRow(`SELECT count(*) FROM llm_records WHERE task_id=?1`, id).Scan(&llmRecords); err != nil || llmRecords != 0 {
 		t.Fatalf("task LLM records should be deleted, count=%d err=%v", llmRecords, err)
 	}
 	var n int
-	m.pg.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, expID).Scan(&n)
+	m.pg.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=?1`, expID).Scan(&n)
 	if n != 0 {
 		t.Fatalf("exploration nodes should be cascade-deleted, got %d", n)
 	}

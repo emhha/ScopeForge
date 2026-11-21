@@ -48,11 +48,11 @@ func (d *DB) CreateKnowledgeImport(batch KnowledgeImport) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`INSERT INTO knowledge_imports(id,name,kind,skipped) VALUES($1,$2,$3,$4)`, batch.ID, batch.Name, batch.Kind, batch.Skipped); err != nil {
+	if _, err = tx.Exec(`INSERT INTO knowledge_imports(id,name,kind,skipped) VALUES(?1,?2,?3,?4)`, batch.ID, batch.Name, batch.Kind, batch.Skipped); err != nil {
 		return err
 	}
 	for _, item := range batch.Items {
-		if _, err = tx.Exec(`INSERT INTO knowledge_import_items(id,import_id,relative_path,name,sha256,size,staged_file,status,document_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, item.ID, batch.ID, item.RelativePath, item.Name, item.SHA256, item.Size, item.StagedFile, item.Status, item.DocumentID); err != nil {
+		if _, err = tx.Exec(`INSERT INTO knowledge_import_items(id,import_id,relative_path,name,sha256,size,staged_file,status,document_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)`, item.ID, batch.ID, item.RelativePath, item.Name, item.SHA256, item.Size, item.StagedFile, item.Status, item.DocumentID); err != nil {
 			return err
 		}
 	}
@@ -79,7 +79,7 @@ func (d *DB) KnowledgeImports() ([]KnowledgeImport, error) {
 	return out, rows.Err()
 }
 func (d *DB) KnowledgeImportItems(id string) ([]KnowledgeImportItem, error) {
-	rows, err := d.Query(`SELECT id,import_id,relative_path,name,sha256,size,staged_file,document_id,status,error FROM knowledge_import_items WHERE import_id=$1 ORDER BY relative_path`, id)
+	rows, err := d.Query(`SELECT id,import_id,relative_path,name,sha256,size,staged_file,document_id,status,error FROM knowledge_import_items WHERE import_id=?1 ORDER BY relative_path`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -96,11 +96,11 @@ func (d *DB) KnowledgeImportItems(id string) ([]KnowledgeImportItem, error) {
 }
 func (d *DB) KnowledgeImportState(id string) (string, error) {
 	var status string
-	err := d.QueryRow(`SELECT status FROM knowledge_imports WHERE id=$1`, id).Scan(&status)
+	err := d.QueryRow(`SELECT status FROM knowledge_imports WHERE id=?1`, id).Scan(&status)
 	return status, err
 }
 func (d *DB) StartKnowledgeImport(id string) error {
-	_, err := d.Exec(`UPDATE knowledge_imports SET status='queued' WHERE id=$1 AND status='preview'`, id)
+	_, err := d.Exec(`UPDATE knowledge_imports SET status='queued' WHERE id=?1 AND status='preview'`, id)
 	return err
 }
 func (d *DB) FinishKnowledgeImports() error {
@@ -108,7 +108,7 @@ func (d *DB) FinishKnowledgeImports() error {
 	return err
 }
 func (d *DB) FailKnowledgeImportItem(id, message string) error {
-	_, err := d.Exec(`UPDATE knowledge_import_items SET status='failed',error=$2 WHERE id=$1 AND status='staged'`, id, message)
+	_, err := d.Exec(`UPDATE knowledge_import_items SET status='failed',error=?2 WHERE id=?1 AND status='staged'`, id, message)
 	return err
 }
 func (d *DB) AddKnowledgeImportDocument(item KnowledgeImportItem, doc KnowledgeDocument) error {
@@ -118,19 +118,19 @@ func (d *DB) AddKnowledgeImportDocument(item KnowledgeImportItem, doc KnowledgeD
 	}
 	defer tx.Rollback()
 	var status string
-	if err = tx.QueryRow(`SELECT status FROM knowledge_imports WHERE id=$1`, item.ImportID).Scan(&status); err != nil {
+	if err = tx.QueryRow(`SELECT status FROM knowledge_imports WHERE id=?1`, item.ImportID).Scan(&status); err != nil {
 		return err
 	}
 	if status != "queued" && status != "importing" {
 		return errors.New("导入已停止")
 	}
-	if _, err = tx.Exec(`INSERT INTO knowledge_documents(id,name,sha256,size,import_id,relative_path) VALUES($1,$2,$3,$4,$5,$6)`, doc.ID, doc.Name, doc.SHA256, doc.Size, item.ImportID, item.RelativePath); err != nil {
+	if _, err = tx.Exec(`INSERT INTO knowledge_documents(id,name,sha256,size,import_id,relative_path) VALUES(?1,?2,?3,?4,?5,?6)`, doc.ID, doc.Name, doc.SHA256, doc.Size, item.ImportID, item.RelativePath); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE knowledge_import_items SET document_id=$2,status='queued',error='' WHERE id=$1`, item.ID, doc.ID); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_import_items SET document_id=?2,status='queued',error='' WHERE id=?1`, item.ID, doc.ID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE knowledge_imports SET status='importing' WHERE id=$1`, item.ImportID); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_imports SET status='importing' WHERE id=?1`, item.ImportID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -141,13 +141,13 @@ func (d *DB) CancelKnowledgeImport(id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE knowledge_imports SET status='cancelled' WHERE id=$1 AND status<>'done'`, id); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_imports SET status='cancelled' WHERE id=?1 AND status<>'done'`, id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE knowledge_documents SET status='cancelled',error='' WHERE import_id=$1 AND status IN ('queued','indexing')`, id); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_documents SET status='cancelled',error='' WHERE import_id=?1 AND status IN ('queued','indexing')`, id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status='cancelled',error='' WHERE import_id=$1 AND status IN ('staged','queued','indexing')`, id); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status='cancelled',error='' WHERE import_id=?1 AND status IN ('staged','queued','indexing')`, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -158,13 +158,13 @@ func (d *DB) RetryKnowledgeImport(id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE knowledge_imports SET status='queued' WHERE id=$1 AND status='done'`, id); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_imports SET status='queued' WHERE id=?1 AND status='done'`, id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE knowledge_documents SET status='queued',error='' WHERE import_id=$1 AND status='failed'`, id); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_documents SET status='queued',error='' WHERE import_id=?1 AND status='failed'`, id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status=CASE WHEN document_id='' THEN 'staged' ELSE 'queued' END,error='' WHERE import_id=$1 AND status='failed'`, id); err != nil {
+	if _, err = tx.Exec(`UPDATE knowledge_import_items SET status=CASE WHEN document_id='' THEN 'staged' ELSE 'queued' END,error='' WHERE import_id=?1 AND status='failed'`, id); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -48,7 +48,7 @@ func TestSoftDeleteIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	es := d.Exploration(expID)
 
 	intent := mustIntent(t, es, "待删意图")
@@ -95,7 +95,7 @@ func TestHardDeleteCascadesExclusiveDescendants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	es := d.Exploration(expID)
 
 	// intent1 --yields--> fact1 --derived_from--> intent2 --yields--> fact2(叶子)
@@ -132,7 +132,7 @@ func TestHardDeletePreservesSharedAndGoal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	defer d.Exec(`DELETE FROM explorations WHERE id=?1`, expID)
 	es := d.Exploration(expID)
 
 	goal, err := es.AddGoal(map[string]any{"text": "拿下后台"}, "human")

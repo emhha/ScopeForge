@@ -169,7 +169,7 @@ func (d *DB) CreateTaskTemplate(in TaskTemplateInput) (*TaskTemplate, error) {
 	}
 	t, err := scanTaskTemplate(d.QueryRow(`
 INSERT INTO task_templates(name, nkey, description, goal, category_id, intercept_rules)
-VALUES ($1,$2,$3,$4,$5,$6)
+VALUES (?1,?2,?3,?4,?5,?6)
 ON CONFLICT (nkey) DO NOTHING
 RETURNING `+taskTemplateCols, in.Name, nkey, in.Description, in.Goal, in.CategoryID, rulesJSON))
 	if err == sql.ErrNoRows {
@@ -201,7 +201,7 @@ func (d *DB) ListTaskTemplates() ([]*TaskTemplate, error) {
 
 // GetTaskTemplate returns nil when id does not exist.
 func (d *DB) GetTaskTemplate(id int64) (*TaskTemplate, error) {
-	t, err := scanTaskTemplate(d.QueryRow(`SELECT `+taskTemplateCols+` FROM task_templates WHERE id=$1`, id))
+	t, err := scanTaskTemplate(d.QueryRow(`SELECT `+taskTemplateCols+` FROM task_templates WHERE id=?1`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -235,13 +235,13 @@ func (d *DB) PatchTaskTemplate(id int64, patch TaskTemplatePatch) (*TaskTemplate
 		return nil, err
 	}
 	t, err := scanTaskTemplate(d.QueryRow(`UPDATE task_templates
-SET name=CASE WHEN $2 THEN $3 ELSE name END,
-    nkey=CASE WHEN $2 THEN $4 ELSE nkey END,
-    description=CASE WHEN $5 THEN $6 ELSE description END,
-    goal=CASE WHEN $7 THEN $8 ELSE goal END,
-    category_id=CASE WHEN $9 THEN $10 ELSE category_id END,
-    intercept_rules=CASE WHEN $11 THEN $12 ELSE intercept_rules END
-WHERE id=$1
+SET name=CASE WHEN ?2 THEN ?3 ELSE name END,
+    nkey=CASE WHEN ?2 THEN ?4 ELSE nkey END,
+    description=CASE WHEN ?5 THEN ?6 ELSE description END,
+    goal=CASE WHEN ?7 THEN ?8 ELSE goal END,
+    category_id=CASE WHEN ?9 THEN ?10 ELSE category_id END,
+    intercept_rules=CASE WHEN ?11 THEN ?12 ELSE intercept_rules END
+WHERE id=?1
 RETURNING `+taskTemplateCols,
 		id,
 		patch.Name != nil, patch.Name, nkey,
@@ -264,7 +264,7 @@ RETURNING `+taskTemplateCols,
 
 // DeleteTaskTemplate deletes one preset and reports whether it existed.
 func (d *DB) DeleteTaskTemplate(id int64) (bool, error) {
-	result, err := d.Exec(`DELETE FROM task_templates WHERE id=$1`, id)
+	result, err := d.Exec(`DELETE FROM task_templates WHERE id=?1`, id)
 	if err != nil {
 		return false, err
 	}

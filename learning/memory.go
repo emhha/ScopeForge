@@ -42,7 +42,7 @@ type Memories struct {
 }
 
 func OpenMemories(dir string, pg *db.DB) (*Memories, error) {
-	conn, err := sql.Open("sqlite", filepath.Join(dir, "memories.db"))
+	conn, err := sql.Open("sqlite3", filepath.Join(dir, "memories.db"))
 	if err != nil {
 		return nil, err
 	}

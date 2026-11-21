@@ -92,7 +92,7 @@ func (d *DB) CreateConversation(agentKey, title string, llmProfileID *int64) (*C
 	// by this transaction before it takes a profile lock, matching DeleteProfile's
 	// child-row -> profile-row protocol.
 	c, err := scanConv(tx.QueryRow(`
-INSERT INTO conversations(agent_key, title, llm_profile_id) VALUES ($1, $2, NULL)
+INSERT INTO conversations(agent_key, title, llm_profile_id) VALUES (?1, ?2, NULL)
 RETURNING `+convCols, agentKey, title))
 	if err != nil {
 		return nil, err
@@ -101,8 +101,8 @@ RETURNING `+convCols, agentKey, title))
 		return nil, err
 	}
 	if llmProfileID != nil {
-		c, err = scanConv(tx.QueryRow(`UPDATE conversations SET llm_profile_id=$2
-WHERE id=$1 RETURNING `+convCols, c.ID, llmProfileID))
+		c, err = scanConv(tx.QueryRow(`UPDATE conversations SET llm_profile_id=?2
+WHERE id=?1 RETURNING `+convCols, c.ID, llmProfileID))
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +122,7 @@ func (d *DB) UpdateConversationProfile(id int64, llmProfileID *int64) error {
 	defer tx.Rollback()
 
 	var lockedID int64
-	if err := tx.QueryRow(`SELECT id FROM conversations WHERE id=$1 `, id).Scan(&lockedID); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM conversations WHERE id=?1 `, id).Scan(&lockedID); err != nil {
 		if err == sql.ErrNoRows {
 			// Preserve the previous UPDATE semantics: an unknown id is a no-op.
 			return tx.Commit()
@@ -132,7 +132,7 @@ func (d *DB) UpdateConversationProfile(id int64, llmProfileID *int64) error {
 	if err := lockLLMProfileForReference(tx, llmProfileID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE conversations SET llm_profile_id=$2 WHERE id=$1`, id, llmProfileID); err != nil {
+	if _, err := tx.Exec(`UPDATE conversations SET llm_profile_id=?2 WHERE id=?1`, id, llmProfileID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -159,7 +159,7 @@ ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, updated_at DES
 
 // GetConversation returns one thread (nil, nil if absent).
 func (d *DB) GetConversation(id int64) (*Conversation, error) {
-	c, err := scanConv(d.QueryRow(`SELECT `+convCols+` FROM conversations WHERE id=$1`, id))
+	c, err := scanConv(d.QueryRow(`SELECT `+convCols+` FROM conversations WHERE id=?1`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -173,13 +173,13 @@ func (d *DB) GetConversation(id int64) (*Conversation, error) {
 // row. Pinning an already-pinned conversation preserves its original pin order.
 func (d *DB) UpdateConversation(id int64, patch ConversationPatch) (*Conversation, error) {
 	c, err := scanConv(d.QueryRow(`UPDATE conversations SET
-	title = CASE WHEN $2 THEN $3 ELSE title END,
+	title = CASE WHEN ?2 THEN ?3 ELSE title END,
 	pinned_at = CASE
-		WHEN $4 IS NULL THEN pinned_at
-		WHEN $4 THEN COALESCE(pinned_at, utc_now())
+		WHEN ?4 IS NULL THEN pinned_at
+		WHEN ?4 THEN COALESCE(pinned_at, utc_now())
 		ELSE NULL
 	END
-WHERE id=$1
+WHERE id=?1
 RETURNING `+convCols, id, patch.Title != nil, patch.Title, patch.Pinned))
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -199,13 +199,13 @@ func (d *DB) RenameConversation(id int64, title string) error {
 
 // TouchConversation bumps updated_at so the thread floats to the top of the list.
 func (d *DB) TouchConversation(id int64) error {
-	_, err := d.Exec(`UPDATE conversations SET updated_at=utc_now() WHERE id=$1`, id)
+	_, err := d.Exec(`UPDATE conversations SET updated_at=utc_now() WHERE id=?1`, id)
 	return err
 }
 
 // DeleteConversation removes a thread; its activities cascade via FK.
 func (d *DB) DeleteConversation(id int64) error {
-	_, err := d.Exec(`DELETE FROM conversations WHERE id=$1`, id)
+	_, err := d.Exec(`DELETE FROM conversations WHERE id=?1`, id)
 	return err
 }
 
@@ -215,7 +215,7 @@ func (d *DB) DeleteConversations(ids []int64) ([]int64, error) {
 	if len(ids) == 0 {
 		return []int64{}, nil
 	}
-	rows, err := d.Query(`DELETE FROM conversations WHERE id IN (SELECT value FROM json_each($1)) RETURNING id`, ids)
+	rows, err := d.Query(`DELETE FROM conversations WHERE id IN (SELECT value FROM json_each(?1)) RETURNING id`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -237,10 +237,10 @@ func (d *DB) DeleteConversations(ids []int64) ([]int64, error) {
 func (d *DB) AppendConvActivity(convID int64, a Activity) (int64, error) {
 	var id int64
 	err := d.QueryRow(`
-INSERT INTO conversation_activities(conversation_id, worker, kind, tool, tool_use_id, is_error, summary, detail, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
-VALUES ($1,NULLIF($2,''),NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11,$12)
+INSERT INTO conversation_activities(conversation_id, worker, kind, tool, tool_use_id, is_error, summary, detail, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, metadata)
+VALUES (?1,NULLIF(?2,''),NULLIF(?3,''),NULLIF(?4,''),NULLIF(?5,''),?6,NULLIF(?7,''),NULLIF(?8,''),?9,?10,?11,?12,COALESCE(NULLIF(?13,''),'{}'))
 RETURNING id`, convID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool), utf8Clean(a.ToolUseID), a.IsError,
-		utf8Clean(a.Summary), utf8Clean(a.Detail), a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens).Scan(&id)
+		utf8Clean(a.Summary), utf8Clean(a.Detail), a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.Metadata).Scan(&id)
 	return id, err
 }
 
@@ -250,9 +250,9 @@ func (d *DB) ConvActivityList(convID, sinceID int64, limit int) ([]Activity, int
 	if limit <= 0 {
 		limit = 500
 	}
-	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
+	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, metadata`
 	rows, err := d.Query(`SELECT `+cols+`
-FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMIT $3`, convID, sinceID, limit)
+FROM conversation_activities WHERE conversation_id=?1 AND id>?2 ORDER BY id LIMIT ?3`, convID, sinceID, limit)
 	if err != nil {
 		return nil, sinceID, err
 	}
@@ -262,7 +262,7 @@ FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMI
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.Metadata); err != nil {
 			return nil, sinceID, err
 		}
 		if a.ID > cursor {
@@ -282,12 +282,12 @@ func (d *DB) ConvActivityPage(convID, before int64, limit int) ([]Activity, bool
 	if limit <= 0 {
 		limit = 200
 	}
-	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
+	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, metadata`
 	// fetch one extra row to detect whether older history remains before this window.
 	rows, err := d.Query(`SELECT `+cols+`
 FROM conversation_activities
-WHERE conversation_id=$1 AND ($2 <= 0 OR id < $2)
-ORDER BY id DESC LIMIT $3`, convID, before, limit+1)
+WHERE conversation_id=?1 AND (?2 <= 0 OR id < ?2)
+ORDER BY id DESC LIMIT ?3`, convID, before, limit+1)
 	if err != nil {
 		return nil, false, err
 	}
@@ -296,7 +296,7 @@ ORDER BY id DESC LIMIT $3`, convID, before, limit+1)
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.Metadata); err != nil {
 			return nil, false, err
 		}
 		desc = append(desc, a)
@@ -319,7 +319,7 @@ ORDER BY id DESC LIMIT $3`, convID, before, limit+1)
 // ConvActivityDetail lazily returns the full detail blob for one step.
 func (d *DB) ConvActivityDetail(convID, id int64) (string, error) {
 	var s sql.NullString
-	err := d.QueryRow(`SELECT detail FROM conversation_activities WHERE id=$1 AND conversation_id=$2`, id, convID).Scan(&s)
+	err := d.QueryRow(`SELECT detail FROM conversation_activities WHERE id=?1 AND conversation_id=?2`, id, convID).Scan(&s)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

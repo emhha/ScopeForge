@@ -20,7 +20,7 @@ func TestDeleteTaskTrafficHostsUseOneLockedTransaction(t *testing.T) {
 		t.Cleanup(func() {
 			_ = d.DeleteTask(first.ID)
 			_ = d.DeleteTask(second.ID)
-			_, _ = d.Exec(`DELETE FROM assets WHERE id=$1 OR url=$2`, rootAssetID, serviceURL)
+			_, _ = d.Exec(`DELETE FROM assets WHERE id=?1 OR url=?2`, rootAssetID, serviceURL)
 		})
 
 		writer, _ := openTaskDeleteTestDB(t, dsn)
@@ -31,7 +31,7 @@ func TestDeleteTaskTrafficHostsUseOneLockedTransaction(t *testing.T) {
 		defer writerTx.Rollback()
 		if _, err := writerTx.Exec(`
 INSERT INTO assets(type, url, service_type, domain, task_ids)
-VALUES ('service', $1, 'http', $2, json_array($3))`, serviceURL, host, second.ID); err != nil {
+VALUES ('service', ?1, 'http', ?2, json_array(?3))`, serviceURL, host, second.ID); err != nil {
 			t.Fatal(err)
 		}
 
@@ -59,7 +59,7 @@ VALUES ('service', $1, 'http', $2, json_array($3))`, serviceURL, host, second.ID
 			t.Fatalf("newly shared host %q was selected for traffic deletion: %v", host, preparedHosts)
 		}
 		var remaining int
-		if err := d.QueryRow(`SELECT count(*) FROM assets WHERE url=$1 AND $2 IN (SELECT value FROM json_each(task_ids))`, serviceURL, second.ID).Scan(&remaining); err != nil {
+		if err := d.QueryRow(`SELECT count(*) FROM assets WHERE url=?1 AND ?2 IN (SELECT value FROM json_each(task_ids))`, serviceURL, second.ID).Scan(&remaining); err != nil {
 			t.Fatal(err)
 		}
 		if remaining != 1 {
@@ -73,7 +73,7 @@ VALUES ('service', $1, 'http', $2, json_array($3))`, serviceURL, host, second.ID
 		t.Cleanup(func() {
 			_ = d.DeleteTask(first.ID)
 			_ = d.DeleteTask(second.ID)
-			_, _ = d.Exec(`DELETE FROM assets WHERE id=$1 OR url=$2`, rootAssetID, serviceURL)
+			_, _ = d.Exec(`DELETE FROM assets WHERE id=?1 OR url=?2`, rootAssetID, serviceURL)
 		})
 
 		deleter, _ := openTaskDeleteTestDB(t, dsn)
@@ -109,7 +109,7 @@ VALUES ('service', $1, 'http', $2, json_array($3))`, serviceURL, host, second.ID
 		go func() {
 			_, writeErr := writer.Exec(`
 INSERT INTO assets(type, url, service_type, domain, task_ids)
-VALUES ('service', $1, 'http', $2, json_array($3))`, serviceURL, host, second.ID)
+VALUES ('service', ?1, 'http', ?2, json_array(?3))`, serviceURL, host, second.ID)
 			writerDone <- writeErr
 		}()
 		if err := waitForTaskDeleteBlock(d, writerPID, writerDone); err != nil {

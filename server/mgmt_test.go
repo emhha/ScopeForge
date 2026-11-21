@@ -96,8 +96,8 @@ func TestMgmtAPI(t *testing.T) {
 
 	// cleanup
 	do("DELETE", "/api/mcp/"+itoaTest(mid), nil)
-	m.pg.Exec(`DELETE FROM agent_prompts WHERE agent_id=$1`, ag.ID)
-	m.pg.Exec(`UPDATE agents SET current_prompt_id=NULL WHERE id=$1`, ag.ID)
+	m.pg.Exec(`DELETE FROM agent_prompts WHERE agent_id=?1`, ag.ID)
+	m.pg.Exec(`UPDATE agents SET current_prompt_id=NULL WHERE id=?1`, ag.ID)
 }
 
 func itoaTest(n int64) string {

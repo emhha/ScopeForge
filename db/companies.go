@@ -103,12 +103,12 @@ func (s *CompanyStore) UpsertCompany(name, logo string) (id int64, created bool,
 	}
 	defer tx.Rollback()
 	var existing int64
-	err = tx.QueryRow(`SELECT id FROM companies WHERE nkey=$1`, nkey).Scan(&existing)
+	err = tx.QueryRow(`SELECT id FROM companies WHERE nkey=?1`, nkey).Scan(&existing)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, false, err
 	}
 	created = err == sql.ErrNoRows
-	err = tx.QueryRow(`INSERT INTO companies(name,nkey,logo) VALUES($1,$2,$3)
+	err = tx.QueryRow(`INSERT INTO companies(name,nkey,logo) VALUES(?1,?2,?3)
  ON CONFLICT(nkey) DO UPDATE SET name=EXCLUDED.name,logo=COALESCE(EXCLUDED.logo,companies.logo),updated_at=utc_now()
  RETURNING id`, name, nkey, logoVal).Scan(&id)
 	if err != nil {
@@ -149,7 +149,7 @@ func (s *CompanyStore) CreateCompanyWithScope(name, logo string, inputs []ScopeI
 	}
 	if err := tx.QueryRow(`
 INSERT INTO companies(name, nkey, logo)
-VALUES ($1, $2, $3)
+VALUES (?1, ?2, ?3)
 ON CONFLICT (nkey) DO NOTHING
 RETURNING id`, name, nkey, logoVal).Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -180,7 +180,7 @@ func (s *CompanyStore) GetCompany(id int64) (*Company, error) {
 	c := &Company{}
 	err := s.db.QueryRow(`
 SELECT id, name, nkey, logo, created_at, updated_at
-FROM companies WHERE id = $1`, id).Scan(
+FROM companies WHERE id = ?1`, id).Scan(
 		&c.ID, &c.Name, &c.NKey, &c.Logo, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -194,7 +194,7 @@ func (s *CompanyStore) GetCompanyByName(name string) (*Company, error) {
 	c := &Company{}
 	err := s.db.QueryRow(`
 SELECT id, name, nkey, logo, created_at, updated_at
-FROM companies WHERE nkey = $1`, nkey).Scan(
+FROM companies WHERE nkey = ?1`, nkey).Scan(
 		&c.ID, &c.Name, &c.NKey, &c.Logo, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -228,7 +228,7 @@ func (s *CompanyStore) DeleteCompanyWithAssets(id int64, deleteAssets bool) (ass
 		return 0, err
 	}
 	if deleteAssets {
-		res, err := tx.Exec(`DELETE FROM assets WHERE company_id = $1`, id)
+		res, err := tx.Exec(`DELETE FROM assets WHERE company_id = ?1`, id)
 		if err != nil {
 			return 0, err
 		}
@@ -237,7 +237,7 @@ func (s *CompanyStore) DeleteCompanyWithAssets(id int64, deleteAssets bool) (ass
 			return 0, err
 		}
 	}
-	res, err := tx.Exec(`DELETE FROM companies WHERE id = $1`, id)
+	res, err := tx.Exec(`DELETE FROM companies WHERE id = ?1`, id)
 	if err != nil {
 		return 0, err
 	}
@@ -304,7 +304,7 @@ func (s *CompanyStore) GetScope(companyID int64) ([]ScopeRule, error) {
 SELECT id, company_id, kind,
        COALESCE(domain,''), COALESCE(net,''), COALESCE(value,''), raw, COALESCE(reason,'')
 FROM company_scope
-WHERE company_id = $1
+WHERE company_id = ?1
 ORDER BY id`, companyID)
 	if err != nil {
 		return nil, err
@@ -419,7 +419,7 @@ func validateParsedScopeBounds(rules []ParsedScope) error {
 
 func ensureCompanyExistsTx(tx *Tx, companyID int64) error {
 	var exists bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM companies WHERE id = $1)`, companyID).Scan(&exists); err != nil {
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM companies WHERE id = ?1)`, companyID).Scan(&exists); err != nil {
 		return err
 	}
 	if !exists {
@@ -457,19 +457,19 @@ func insertScopeRuleTx(tx *Tx, companyID int64, rule ParsedScope, reason string)
 	case "domain":
 		res, err = tx.Exec(`
 INSERT INTO company_scope(company_id, kind, domain, raw, reason)
-VALUES ($1, 'domain', $2, $3, $4)
+VALUES (?1, 'domain', ?2, ?3, ?4)
 ON CONFLICT(company_id,domain) DO NOTHING`,
 			companyID, rule.Domain, rule.Raw, reason)
 	case "ip", "cidr":
 		res, err = tx.Exec(`
 INSERT INTO company_scope(company_id, kind, net, raw, reason)
-VALUES ($1, $2, $3, $4, $5)
+VALUES (?1, ?2, ?3, ?4, ?5)
 ON CONFLICT(company_id,net) DO NOTHING`,
 			companyID, rule.Kind, rule.Net, rule.Raw, reason)
 	case "icp", "keyword":
 		res, err = tx.Exec(`
 INSERT INTO company_scope(company_id, kind, value, raw, reason)
-VALUES ($1, $2, $3, $4, $5)
+VALUES (?1, ?2, ?3, ?4, ?5)
 ON CONFLICT (company_id, kind, value) WHERE kind IN ('icp','keyword') DO NOTHING`,
 			companyID, rule.Kind, rule.Value, rule.Raw, reason)
 	default:
@@ -604,7 +604,7 @@ FROM assets
 WHERE ip IS NOT NULL AND ip <> '' AND try_inet(ip) IS NULL
   AND type IN ('ip','subdomain','service','endpoint')
 ORDER BY id
-LIMIT $1`, malformedIPAssetsSampled)
+LIMIT ?1`, malformedIPAssetsSampled)
 	if err != nil {
 		return "", err
 	}
@@ -681,7 +681,7 @@ func (s *CompanyStore) UpdateScopeInputsChecked(companyID int64, inputs []ScopeI
 	if err := ensureCompanyExistsTx(tx, companyID); err != nil {
 		return 0, invalid, errs, err
 	}
-	if _, err := tx.Exec(`DELETE FROM company_scope WHERE company_id = $1`, companyID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM company_scope WHERE company_id = ?1`, companyID); err != nil {
 		return 0, invalid, errs, err
 	}
 	added, _, _, err = insertScopeRulesTx(tx, companyID, rules, reason)
@@ -723,7 +723,7 @@ func resolveCompanyWithICP(q companyScopeQueryer, rootDomain, ipStr, icp string)
 		err := q.QueryRow(`
 SELECT company_id FROM company_scope
 WHERE kind = 'domain'
-  AND domain = $1
+  AND domain = ?1
 ORDER BY length(domain) DESC, company_id
 LIMIT 1`, rootDomain).Scan(&cid)
 		if err == nil {
@@ -739,7 +739,7 @@ LIMIT 1`, rootDomain).Scan(&cid)
 			err := q.QueryRow(`
 SELECT company_id FROM company_scope
 WHERE kind IN ('ip','cidr')
-  AND cidr_contains(net,$1)
+  AND cidr_contains(net,?1)
 ORDER BY masklen(net) DESC, company_id
 LIMIT 1`, ipStr).Scan(&cid)
 			if err == nil {
@@ -754,7 +754,7 @@ LIMIT 1`, ipStr).Scan(&cid)
 		var cid int64
 		err := q.QueryRow(`
 SELECT company_id FROM company_scope
-WHERE kind = 'icp' AND value = $1
+WHERE kind = 'icp' AND value = ?1
 ORDER BY company_id
 LIMIT 1`, normalized).Scan(&cid)
 		if err == nil {

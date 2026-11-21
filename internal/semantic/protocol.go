@@ -1,5 +1,5 @@
 // Package semantic defines the private stdio protocol for the optional native
-// component. The main application remains buildable with CGO_ENABLED=0.
+// component. The inference runtime remains isolated from the main application.
 package semantic
 
 import "trpc.group/trpc-go/trpc-agent-go/memory"
