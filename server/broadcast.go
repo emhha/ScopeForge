@@ -47,9 +47,9 @@ func (b *Broadcaster) Subscribe(task string) (<-chan db.Activity, func()) {
 }
 
 // Publish fans an activity out to all subscribers of a task. Non-blocking: if a
-// subscriber's buffer is full the event is dropped — the client reconnects with
-// its last seq cursor and catches up the gap from the DB, so liveness never
-// stalls the engine.
+// subscriber's buffer is full the notification is coalesced. SSE handlers read
+// committed activities in database order and periodically catch up, so a missed
+// notification cannot lose an execution step or stall the engine.
 func (b *Broadcaster) Publish(task string, a db.Activity) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

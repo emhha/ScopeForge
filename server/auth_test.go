@@ -82,3 +82,24 @@ func TestValidatePassword(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitCredentialsPrecedeCookie(t *testing.T) {
+	for _, tc := range []struct{ header, query, cookie, want string }{
+		{"Bearer header", "query", "cookie", "header"},
+		{"", "query", "stale-cookie", "query"},
+		{"", "invalid-query", "valid-cookie", "invalid-query"},
+		{"", "", "cookie", "cookie"},
+		{"", "", "", ""},
+	} {
+		request := httptest.NewRequest("GET", "/api/logs/stream?token="+tc.query, nil)
+		if tc.header != "" {
+			request.Header.Set("Authorization", tc.header)
+		}
+		if tc.cookie != "" {
+			request.Header.Set("Cookie", "scopeforge_token="+tc.cookie)
+		}
+		if got := extractToken(request); got != tc.want {
+			t.Errorf("header=%q query=%q cookie=%q got=%q want=%q", tc.header, tc.query, tc.cookie, got, tc.want)
+		}
+	}
+}

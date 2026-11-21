@@ -36,7 +36,7 @@ func (s *Server) networkTools() []tool.CallableTool {
 		"verbose":      map[string]any{"type": "boolean", "description": "默认 false；设为 true 时额外显示 curl 风格的每跳请求行、请求头、响应头、连接 IP 和 TLS 信息"},
 	}}
 	return []tool.CallableTool{
-		toolkit.New("http_request", "使用 netloom 发送 HTTP 请求，支持方法、重复头、查询、表单、正文、认证、TLS 和重定向。输出为一行精简 JSON 元信息、空行、实际正文；verbose=true 在正文前增加 curl 风格的每跳请求/响应头。遵循全局出口代理及每跳资产规则。流量捕获开启时返回 exchange_ids。正文展示最多 16 KiB，采集最多 8 MiB；EOF 等读取错误仍返回已收到的正文，complete=false 表示采集不完整。", httpSchema, func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
+		toolkit.New("http_request", "使用 netloom 发送 HTTP 请求并通过原生 passive 返回逐跳被动分析结果，支持方法、重复头、查询、表单、正文、认证、TLS 和重定向。输出为一行精简 JSON 元信息、空行、实际正文；verbose=true 在正文前增加 curl 风格的每跳请求/响应头。遵循全局出口代理及每跳资产规则。流量捕获开启时返回 exchange_ids。正文展示最多 16 KiB，采集最多 8 MiB；EOF 等读取错误仍返回已收到的正文，complete=false 表示采集不完整。", httpSchema, func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
 			failure := func(err error) (toolkit.Output, error) {
 				return toolkit.Error(netrequest.Format(nil, err, false)), nil
 			}

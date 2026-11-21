@@ -663,6 +663,9 @@ export interface ChatAttachment {
 }
 
 export interface Activity {
+  message_id?: string;
+  revision?: number;
+  streaming?: boolean;
   seq: number;
   intent_id?: string;
   worker: string; // session owner: planner | mainagent | work#1 ...

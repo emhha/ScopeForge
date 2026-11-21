@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { sseUrl } from "@/lib/api";
+import { http, sseUrl } from "@/lib/api";
 import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -38,6 +38,7 @@ function fmtTime(ts: string) {
 
 export default function LogsPage() {
   const [lines, setLines] = React.useState<LogLine[]>([]);
+  const [streamError, setStreamError] = React.useState("");
   const [q, setQ] = React.useState("");
   const [level, setLevel] = React.useState<"all" | LogLine["level"]>("all");
   const [paused, setPaused] = React.useState(false);
@@ -64,7 +65,26 @@ export default function LogsPage() {
       setLines(MOCK_LOGS);
       return;
     }
+    let alive = true;
+    async function refresh() {
+      try {
+        const data = await http<{ items: LogLine[] | null }>("/logs?limit=1000");
+        if (!alive || pausedRef.current) return;
+        setLines((prev) => {
+          const merged = new Map(prev.map((line) => [line.seq, line]));
+          for (const line of data.items ?? []) merged.set(line.seq, line);
+          return [...merged.values()].sort((a, b) => a.seq - b.seq).slice(-3000);
+        });
+        setStreamError("");
+      } catch (error) {
+        if (alive) setStreamError(error instanceof Error ? error.message : "日志加载失败");
+      }
+    }
+    void refresh();
+    const timer = setInterval(refresh, 5000);
     const es = new EventSource(sseUrl("/api/logs/stream?since=0"));
+    es.onopen = () => setStreamError("");
+    es.onerror = () => setStreamError("实时日志连接中断，正在重连；每 5 秒刷新日志。");
     es.onmessage = (e) => {
       if (pausedRef.current) return;
       try {
@@ -74,7 +94,7 @@ export default function LogsPage() {
         /* ignore malformed frame */
       }
     };
-    return () => es.close();
+    return () => { alive = false; clearInterval(timer); es.close(); };
   }, []);
 
   // Mark "has more" once we have any db_id in view.
@@ -87,9 +107,7 @@ export default function LogsPage() {
     setLoadingHistory(true);
     try {
       const params = minDbId > 0 ? `?before=${minDbId}&limit=200` : `?limit=200`;
-      const res = await fetch(`/api/logs/history${params}`);
-      if (!res.ok) return;
-      const data = await res.json() as { items: LogLine[]; has_more: boolean };
+      const data = await http<{ items: LogLine[]; has_more: boolean }>(`/logs/history${params}`);
       if (data.items?.length) {
         // Assign synthetic seq numbers below current minimum to keep dedup working.
         setLines((prev) => {
@@ -204,6 +222,7 @@ export default function LogsPage() {
               </Button>
             </div>
           )}
+          {streamError && <p role="status" className="py-2 text-amber-600">{streamError}</p>}
           {filtered.length === 0 ? (
             <p className="py-10 text-center text-muted-foreground">暂无日志。</p>
           ) : (

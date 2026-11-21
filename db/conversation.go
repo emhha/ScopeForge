@@ -250,7 +250,7 @@ func (d *DB) ConvActivityList(convID, sinceID int64, limit int) ([]Activity, int
 	if limit <= 0 {
 		limit = 500
 	}
-	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, metadata`
+	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, metadata, CASE WHEN json_extract(metadata,'$.message.id') IS NOT NULL THEN COALESCE(detail,'') ELSE '' END`
 	rows, err := d.Query(`SELECT `+cols+`
 FROM conversation_activities WHERE conversation_id=?1 AND id>?2 ORDER BY id LIMIT ?3`, convID, sinceID, limit)
 	if err != nil {
@@ -262,7 +262,7 @@ FROM conversation_activities WHERE conversation_id=?1 AND id>?2 ORDER BY id LIMI
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.Metadata); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.Metadata, &a.Detail); err != nil {
 			return nil, sinceID, err
 		}
 		if a.ID > cursor {
@@ -282,11 +282,13 @@ func (d *DB) ConvActivityPage(convID, before int64, limit int) ([]Activity, bool
 	if limit <= 0 {
 		limit = 200
 	}
-	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, metadata`
+	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, metadata, CASE WHEN json_extract(metadata,'$.message.id') IS NOT NULL THEN COALESCE(detail,'') ELSE '' END`
 	// fetch one extra row to detect whether older history remains before this window.
 	rows, err := d.Query(`SELECT `+cols+`
 FROM conversation_activities
-WHERE conversation_id=?1 AND (?2 <= 0 OR id < ?2)
+WHERE conversation_id=?1
+AND (json_extract(metadata,'$.message.id') IS NULL OR NOT EXISTS (SELECT 1 FROM conversation_activities newer WHERE newer.conversation_id=conversation_activities.conversation_id AND json_extract(newer.metadata,'$.message.id')=json_extract(conversation_activities.metadata,'$.message.id') AND newer.id>conversation_activities.id))
+AND (COALESCE(kind,'') <> 'usage' OR id = (SELECT MAX(id) FROM conversation_activities WHERE conversation_id=?1 AND kind='usage')) AND (?2 <= 0 OR id < ?2)
 ORDER BY id DESC LIMIT ?3`, convID, before, limit+1)
 	if err != nil {
 		return nil, false, err
@@ -296,7 +298,7 @@ ORDER BY id DESC LIMIT ?3`, convID, before, limit+1)
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.Metadata); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.Metadata, &a.Detail); err != nil {
 			return nil, false, err
 		}
 		desc = append(desc, a)

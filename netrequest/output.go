@@ -15,26 +15,36 @@ import (
 // embedding the body in JSON. Verbose adds native per-hop metadata before it.
 func Format(out *Output, requestErr error, verbose bool) string {
 	meta := struct {
-		URL              string   `json:"url,omitempty"`
-		Status           int      `json:"status_code,omitempty"`
-		ContentType      string   `json:"content_type,omitempty"`
-		BodyBytes        *int     `json:"body_bytes,omitempty"`
-		Complete         *bool    `json:"complete,omitempty"`
-		ResponseTimeMS   int64    `json:"response_time_ms,omitempty"`
-		RedirectCount    int      `json:"redirect_count,omitempty"`
-		ExchangeIDs      []string `json:"exchange_ids,omitempty"`
-		BodyEncoding     string   `json:"body_encoding,omitempty"`
-		PreviewTruncated bool     `json:"body_preview_truncated,omitempty"`
-		Warning          string   `json:"warning,omitempty"`
-		Error            string   `json:"error,omitempty"`
+		Passive          []PassiveHop `json:"passive,omitempty"`
+		Status           int          `json:"status_code,omitempty"`
+		ContentType      string       `json:"content_type,omitempty"`
+		FinalURL         string       `json:"final_url,omitempty"`
+		BodyBytes        *int         `json:"body_bytes,omitempty"`
+		Complete         *bool        `json:"complete,omitempty"`
+		ResponseTimeMS   int64        `json:"response_time_ms,omitempty"`
+		RedirectCount    int          `json:"redirect_count,omitempty"`
+		ExchangeIDs      []string     `json:"exchange_ids,omitempty"`
+		BodyEncoding     string       `json:"body_encoding,omitempty"`
+		PreviewTruncated bool         `json:"body_preview_truncated,omitempty"`
+		Warning          string       `json:"warning,omitempty"`
+		Error            string       `json:"error,omitempty"`
 	}{}
 	if out != nil {
-		meta.URL, meta.Status = out.URL, out.Status
+		meta.Passive = out.Passive
+		meta.Status = out.Status
 		meta.ContentType = out.Headers.Get("Content-Type")
-		meta.BodyBytes, meta.Complete = &out.BodyBytes, &out.Complete
-		meta.ResponseTimeMS, meta.RedirectCount = out.ResponseTimeMS, len(out.Redirects)
+		if len(out.Redirects) > 0 && out.URL != out.Redirects[0].URL {
+			meta.FinalURL = out.URL
+		}
+		if !out.Complete {
+			meta.Complete = &out.Complete
+		}
+		if verbose {
+			meta.BodyBytes = &out.BodyBytes
+			meta.ResponseTimeMS, meta.RedirectCount = out.ResponseTimeMS, len(out.Redirects)
+		}
 		meta.ExchangeIDs, meta.PreviewTruncated = out.ExchangeIDs, out.PreviewTruncated
-		if out.BodyEncoding != "utf8" {
+		if out.BodyEncoding == "base64" {
 			meta.BodyEncoding = out.BodyEncoding
 		}
 		meta.Warning = out.PreviewError

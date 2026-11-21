@@ -176,3 +176,106 @@ func TestListByKindPage(t *testing.T) {
 		t.Fatalf("expected ≥3 pages for %d items at size 10, got %d", total, pages)
 	}
 }
+
+func TestHistoryUsageFloodDoesNotHideExecution(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	expID, err := d.CreateExploration("usage flood", "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := d.Exploration(expID)
+	conversation, err := d.CreateConversation("auto", "usage flood", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		append func(Activity) (int64, error)
+		page   func(int64, int) ([]Activity, bool, error)
+	}{
+		{"task", es.AppendActivity, func(before int64, limit int) ([]Activity, bool, error) {
+			return es.ActivityPage(ActivitySessionFilter{Worker: "planner"}, before, limit)
+		}},
+		{"conversation", func(a Activity) (int64, error) { return d.AppendConvActivity(conversation.ID, a) }, func(before int64, limit int) ([]Activity, bool, error) {
+			return d.ConvActivityPage(conversation.ID, before, limit)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, kind := range []string{"round", "thinking", "tool_use", "tool_result"} {
+				if _, err := tc.append(Activity{Worker: "planner", Kind: kind, Summary: kind}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 250 {
+				if _, err := tc.append(Activity{Worker: "planner", Kind: "usage"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := tc.append(Activity{Worker: "planner", Kind: "result"}); err != nil {
+				t.Fatal(err)
+			}
+			latest, more, err := tc.page(0, 4)
+			if err != nil || !more || len(latest) != 4 {
+				t.Fatalf("latest=%+v more=%v err=%v", latest, more, err)
+			}
+			if latest[0].Kind != "tool_use" || latest[1].Kind != "tool_result" || latest[2].Kind != "usage" || latest[3].Kind != "result" {
+				t.Fatalf("usage hid execution: %+v", latest)
+			}
+			older, more, err := tc.page(latest[0].ID, 4)
+			if err != nil || more || len(older) != 2 || older[0].Kind != "round" || older[1].Kind != "thinking" {
+				t.Fatalf("older=%+v more=%v err=%v", older, more, err)
+			}
+		})
+	}
+}
+
+func TestMessageHistoryUsesLatestRevisionAndReplayKeepsCursor(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	exp, err := d.CreateExploration("revisions", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := d.Exploration(exp)
+	conversation, err := d.CreateConversation("auto", "revisions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		append func(Activity) (int64, error)
+		page   func() ([]Activity, bool, error)
+		replay func(int64) ([]Activity, int64, error)
+	}{
+		{"task", es.AppendActivity, func() ([]Activity, bool, error) {
+			return es.ActivityPage(ActivitySessionFilter{Worker: "planner"}, 0, 10)
+		}, func(cursor int64) ([]Activity, int64, error) { return es.ActivityList(nil, cursor, 10) }},
+		{"conversation", func(a Activity) (int64, error) { return d.AppendConvActivity(conversation.ID, a) }, func() ([]Activity, bool, error) { return d.ConvActivityPage(conversation.ID, 0, 10) }, func(cursor int64) ([]Activity, int64, error) { return d.ConvActivityList(conversation.ID, cursor, 10) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first, err := tc.append(Activity{Worker: "planner", Kind: "thinking", Detail: "checking", Metadata: []byte(`{"message":{"id":"thought","revision":1,"complete":false}}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := tc.append(Activity{Worker: "planner", Kind: "thinking", Detail: "checking complete", Metadata: []byte(`{"message":{"id":"thought","revision":2,"complete":true}}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			history, more, err := tc.page()
+			if err != nil || more || len(history) != 1 || history[0].ID != second || history[0].Detail != "checking complete" {
+				t.Fatalf("history=%+v more=%v err=%v", history, more, err)
+			}
+			updates, cursor, err := tc.replay(first)
+			if err != nil || len(updates) != 1 || updates[0].ID != second || cursor != second || updates[0].Detail != "checking complete" {
+				t.Fatalf("replay=%+v cursor=%d err=%v", updates, cursor, err)
+			}
+		})
+	}
+}

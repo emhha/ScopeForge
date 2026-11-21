@@ -88,7 +88,7 @@ function EventDetail({
     return () => {
       alive = false;
     };
-  }, [event.seq, resultSeq, getDetail, retry, model]);
+  }, [event.seq, event.detail, resultSeq, getDetail, retry, model]);
   return (
     <div className="space-y-3 bg-muted/30 p-3 text-xs">
       {!chat && (

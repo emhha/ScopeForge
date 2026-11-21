@@ -3033,8 +3033,8 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // disable proxy buffering
 
-	// Subscribe BEFORE replaying history so events in between aren't lost; dedup the
-	// overlap by skipping channel events whose id was already replayed.
+	// Subscribe before replay so a commit during the history read wakes the
+	// subsequent database catch-up. Notifications never advance the cursor.
 	ch, unsub := s.engine.Broadcaster().Subscribe(t.ID)
 	defer unsub()
 
@@ -3051,46 +3051,53 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	// (that's the /activity/history endpoint). A long task can have far more than one
 	// batch, so loop instead of a single fixed read; on a query error log it and close
 	// so the client reconnects and retries from its last id (broadcast is lossy — the
-	// DB is the source of truth). The Broadcaster keeps buffering live events meanwhile;
-	// the id<=since skip below drops any that this replay already covered.
+	// DB is the source of truth). Notifications received during replay only wake
+	// another catch-up from the committed cursor, so overlaps cannot duplicate rows.
 	const replayBatch = 500
-	for {
-		items, cursor, err := t.Store.ActivityList(intentPtr, since, replayBatch)
-		if err != nil {
-			log.Printf("[activity/stream] task=%s replay since=%d: %v", t.ID, since, err)
-			return
+	catchUp := func() bool {
+		for {
+			items, cursor, err := t.Store.ActivityList(intentPtr, since, replayBatch)
+			if err != nil {
+				log.Printf("[activity/stream] task=%s replay since=%d: %v", t.ID, since, err)
+				return false
+			}
+			for _, a := range items {
+				sendSSE(a)
+			}
+			if cursor > since {
+				since = cursor
+			}
+			if len(items) < replayBatch {
+				return true
+			}
+			if r.Context().Err() != nil {
+				return false
+			}
 		}
-		for _, a := range items {
-			sendSSE(a)
-		}
-		if cursor > since {
-			since = cursor
-		}
-		if len(items) < replayBatch {
-			break
-		}
+	}
+	if !catchUp() {
+		return
 	}
 	flusher.Flush()
 
-	ctx := r.Context()
+	// Broadcasts are wakeups, never the source of ordering. A periodic catch-up
+	// also recovers a dropped notification without requiring a disconnect.
+	refresh := time.NewTicker(time.Second)
+	defer refresh.Stop()
 	ping := time.NewTicker(20 * time.Second)
 	defer ping.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-r.Context().Done():
 			return
-		case a, ok := <-ch:
-			if !ok {
+		case _, ok := <-ch:
+			if !ok || !catchUp() {
 				return
 			}
-			if a.ID <= since {
-				continue // already replayed
+		case <-refresh.C:
+			if !catchUp() {
+				return
 			}
-			if intentPtr != nil && (a.NodeID == nil || *a.NodeID != *intentPtr) {
-				continue // scoped session: only this intent's steps
-			}
-			since = a.ID
-			sendSSE(a)
 		case <-ping.C:
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()

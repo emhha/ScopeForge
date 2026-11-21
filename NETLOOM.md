@@ -28,15 +28,15 @@ Make 的 Go 命令通过 `scripts/go-netloom.sh` 临时设置 Git URL 映射与�
 
 默认超时 30 秒，最多 120 秒；不自动重放请求。输出正文预览最多 16 KiB，原始响应采集最多 8 MiB；超过采集限制时明确返回 `complete=false`。压缩正文的展示由库进行有界解码，录制证据保留原始字节。
 
-默认输出为一行精简 JSON、空行、正文；正文中的换行、HTML 和 JSON 不再嵌入 JSON 字符串。元信息包含最终 URL、状态码、内容类型、实际采集的正文原始字节数、完整性；仅在有值时添加耗时、重定向次数、录制 ID、截断提示和错误。二进制或无法解码的正文使用 base64，并标注 `body_encoding`。`body_bytes` 是解压前已采集的字节数，`body_preview_truncated` 与 `complete` 分别表示展示截断与原始采集完整性。
+默认输出为一行 JSON、空行和原样正文预览。收到响应后显示 `status_code` 和有值的 `content_type`。重定向实际改变响应来源时显示 `final_url`。采集不完整时显示 `complete:false`，预览有截断时显示 `body_preview_truncated:true`。录制 ID、错误和警告按需显示。二进制或无法解码的正文使用 base64，并标注 `body_encoding`。
 
 ```text
-{"url":"http://example.test/ftp","status_code":200,"content_type":"text/html","body_bytes":18,"complete":false,"error":"unexpected EOF; response body is incomplete"}
+{"status_code":200,"content_type":"text/html","complete":false,"error":"unexpected EOF; response body is incomplete"}
 
 <html>hello</html>
 ```
 
-设置 `verbose=true` 后，JSON 与正文之间增加 curl 风格的每跳请求行/请求头（`>`）、响应状态/响应头（`<`），以及库实际提供的连接 IP、TLS 信息（`*`）；不另外发请求补充信息，不重复输出请求正文，Authorization/Proxy-Authorization 脱敏。详细信息最多 16 KiB，截断不影响正文展示。
+设置 `verbose=true` 后，JSON 还会显示解压前已采集的 `body_bytes`、有值的耗时和重定向次数。JSON 与正文之间会增加 curl 风格的每跳请求行和请求头（`>`）、响应状态和响应头（`<`），以及库实际提供的连接 IP、TLS 信息（`*`）。Authorization 和 Proxy-Authorization 会脱敏。详细信息最多 16 KiB，截断不影响正文展示。
 
 服务器声明的 Content-Length 大于实际正文、分块传输中断或正文读取超时，均保留已经收到的响应和正文，并在元信息中返回 `error`。读取失败仍标记工具调用失败，模型和页面同时可以读取部分正文；没有响应头的失败只返回错误元信息。部分响应录制标记为不完整，不能作为完整流量证据使用。压缩流中断时优先展示库已解压的有效内容。
 
@@ -61,3 +61,7 @@ Make 的 Go 命令通过 `scripts/go-netloom.sh` 临时设置 Git URL 映射与�
 - 可用 `SCOPEFORGE_FOFA_KEY`、`SCOPEFORGE_FOFA_EMAIL`、`SCOPEFORGE_HUNTER_KEY`、`SCOPEFORGE_QUAKE_KEY` 提供环境凭据。数据库保存的非空值优先；环境凭据不会因保存其他配置而写入数据库。未显式保存配置时，存在环境 Key 的源自动启用。
 
 三个工具默认绑定 `auto`、`pentest`、`worker`、`mainagent`、`planner`，可在工具管理中调整绑定或停用。
+
+## HTTP 被动分析
+
+`http_request` 每跳通过 Netloom 原生 `passive.New` / `Registry.Analyze` 接入 `fingerprint`、`infoextract` 和 `serialization`，在 JSON 元信息的 `passive` 中返回逐跳结果。分析只使用已有响应快照，不发起额外请求；关闭流量捕获后仍执行。缓存按会话和站点隔离，分析错误独立返回。指纹启用 EHole 和 Wappalyzer，规则数据取自固定 Netloom 版本并内嵌到二进制，解析与匹配使用库原生接口。

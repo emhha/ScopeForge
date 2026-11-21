@@ -401,7 +401,7 @@ function ProcessSummary({
   const focused =
     focusedSeq != null && steps.some((record) => record.event.seq === focusedSeq || record.result?.seq === focusedSeq);
   const memoryKey = node.settled ? `process-end:${node.events.at(-1)?.seq}` : `process:${node.id}`;
-  const [open, setOpen] = React.useState(memory.expanded[memoryKey] ?? false);
+  const [open, setOpen] = React.useState(memory.expanded[memoryKey] ?? true);
   React.useEffect(() => {
     memory.expanded[memoryKey] = open;
     persistViewMemory(memory);
@@ -441,7 +441,7 @@ function ProcessSummary({
                   record={record}
                   getDetail={getDetail}
                   focused={focusedSeq != null && (record.event.seq === focusedSeq || record.result?.seq === focusedSeq)}
-                  initiallyOpen={memory.expanded[record.id] ?? false}
+                  initiallyOpen={memory.expanded[record.id] ?? record.event.streaming === true}
                   onOpenChange={(value) => {
                     memory.expanded[record.id] = value;
                     persistViewMemory(memory);
@@ -695,7 +695,7 @@ function TranscriptBody({
                   record={record}
                   getDetail={getDetail}
                   focused={focusedSeq != null && (event.seq === focusedSeq || record.result?.seq === focusedSeq)}
-                  initiallyOpen={memory.expanded[record.id] ?? false}
+                  initiallyOpen={memory.expanded[record.id] ?? record.event.streaming === true}
                   onOpenChange={(open) => {
                     pause();
                     memory.expanded[record.id] = open;

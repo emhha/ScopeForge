@@ -58,8 +58,11 @@ func TestNativeHTTPRedirectValidationAndSingleCapturePerHop(t *testing.T) {
 		t.Fatalf("captured=%d err=%v", count, err)
 	}
 	verbose := Format(out, nil, true)
-	if !strings.Contains(verbose, "> GET /start HTTP/1.1") || !strings.Contains(verbose, "< HTTP/1.1 302 Found") || !strings.Contains(verbose, "> GET /final HTTP/1.1") || !strings.HasSuffix(verbose, "\n\nnative response") {
+	if !strings.Contains(verbose, `"redirect_count":1`) || !strings.Contains(verbose, `"body_bytes":15`) || !strings.Contains(verbose, "> GET /start HTTP/1.1") || !strings.Contains(verbose, "< HTTP/1.1 302 Found") || !strings.Contains(verbose, "> GET /final HTTP/1.1") || !strings.HasSuffix(verbose, "\n\nnative response") {
 		t.Fatalf("missing native redirect trace: %s", verbose)
+	}
+	if normal := Format(out, nil, false); !strings.Contains(normal, `"final_url":"`+second.URL+`/final"`) || strings.Contains(normal, `"redirect_count"`) {
+		t.Fatalf("unexpected default redirect metadata: %s", normal)
 	}
 	calls.Store(0)
 	out, err = service.Do(t.Context(), sdkhttp.RequestInput{URL: first.URL + "/start", Headers: map[string]string{"Authorization": "Bearer fixture"}, FollowRedirects: true}, nil, func(_ context.Context, u string) error {
@@ -70,6 +73,9 @@ func TestNativeHTTPRedirectValidationAndSingleCapturePerHop(t *testing.T) {
 	})
 	if err == nil || calls.Load() != 1 || out == nil || out.Status != 302 {
 		t.Fatalf("denied redirect err=%v calls=%d", err, calls.Load())
+	}
+	if normal := Format(out, err, false); strings.Contains(normal, `"final_url"`) {
+		t.Fatalf("blocked redirect changed the response URL: %s", normal)
 	}
 }
 
@@ -286,5 +292,41 @@ func TestNativeHTTPDistinguishesCaptureAndPreviewLimits(t *testing.T) {
 				t.Fatalf("unexpected limits: out=%+v", out)
 			}
 		})
+	}
+}
+
+func TestNativePassiveAnalysisWithoutCapture(t *testing.T) {
+	var calls atomic.Int32
+	target := nettest.Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "contact: security@example.com")
+	}), false)
+	service, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	out, err := service.Do(t.Context(), sdkhttp.RequestInput{URL: target.URL}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 || len(out.ExchangeIDs) != 0 || len(out.Passive) != 1 {
+		t.Fatalf("unexpected capture or network activity: %+v calls=%d", out, calls.Load())
+	}
+	found := map[string]bool{}
+	for _, result := range out.Passive[0].Results {
+		if result.Status != "completed" {
+			t.Fatalf("analysis failed: %+v", result)
+		}
+		found[result.PluginID] = true
+	}
+	for _, id := range []string{"fingerprint", "infoextract", "serialization"} {
+		if !found[id] {
+			t.Fatalf("missing native plugin %s", id)
+		}
+	}
+	if !strings.Contains(Format(out, nil, false), `"passive":`) {
+		t.Fatal("passive results absent from tool output")
 	}
 }

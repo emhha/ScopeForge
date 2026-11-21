@@ -104,15 +104,19 @@ func verifyJWT(tokenStr string, key []byte) bool {
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
-// scopeforge_token cookie, or ?token= query param (for SSE connections).
+// ?token= query param (for SSE), then the legacy scopeforge_token cookie.
+// Explicit credentials must not be shadowed by a stale browser cookie.
 func extractToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
+	if token := r.URL.Query().Get("token"); token != "" {
+		return token
+	}
 	if c, err := r.Cookie("scopeforge_token"); err == nil && c.Value != "" {
 		return c.Value
 	}
-	return r.URL.Query().Get("token")
+	return ""
 }
 
 // requireAuth wraps h with JWT validation.

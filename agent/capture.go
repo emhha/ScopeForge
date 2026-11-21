@@ -33,6 +33,8 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 	trace := &runTrace{startedAt: time.Now()}
 	names := map[string]string{}
 	var total, current model.Usage
+	var lastUsageAt time.Time
+	var finalMessage *messageProgress
 	rec := func(a db.Activity) {
 		if emit != nil {
 			emit(a)
@@ -63,6 +65,8 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 			return err
 		}
 		var visible, thinking strings.Builder
+		var textProgress, thinkingProgress messageProgress
+
 		for ev := range events {
 			flushModelCalls()
 			if ev == nil || ev.Response == nil {
@@ -72,7 +76,12 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 				modelutil.MergeUsage(&current, *ev.Usage)
 				live := total
 				modelutil.AddUsage(&live, current)
-				rec(activityWithUsage(db.Activity{Kind: "usage"}, &live))
+				// Providers often attach cumulative usage to every streamed token.
+				// Keep a live sample without persisting thousands of invisible rows.
+				if !ev.IsPartial || time.Since(lastUsageAt) >= time.Second {
+					rec(activityWithUsage(db.Activity{Kind: "usage"}, &live))
+					lastUsageAt = time.Now()
+				}
 				if !ev.IsPartial {
 					modelutil.AddUsage(&total, current)
 					current = model.Usage{}
@@ -86,6 +95,8 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 				if ev.IsPartial {
 					visible.WriteString(choice.Delta.Content)
 					thinking.WriteString(choice.Delta.ReasoningContent)
+					thinkingProgress.emit("thinking", thinking.String(), false, rec)
+					textProgress.emit("text", visible.String(), false, rec)
 					continue
 				}
 				m := choice.Message
@@ -104,7 +115,8 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 					thinking.WriteString(m.ReasoningContent)
 				}
 				if thinking.Len() > 0 {
-					rec(db.Activity{Kind: "thinking", Summary: firstLine(thinking.String(), 200), Detail: thinking.String()})
+					thinkingProgress.emit("thinking", thinking.String(), true, rec)
+					thinkingProgress = messageProgress{}
 					thinking.Reset()
 				}
 				if m.Content != "" {
@@ -113,12 +125,15 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 				}
 				if len(m.ToolCalls) == 0 {
 					text = visible.String()
+					finalMessage = &textProgress
 				} else if visible.Len() > 0 {
-					rec(db.Activity{Kind: "text", Summary: firstLine(visible.String(), 200), Detail: visible.String()})
+					textProgress.emit("text", visible.String(), true, rec)
+					textProgress = messageProgress{}
 				}
 				visible.Reset()
+				// Provenance is consumed with its tool_result, never cleared here: the
+				// SDK may already have executed this call before delivering its event.
 				for _, call := range m.ToolCalls {
-					sources.take(call.ID) // A provider may reuse call IDs in a later turn.
 					names[call.ID] = call.Function.Name
 					trace.start(call.ID, call.Function.Name, string(call.Function.Arguments))
 					audit.Start(call.ID, call.Function.Name, call.Function.Arguments)
@@ -132,10 +147,13 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 			text = visible.String()
 		}
 		if thinking.Len() > 0 {
-			rec(db.Activity{Kind: "thinking", Summary: firstLine(thinking.String(), 200), Detail: thinking.String()})
+			thinkingProgress.emit("thinking", thinking.String(), true, rec)
 		}
-		if callCtx.Err() != nil {
-			return callCtx.Err()
+		if callCtx.Err() != nil || err != nil {
+			textProgress.emit("text", visible.String(), true, rec)
+			if callCtx.Err() != nil {
+				return callCtx.Err()
+			}
 		}
 		return err
 	}
@@ -182,10 +200,14 @@ func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.
 	total = t.usage
 	t.usageMu.Unlock()
 	summary, detail := text, text
-	if strings.TrimSpace(summary) == "" {
+	if strings.TrimSpace(summary) == "" || runErr != nil {
 		summary, detail = terminalText(ctx, &runstate.Outcome{Reason: reason, Text: text, Err: runErr, Usage: total}, trace)
 	}
-	rec(activityWithUsage(db.Activity{Kind: "result", IsError: runErr != nil, Summary: firstLine(summary, 400), Detail: detail}, &total))
+	var messageMetadata json.RawMessage
+	if runErr == nil && finalMessage != nil {
+		messageMetadata = finalMessage.metadata(true)
+	}
+	rec(activityWithUsage(db.Activity{Kind: "result", IsError: runErr != nil, Summary: firstLine(summary, 400), Detail: detail, Metadata: messageMetadata}, &total))
 	return
 }
 func activityWithUsage(a db.Activity, u *model.Usage) db.Activity {

@@ -81,7 +81,7 @@ func TestVersionFiveUpgradeRetainsBusinessData(t *testing.T) {
 	}
 	// Recreate the two missing columns of a v5 installation without importing any
 	// user files or retaining a second SQLite driver solely for a test fixture.
-	if _, err = d.Exec(`ALTER TABLE conversation_activities DROP COLUMN metadata; ALTER TABLE llm_profiles DROP COLUMN thinking_budget; PRAGMA user_version=5`); err != nil {
+	if _, err = d.Exec(`DROP INDEX idx_conv_message_revision; DROP INDEX idx_activity_message_revision; ALTER TABLE conversation_activities DROP COLUMN metadata; ALTER TABLE llm_profiles DROP COLUMN thinking_budget; PRAGMA user_version=5`); err != nil {
 		t.Fatal(err)
 	}
 	if err = d.Close(); err != nil {

@@ -52,3 +52,15 @@ test("merging does not mutate either response and keeps distinct IDs", () => {
   assert.equal(first.length, 1);
   assert.equal(second.length, 2);
 });
+
+test("live revisions replace a message and stale history cannot roll it back", () => {
+  const first = activity(10, "text", {message_id:"reply",revision:1,streaming:true,detail:"hello"});
+  const next = activity(12, "text", {message_id:"reply",revision:2,streaming:true,detail:"hello world"});
+  const final = activity(14, "result", {message_id:"reply",revision:3,detail:"hello world"});
+  let rows = mergeActivities([first], [next]);
+  assert.deepEqual(rows, [next]);
+  rows = mergeActivities(rows, [first, final]);
+  assert.deepEqual(rows, [final]);
+  assert.deepEqual(mergeActivities([first,next], rows), [final]);
+  assert.deepEqual(mergeActivities(rows, [final]), [final]);
+});

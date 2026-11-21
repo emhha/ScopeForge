@@ -64,3 +64,31 @@ func assertCapturedResultUsage(t *testing.T, records []db.Activity, i, o, r, w i
 		t.Fatalf("result=%+v expected %d/%d/%d/%d", last, i, o, r, w)
 	}
 }
+
+func TestCaptureSamplesStreamingUsageWithoutLosingTotals(t *testing.T) {
+	mdl := modeltest.Func(func(context.Context, *model.Request) (<-chan *model.Response, error) {
+		responses := make([]*model.Response, 0, 1001)
+		for i := 1; i <= 1000; i++ {
+			responses = append(responses, &model.Response{IsPartial: true, Choices: []model.Choice{{Delta: model.Message{Role: model.RoleAssistant, Content: "x"}}}, Usage: &model.Usage{PromptTokens: 11, CompletionTokens: i}})
+		}
+		final := modeltest.Final("done")
+		final.Usage = &model.Usage{PromptTokens: 11, CompletionTokens: 1000}
+		responses = append(responses, final)
+		return modeltest.Responses(responses...), nil
+	})
+	var records []db.Activity
+	_, _, err := captureRun(t.Context(), RunConfig{Model: mdl, DisableHostTools: true, MaxTurns: 1}, "test", func(a db.Activity) { records = append(records, a) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, a := range records {
+		if a.Kind == "usage" {
+			count++
+		}
+	}
+	if count > 3 || count == 0 {
+		t.Fatalf("usage samples=%d", count)
+	}
+	assertCapturedResultUsage(t, records, 11, 1000, 0, 0)
+}

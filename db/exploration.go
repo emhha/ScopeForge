@@ -83,7 +83,8 @@ type Node struct {
 	Inherited     bool            `json:"inherited,omitempty"`
 }
 
-// Activity is one worker execution step (= old task_activity).
+// Activity is a persisted execution event. Message snapshots share metadata.message.id
+// and increase metadata.message.revision; ID remains the immutable replay cursor.
 type Activity struct {
 	// Host-authored graph-write provenance, excluded from model input and API payload.
 	NodeSources []NodeSource `json:"-"`
@@ -1473,7 +1474,7 @@ func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int)
 	}
 	var rows *Rows
 	var err error
-	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, CASE WHEN json_extract(metadata,'$.message.id') IS NOT NULL THEN COALESCE(detail,'') ELSE '' END`
 	if nodeID != nil {
 		rows, err = s.db.Query(`SELECT `+cols+`
 FROM activity WHERE exploration_id=?1 AND node_id=?2 AND id>?3 ORDER BY id LIMIT ?4`, s.expID, *nodeID, sinceID, limit)
@@ -1490,7 +1491,7 @@ FROM activity WHERE exploration_id=?1 AND id>?2 ORDER BY id LIMIT ?3`, s.expID, 
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.Detail); err != nil {
 			return nil, sinceID, err
 		}
 		if a.ID > cursor {
@@ -1583,7 +1584,7 @@ func (s *ExplorationStore) ActivityPage(f ActivitySessionFilter, before int64, l
 	if limit <= 0 {
 		limit = 200
 	}
-	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg`
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg, CASE WHEN json_extract(metadata,'$.message.id') IS NOT NULL THEN COALESCE(detail,'') ELSE '' END`
 	args := []any{s.expID}
 	cond, cargs := f.cond(len(args) + 1)
 	args = append(args, cargs...)
@@ -1592,8 +1593,10 @@ func (s *ExplorationStore) ActivityPage(f ActivitySessionFilter, before int64, l
 	limitArg := len(args) + 1
 	args = append(args, limit+1) // one extra row to detect older history
 	q := fmt.Sprintf(`SELECT `+cols+`
-FROM activity WHERE exploration_id=?1%s AND (?%d <= 0 OR id < ?%d)
-ORDER BY id DESC LIMIT ?%d`, cond, beforeArg, beforeArg, limitArg)
+FROM activity AS a WHERE exploration_id=?1%s
+AND (json_extract(metadata,'$.message.id') IS NULL OR NOT EXISTS (SELECT 1 FROM activity newer WHERE newer.exploration_id=a.exploration_id AND json_extract(newer.metadata,'$.message.id')=json_extract(a.metadata,'$.message.id') AND newer.id>a.id))
+AND (COALESCE(kind,'') <> 'usage' OR id = (SELECT MAX(id) FROM activity WHERE exploration_id=?1%s AND kind='usage')) AND (?%d <= 0 OR id < ?%d)
+ORDER BY id DESC LIMIT ?%d`, cond, cond, beforeArg, beforeArg, limitArg)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, false, err
@@ -1603,7 +1606,7 @@ ORDER BY id DESC LIMIT ?%d`, cond, beforeArg, beforeArg, limitArg)
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg); err != nil {
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens, &a.MainSeg, &a.Detail); err != nil {
 			return nil, false, err
 		}
 		desc = append(desc, a)

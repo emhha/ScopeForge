@@ -115,3 +115,13 @@ test("cancelled model requests remain interrupted rather than successful or fail
   assert.equal(records[1].event.seq,3);
   assert.equal(records[1].result.seq,4);
  });
+
+test("cumulative usage cannot evict recorded execution steps", async () => {
+  const { compactUsage } = await import("../../lib/activity-merge.ts");
+  const steps = [event(1, "user"), event(2, "thinking"), event(3, "tool_use", {tool_use_id:"a"}), event(4, "tool_result", {tool_use_id:"a"})];
+  const flood = Array.from({length: 2000}, (_, i) => event(i + 5, "usage", {output_tokens: i}));
+  const compacted = compactUsage([...steps, ...flood, event(2005, "result")]);
+  assert.deepEqual(compacted.map(e => e.kind), ["user", "thinking", "tool_use", "tool_result", "usage", "result"]);
+  assert.equal(compacted.find(e => e.kind === "usage").output_tokens, 1999);
+  assert.equal(projectTrajectory("task:1", compacted).filter(r => r.event.kind === "tool_use").length, 1);
+});

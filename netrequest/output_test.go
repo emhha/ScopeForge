@@ -14,7 +14,7 @@ import (
 
 func TestFormatKeepsBodyLiteralAndMetadataSmall(t *testing.T) {
 	body := "<html>\n\"quoted\" \\ path & 中文\n</html>\n"
-	out := &Output{URL: "https://example.test/path", Status: 404, Headers: http.Header{"Content-Type": {"text/html"}, "X-Large": {strings.Repeat("x", 30000)}}, Body: body, BodyEncoding: "utf8", BodyBytes: len(body), Complete: true}
+	out := &Output{URL: "https://example.test/path", Status: 404, Headers: http.Header{"Content-Type": {"text/html"}, "X-Large": {strings.Repeat("x", 30000)}}, Body: body, BodyEncoding: "utf8", BodyBytes: len(body), Complete: true, ResponseTimeMS: 3}
 	text := Format(out, nil, false)
 	head, actual, ok := strings.Cut(text, "\n\n")
 	if !ok || actual != body {
@@ -24,11 +24,8 @@ func TestFormatKeepsBodyLiteralAndMetadataSmall(t *testing.T) {
 	if err := json.Unmarshal([]byte(head), &meta); err != nil {
 		t.Fatal(err)
 	}
-	if len(meta) != 5 || meta["status_code"] != float64(404) || meta["complete"] != true || strings.Contains(head, "X-Large") {
+	if len(meta) != 2 || meta["status_code"] != float64(404) || meta["content_type"] != "text/html" {
 		t.Fatalf("unexpected default metadata: %s", head)
-	}
-	if strings.Contains(head, "body_encoding") || strings.Contains(head, "exchange_ids") || strings.Contains(head, "headers") {
-		t.Fatalf("empty/default detail leaked into metadata: %s", head)
 	}
 }
 

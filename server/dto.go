@@ -471,6 +471,9 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 // ---- Activity (frontend "Activity") ----
 
 type ActivityDTO struct {
+	MessageID    string          `json:"message_id,omitempty"`
+	Revision     int             `json:"revision,omitempty"`
+	Streaming    bool            `json:"streaming,omitempty"`
 	Seq          int64           `json:"seq"`                 // db Activity.ID
 	IntentID     string          `json:"intent_id,omitempty"` // db NodeID
 	Worker       string          `json:"worker"`
@@ -493,11 +496,20 @@ type ActivityDTO struct {
 }
 
 func activityDTO(a db.Activity) ActivityDTO {
+	var progress struct {
+		Message struct {
+			ID       string `json:"id"`
+			Revision int    `json:"revision"`
+			Complete bool   `json:"complete"`
+		} `json:"message"`
+	}
+	_ = json.Unmarshal(a.Metadata, &progress)
 	intent := ""
 	if a.NodeID != nil {
 		intent = i64s(*a.NodeID)
 	}
 	d := ActivityDTO{
+		MessageID: progress.Message.ID, Revision: progress.Message.Revision, Streaming: progress.Message.ID != "" && !progress.Message.Complete,
 		Seq:              a.ID,
 		IntentID:         intent,
 		Worker:           a.Worker,

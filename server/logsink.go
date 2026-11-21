@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/emhha/scopeforge/db"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	agentlog "trpc.group/trpc-go/trpc-agent-go/log"
 )
 
 // LogLine is one captured backend log entry exposed by the /api/logs endpoints.
@@ -47,7 +50,14 @@ var logSink = &logSinkT{cap: 3000, subs: map[chan LogLine]struct{}{}, out: os.St
 
 // StartLogCapture redirects the standard log package through the in-memory sink
 // (still writing to stderr). Call once at startup, as early as possible.
-func StartLogCapture() { log.SetOutput(logSink) }
+func StartLogCapture() {
+	log.SetOutput(logSink)
+	// The agent SDK uses zap rather than the standard logger. Capture both paths
+	// in the same sink so model/tool errors also reach history and live logs.
+	logger := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(logSink), zapcore.InfoLevel)).Sugar()
+	agentlog.Default = logger
+	agentlog.ContextDefault = logger
+}
 
 // SetDB wires a SQLite DB into the sink once (idempotent). It:
 //  1. Restores the last 100 log rows from DB into the ring so the /logs page

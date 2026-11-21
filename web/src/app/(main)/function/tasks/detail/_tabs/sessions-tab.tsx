@@ -1,4 +1,5 @@
 "use client";
+import { mergeActivities } from "@/lib/activity-merge";
 
 import * as React from "react";
 import { useLocation, useNavigate } from "react-router";
@@ -159,11 +160,7 @@ function sessionKeyOf(a: Activity): string {
 // data source — latest page, older page, SSE compensation, live tail — goes through
 // this, so history responses can never clobber live records received meanwhile.
 function mergeBySeq(current: Activity[], incoming: Activity[]): Activity[] {
-  if (!incoming.length) return current;
-  const bySeq = new Map<number, Activity>();
-  for (const a of current) bySeq.set(a.seq, a);
-  for (const a of incoming) bySeq.set(a.seq, a);
-  return [...bySeq.values()].sort((p, q) => p.seq - q.seq);
+  return mergeActivities(current, incoming);
 }
 
 // statusIcon maps a session status to its icon. Worker terminal states are
@@ -260,7 +257,7 @@ const MAIN_SESSION: Session = {
   role: "mainagent",
   title: mainSessionTitle(0),
   status: "running",
-  live: true,
+  live: false,
   last_activity: "",
   seg: 0,
 };
@@ -275,7 +272,7 @@ const PLANNER_SESSION: Session = {
   role: "planner",
   title: "规划 Planner · 态势研判",
   status: "running",
-  live: true,
+  live: false,
   last_activity: "",
 };
 

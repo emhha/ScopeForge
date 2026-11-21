@@ -1,7 +1,7 @@
 import type { Activity } from "../../lib/types.ts";
 
 export function activityIdentity(scope: string, event: Activity): string {
-  return JSON.stringify([scope, event.source_task_id ?? "local", event.seq]);
+  return JSON.stringify([scope, event.source_task_id ?? "local", event.message_id ?? event.seq]);
 }
 
 function callIdentity(scope: string, event: Activity): string {

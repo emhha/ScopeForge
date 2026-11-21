@@ -11,14 +11,21 @@ import (
 	"unicode/utf8"
 
 	"github.com/emhha/netloom"
+	"github.com/emhha/netloom/fingerprint"
+	"github.com/emhha/netloom/httpdata/netloomdata"
 	sdkhttp "github.com/emhha/netloom/nethttp"
 	"github.com/emhha/netloom/passive"
+	"github.com/emhha/netloom/passive/plugins"
+	"github.com/emhha/netloom/passive/plugins/infoextract"
+	"github.com/emhha/netloom/passive/plugins/serialization"
+	"github.com/emhha/scopeforge/sessionctx"
 	"github.com/emhha/scopeforge/traffic"
 )
 
 type Service struct {
-	engine *netloom.Engine
-	proxy  func() string
+	engine  *netloom.Engine
+	proxy   func() string
+	passive *passive.Registry
 }
 
 func New(proxy func() string) (*Service, error) {
@@ -26,11 +33,28 @@ func New(proxy func() string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{engine: engine, proxy: proxy}, nil
+	fingerprints, err := fingerprint.NewBuiltin(context.Background(), fingerprint.SourceEHole, fingerprint.SourceWappalyzer)
+	if err != nil {
+		_ = engine.Close()
+		return nil, err
+	}
+	registry, err := passive.New([]passive.Plugin{plugins.Fingerprint{Engine: fingerprints}, infoextract.New(), serialization.New()}, 0)
+	if err != nil {
+		_ = engine.Close()
+		return nil, err
+	}
+	return &Service{engine: engine, proxy: proxy, passive: registry}, nil
 }
 func (s *Service) Close() error { return s.engine.Close() }
 
+type PassiveHop struct {
+	URL     string           `json:"url"`
+	Results []passive.Result `json:"results"`
+	Error   string           `json:"error,omitempty"`
+}
+
 type Output struct {
+	Passive          []PassiveHop          `json:"passive,omitempty"`
 	Method           string                `json:"method"`
 	URL              string                `json:"url"`
 	Status           int                   `json:"status_code"`
@@ -70,7 +94,7 @@ func (s *Service) Do(ctx context.Context, in sdkhttp.RequestInput, store *traffi
 	if s.proxy != nil {
 		req.Proxy = s.proxy()
 	}
-	sender := &captureSender{engine: s.engine, store: store, ids: []string{}}
+	sender := &captureSender{engine: s.engine, store: store, registry: s.passive, ids: []string{}}
 	exchange, err := netloom.Do(ctx, sender, req, netloom.RedirectPolicy{Follow: in.FollowRedirects, MaxHops: in.MaxRedirects, ValidateURL: validate})
 	if exchange == nil || exchange.Response == nil {
 		return nil, err
@@ -93,19 +117,34 @@ func (s *Service) Do(ctx context.Context, in sdkhttp.RequestInput, store *traffi
 	if !utf8.Valid(preview) || rawPreview {
 		encoding, body = "base64", base64.StdEncoding.EncodeToString(preview)
 	}
-	return &Output{Method: exchange.Request.Method, URL: exchange.Request.URL, Status: r.StatusCode, Headers: http.Header(r.Header), Body: body, BodyEncoding: encoding, BodyBytes: len(r.Body), PreviewTruncated: previewTruncated, PreviewError: previewError, Complete: !r.BodyTruncated && r.Error == nil, ExchangeIDs: sender.ids, Redirects: exchange.Hops, ResponseTimeMS: r.TotalTime.Milliseconds(), Hops: sender.hops}, err
+	return &Output{Passive: sender.analysis, Method: exchange.Request.Method, URL: exchange.Request.URL, Status: r.StatusCode, Headers: http.Header(r.Header), Body: body, BodyEncoding: encoding, BodyBytes: len(r.Body), PreviewTruncated: previewTruncated, PreviewError: previewError, Complete: !r.BodyTruncated && r.Error == nil, ExchangeIDs: sender.ids, Redirects: exchange.Hops, ResponseTimeMS: r.TotalTime.Milliseconds(), Hops: sender.hops}, err
 }
 
 // Native Do owns redirects and sensitive-header policy; this sender only persists each exchange.
 type captureSender struct {
-	engine *netloom.Engine
-	store  *traffic.Traffic
-	ids    []string
-	hops   []ResponseHop
+	engine   *netloom.Engine
+	store    *traffic.Traffic
+	ids      []string
+	hops     []ResponseHop
+	registry *passive.Registry
+	analysis []PassiveHop
 }
 
 func (s *captureSender) Send(ctx context.Context, req *netloom.Request) (*netloom.Response, error) {
 	response, err := s.engine.Send(ctx, req)
+	if response != nil && s.registry != nil {
+		request := netloomdata.Request(req)
+		request.Header = http.Header(response.RequestHeaders).Clone()
+		snapshot := netloomdata.Response(response)
+		snapshot.URL = req.URL
+		snapshot.BodyTruncated = snapshot.BodyTruncated || err != nil || response.Error != nil
+		results, analysisErr := s.registry.Analyze(ctx, passive.Input{Site: passive.SiteKey(sessionctx.ID(ctx), req.URL), SessionID: sessionctx.ID(ctx), Request: request, Response: snapshot}, nil)
+		hop := PassiveHop{URL: req.URL, Results: results}
+		if analysisErr != nil {
+			hop.Error = analysisErr.Error()
+		}
+		s.analysis = append(s.analysis, hop)
+	}
 	if response != nil {
 		metadata := *response
 		metadata.Body = nil // verbose output never retains every redirect's body
