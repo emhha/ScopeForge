@@ -8,12 +8,16 @@ import (
 
 	"github.com/emhha/scopeforge/toolkit"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	"trpc.group/trpc-go/trpc-agent-go/knowledge"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // AugmentInfo carries native skill/toolset options and product audit callbacks.
 type AugmentInfo struct {
+	Memory           memory.Service
+	Knowledge        knowledge.Knowledge
 	HTTPGuidance     string
 	FindingGuidance  string
 	AgentOptions     []llmagent.Option

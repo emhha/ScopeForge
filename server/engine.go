@@ -1120,6 +1120,11 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 	}
 	log.Printf("[worker %s] task %s 意图 #%d 结束: %s (写回 %s)", name, t.ID, intent.ID, state, wrote)
+	if e.m.memories != nil {
+		if id, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
+			_ = e.m.memories.QueueCheckpoint(id)
+		}
+	}
 	e.touch(t.ID)
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true

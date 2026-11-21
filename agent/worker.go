@@ -414,6 +414,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 
 		Tools:            tools,
 		AgentOptions:     def.AgentOptions,
+		Memory:           def.Memory,
+		Knowledge:        def.Knowledge,
 		AugmentCallbacks: def.Callbacks,
 		InteractiveShell: def.InteractiveShell,
 

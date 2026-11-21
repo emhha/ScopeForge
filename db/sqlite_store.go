@@ -213,7 +213,7 @@ func openSQLite(path string) (*DB, error) {
 	return d, nil
 }
 
-const sqliteSchemaVersion = 3
+const sqliteSchemaVersion = 5
 const sqliteApplicationID = 0x41525458 // Stable SQLite format identifier; retained for existing databases.
 func initializeSQLite(writer *sql.DB) error {
 	tx, err := writer.Begin()
@@ -242,7 +242,7 @@ func initializeSQLite(writer *sql.DB) error {
 		if tables != 0 {
 			return errors.New("refusing to initialize an unrecognized nonempty SQLite database")
 		}
-		if _, err = tx.Exec(schemaSQL); err != nil {
+		if _, err = tx.Exec(schemaSQL + knowledgeImportsSchema); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(fmt.Sprintf(`PRAGMA application_id=%d`, sqliteApplicationID)); err != nil {
@@ -251,6 +251,7 @@ func initializeSQLite(writer *sql.DB) error {
 		if _, err = tx.Exec(fmt.Sprintf(`PRAGMA user_version=%d`, sqliteSchemaVersion)); err != nil {
 			return err
 		}
+		version = sqliteSchemaVersion
 	} else if application != sqliteApplicationID {
 		return errors.New("SQLite database application ID is missing")
 	}
@@ -273,6 +274,53 @@ PRAGMA user_version=3`); err != nil {
 			return err
 		}
 	}
+	if version < 4 {
+		if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS knowledge_documents (
+ id TEXT PRIMARY KEY,name TEXT NOT NULL,sha256 TEXT NOT NULL,size INTEGER NOT NULL,
+ status TEXT NOT NULL DEFAULT 'queued',error TEXT NOT NULL DEFAULT '',chunks INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL DEFAULT (utc_now())
+);
+CREATE TABLE IF NOT EXISTS memory_promotions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,task_id INTEGER NOT NULL,content TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT (utc_now())
+);
+PRAGMA user_version=4`); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		columns := map[string]bool{}
+		rows, e := tx.Query(`PRAGMA table_info(knowledge_documents)`)
+		if e != nil {
+			return e
+		}
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, typ string
+			var defaultValue any
+			if e = rows.Scan(&cid, &name, &typ, &notnull, &defaultValue, &pk); e != nil {
+				rows.Close()
+				return e
+			}
+			columns[name] = true
+		}
+		e = rows.Err()
+		rows.Close()
+		if e != nil {
+			return e
+		}
+		for _, name := range []string{"import_id", "relative_path"} {
+			if !columns[name] {
+				if _, e = tx.Exec("ALTER TABLE knowledge_documents ADD COLUMN " + name + " TEXT NOT NULL DEFAULT ''"); e != nil {
+					return e
+				}
+			}
+		}
+		if _, e = tx.Exec(knowledgeImportsSchema + `PRAGMA user_version=5`); e != nil {
+			return e
+		}
+	}
+
 	return tx.Commit()
 }
 

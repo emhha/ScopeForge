@@ -18,6 +18,7 @@ require (
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.52.0
+	trpc.group/trpc-go/trpc-agent-go/memory/sqlite v1.12.1-0.20261111095122-90b8c46f000e
 )
 
 require (
@@ -28,10 +29,14 @@ require (
 	github.com/bogdanfinn/tls-client v1.15.1 // indirect
 	github.com/bogdanfinn/utls v1.7.7-barnius // indirect
 	github.com/bogdanfinn/websocket v1.5.5-barnius // indirect
+	github.com/bufbuild/protocompile v0.14.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
+	github.com/go-ego/gse v1.0.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/golang/glog v1.2.4 // indirect
+	github.com/gonfva/docxlib v0.0.0-20210517191039-d8f39cecf1ad // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
@@ -39,6 +44,8 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/vcaesar/cedar v0.20.2 // indirect
+	github.com/yuin/goldmark v1.7.4 // indirect
 	go.opentelemetry.io/otel v1.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.29.0 // indirect

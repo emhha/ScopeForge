@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 	"github.com/emhha/scopeforge/enrich"
 	"github.com/emhha/scopeforge/guard"
 	"github.com/emhha/scopeforge/intercept"
+	"github.com/emhha/scopeforge/learning"
 	"github.com/emhha/scopeforge/netrequest"
 	"github.com/emhha/scopeforge/traffic"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -220,6 +222,9 @@ type DeleteTaskResult struct {
 // Manager owns the SQLite data source (asset graph + every task's exploration
 // graph + config) and the in-memory set of task handles.
 type Manager struct {
+	memories     *learning.Memories
+	knowledge    *learning.Knowledge
+	retrieval    *learning.Retrieval
 	sessions     session.Service
 	httpRequests *netrequest.Service
 	mapping      *discovery.Service
@@ -372,6 +377,36 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		return nil, fmt.Errorf("recover finding retests: %w", err)
 	}
 	m := &Manager{sessions: agent.NewSessionService(), dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
+	initialized := false
+	defer func() {
+		if initialized {
+			return
+		}
+		if m.knowledge != nil {
+			_ = m.knowledge.Close()
+		}
+		if m.memories != nil {
+			_ = m.memories.Close()
+		}
+		if m.retrieval != nil {
+			_ = m.retrieval.Close()
+		}
+	}()
+	m.memories, err = learning.OpenMemories(dir, pg)
+	if err != nil {
+		pg.Close()
+		return nil, fmt.Errorf("open memories: %w", err)
+	}
+	m.retrieval, err = learning.OpenRetrieval(dir, pg)
+	if err != nil {
+		pg.Close()
+		return nil, fmt.Errorf("open shared retrieval: %w", err)
+	}
+	m.knowledge, err = learning.OpenKnowledgeWithRetrieval(dir, pg, m.retrieval)
+	if err != nil {
+		pg.Close()
+		return nil, fmt.Errorf("open knowledge: %w", err)
+	}
 	if proxyAddr != "" {
 		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
 		if err != nil {
@@ -451,6 +486,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
 	// restart with capture already on keeps Playwright routed through the proxy.
 	m.syncBrowserMCPProxy()
+	initialized = true
 	return m, nil
 }
 
@@ -796,6 +832,15 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 }
 
 func (m *Manager) Close() error {
+	if m.memories != nil {
+		_ = m.memories.Close()
+	}
+	if m.knowledge != nil {
+		_ = m.knowledge.Close()
+	}
+	if m.retrieval != nil {
+		_ = m.retrieval.Close()
+	}
 	if m.enrich != nil {
 		m.enrich.Close()
 	}
@@ -1407,6 +1452,9 @@ func (m *Manager) SetTaskStatusGuarded(id, status string) (won bool, err error) 
 		})
 	}
 	m.mu.Unlock()
+	if m.memories != nil {
+		_ = m.memories.QueueCheckpoint(n)
+	}
 	return true, nil
 }
 
@@ -1438,6 +1486,9 @@ func (m *Manager) SetTaskStatus(id, status string) error {
 		})
 	}
 	m.mu.Unlock()
+	if pgdb.IsTerminal(status) && m.memories != nil {
+		_ = m.memories.QueueCheckpoint(n)
+	}
 	return nil
 }
 
@@ -1503,6 +1554,11 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	// typed so the HTTP layer can still tear down the task runtime instead of
 	// incorrectly reviving a task whose database row is already gone.
 	var finalizeErrs []error
+	if m.memories != nil {
+		if err := m.memories.ClearTask(context.Background(), n); err != nil {
+			finalizeErrs = append(finalizeErrs, fmt.Errorf("clear task memories: %w", err))
+		}
+	}
 	if trafficStage != nil {
 		if err := trafficStage.Commit(); err != nil {
 			finalizeErrs = append(finalizeErrs, fmt.Errorf("finalize traffic deletion: %w", err))

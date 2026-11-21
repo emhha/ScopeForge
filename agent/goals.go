@@ -143,10 +143,18 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Model, dataDir, go
 			emit(r)
 		}
 	}
+	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
+	tools, capabilities, cleanup := AugmentTools(ctx, "goals", tools)
+	defer cleanup()
 	captureRun(ctx, RunConfig{
-		Model:        prov,
-		Instructions: []string{sys},
-		Tools:        tools,
+		// The same scoped native capabilities as planner/worker runs.
+		Memory:           capabilities.Memory,
+		Knowledge:        capabilities.Knowledge,
+		AgentOptions:     capabilities.AgentOptions,
+		AugmentCallbacks: capabilities.Callbacks,
+		Model:            prov,
+		Instructions:     []string{sys},
+		Tools:            tools,
 
 		DisableHostTools: true,
 		// 3 步(抽约束 → 登记范围 → 拆目标)各需一次工具调用,给足回合避免收尾前漏调 set_goals。

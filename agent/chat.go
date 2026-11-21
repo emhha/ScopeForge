@@ -123,6 +123,8 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 
 		Tools:            tools,
 		AgentOptions:     def.AgentOptions,
+		Memory:           def.Memory,
+		Knowledge:        def.Knowledge,
 		AugmentCallbacks: def.Callbacks,
 		InteractiveShell: def.InteractiveShell,
 

@@ -1,8 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "react-router";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
-import { CpuIcon,  KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
+import { CpuIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -16,8 +18,52 @@ import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSend
 import type { Settings } from "@/lib/types";
 import { MappingSourcesCard } from "./_components/mapping-sources-card";
 
+const RetrievalSettings = React.lazy(() => import("./_components/retrieval-settings"));
 
 export default function SystemSettingsPage() {
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") === "retrieval" ? "retrieval" : "general";
+  return (
+    <div className="flex flex-1 flex-col gap-4 md:gap-6">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">系统配置</h1>
+        <p className="text-sm text-muted-foreground">全局运行时与共享检索设置</p>
+      </div>
+      <Tabs
+        value={tab}
+        onValueChange={(value) =>
+          setParams((previous) => {
+            const next = new URLSearchParams(previous);
+            if (value === "general") next.delete("tab");
+            else next.set("tab", value);
+            return next;
+          })
+        }
+      >
+        <TabsList aria-label="系统配置分类">
+          <TabsTrigger value="general">通用设置</TabsTrigger>
+          <TabsTrigger value="retrieval">模型与检索</TabsTrigger>
+        </TabsList>
+        <TabsContent value="general">
+          <GeneralSettings />
+        </TabsContent>
+        <TabsContent value="retrieval">
+          <React.Suspense
+            fallback={
+              <p role="status" className="p-4 text-sm text-muted-foreground">
+                正在加载模型与检索设置…
+              </p>
+            }
+          >
+            <RetrievalSettings />
+          </React.Suspense>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function GeneralSettings() {
   const [trafficCapture, setTrafficCapture] = React.useState(false);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
@@ -239,11 +285,6 @@ export default function SystemSettingsPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">系统配置</h1>
-        <p className="text-muted-foreground text-sm">全局运行时开关</p>
-      </div>
-
       {/* 多列而非 grid：网络搜索卡片比其余高数倍，且高度随所选后端变化（brave/tavily
           的 key 输入是条件渲染）。grid 会按最高的一张撑满整行、在旁边留下大片空白，
           多列则自动按内容高度平衡填充。卡片间距靠 mb 而非 gap——多列布局下
@@ -386,8 +427,6 @@ export default function SystemSettingsPage() {
           </CardContent>
         </Card>
 
-
-
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -400,8 +439,8 @@ export default function SystemSettingsPage() {
               记录代理，独立于流量捕获。
               <br />
               来源可选 <b>DuckDuckGo（ddgs）</b>（无需 Key）、<b>Brave（免费版）</b>（需填写 Brave API Key）、{" "}
-              <b>Tavily</b>（需填写 Tavily API Key）或 <b>DeepSeek</b>（复用当前 LLM 配置）。总开关关闭时，各
-              Agent 的网络搜索开关不可用。
+              <b>Tavily</b>（需填写 Tavily API Key）或 <b>DeepSeek</b>（复用当前 LLM 配置）。总开关关闭时，各 Agent
+              的网络搜索开关不可用。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">

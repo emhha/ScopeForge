@@ -13,8 +13,9 @@ EXE := $(if $(filter windows,$(TARGET_OS)),.exe,)
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
 PACKAGE_NAME := scopeforge-$(PACKAGE_VERSION)-$(TARGET_OS)-$(TARGET_ARCH)
 PACKAGE_DIR := dist/$(PACKAGE_NAME)
+SEMANTIC_PACKAGE ?= 0
 
-.PHONY: build all build-all build-backend build-web embed-web build-embedded release package run dev-web test test-go test-web test-web-browser clean help
+.PHONY: build all build-all build-backend build-web embed-web build-embedded release package run dev-web test test-go test-web test-web-browser clean help semantic-component semantic-offline package-with-semantic
 # "make build all" is two Make goals; both share one build-all dependency.
 ifneq ($(filter all build-all,$(MAKECMDGOALS)),)
 build: build-all
@@ -63,10 +64,26 @@ package:
 	$(RM) -r '$(PACKAGE_DIR)'
 	mkdir -p '$(PACKAGE_DIR)'
 	$(MAKE) build-embedded BINARY='$(PACKAGE_DIR)/scopeforge$(EXE)'
-	cp config.example.json README.md LICENSE '$(PACKAGE_DIR)/'
+	cp config.example.json README.md MEMORY_KNOWLEDGE.md LICENSE '$(PACKAGE_DIR)/'
 	cp -R skills '$(PACKAGE_DIR)/skills'
+	@if [ '$(SEMANTIC_PACKAGE)' = 1 ]; then \
+		python3 -c 'import json; c=json.load(open("dist/semantic/catalog.json")); assert c["platform"] == "$(TARGET_OS)/$(TARGET_ARCH)", "semantic component platform mismatch"'; \
+		cp -R dist/semantic '$(PACKAGE_DIR)/semantic'; \
+		$(RM) '$(PACKAGE_DIR)/semantic/model.onnx' '$(PACKAGE_DIR)/semantic/tokenizer.json'; \
+	fi
 	$(RM) 'dist/$(PACKAGE_NAME).zip'
 	cd dist && zip -qr '$(PACKAGE_NAME).zip' '$(PACKAGE_NAME)'
+
+# Optional native component: build on the target platform with a C compiler.
+# The default portable main binary never downloads or loads these dependencies.
+semantic-component:
+	python3 scripts/package-semantic.py --go '$(GO)'
+
+semantic-offline:
+	python3 scripts/package-semantic.py --go '$(GO)' --offline
+
+package-with-semantic: semantic-component embed-web
+	$(MAKE) package SEMANTIC_PACKAGE=1
 
 run:
 	$(GO_RUN) run ./cmd/scopeforge $(ARGS)
@@ -94,6 +111,8 @@ help:
 	@echo 'make build all  构建 Linux / Windows / macOS 的 amd64、arm64 到 dist/'
 	@echo 'make release    构建内嵌前端程序到 dist/scopeforge'
 	@echo 'make package    用已构建前端打包 zip（支持 GOOS / GOARCH / VERSION）'
+	@echo 'make package-with-semantic  打包含可选本地语义组件的当前平台发行包'
+	@echo 'make semantic-offline      生成当前平台离线模型安装包'
 	@echo 'make run        开发运行后端（ARGS=...）'
 	@echo 'make dev-web    启动前端开发服务'
 	@echo 'make test       Go 测试与前端检查'

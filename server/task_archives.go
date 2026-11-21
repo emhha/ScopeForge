@@ -409,6 +409,11 @@ func (s *Server) deleteTaskArchive(job *pgdb.TaskArchive) error {
 		}
 		return err
 	}
+	if s.m.memories != nil {
+		if err := s.m.memories.ClearTask(s.ctx, job.TaskID); err != nil {
+			log.Printf("[task-archive] archived task %d memory cleanup: %v", job.TaskID, err)
+		}
+	}
 	if moved {
 		if err := os.Remove(staged); err != nil && !os.IsNotExist(err) {
 			log.Printf("[task-archive] archived task %d metadata deleted; stale package cleanup failed: %v", job.TaskID, err)

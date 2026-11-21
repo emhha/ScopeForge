@@ -35,6 +35,8 @@ const PageSystemMcp = lazy(() => import("./app/(main)/system/mcp/page"));
 const PageSystemNotify = lazy(() => import("./app/(main)/system/notify/page"));
 const PageSystemSettings = lazy(() => import("./app/(main)/system/settings/page"));
 const PageSystemSkills = lazy(() => import("./app/(main)/system/skills/page"));
+const PageSystemKnowledge = lazy(() => import("./app/(main)/system/knowledge/page"));
+const PageSystemMemories = lazy(() => import("./app/(main)/system/memories/page"));
 const PageSystemTools = lazy(() => import("./app/(main)/system/tools/page"));
 
 export function App() {
@@ -90,6 +92,9 @@ export function App() {
                 <Route path="/system/notify" element={<PageSystemNotify />} />
                 <Route path="/system/settings" element={<PageSystemSettings />} />
                 <Route path="/system/skills" element={<PageSystemSkills />} />
+                <Route path="/system/retrieval" element={<Navigate to="/system/settings?tab=retrieval" replace />} />
+                <Route path="/system/knowledge" element={<PageSystemKnowledge />} />
+                <Route path="/system/memories" element={<PageSystemMemories />} />
                 <Route path="/system/tools" element={<PageSystemTools />} />
               </Route>
               <Route path="*" element={<NotFound />} />

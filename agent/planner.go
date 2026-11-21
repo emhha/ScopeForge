@@ -374,6 +374,8 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 
 		Tools:            tools,
 		AgentOptions:     def.AgentOptions,
+		Memory:           def.Memory,
+		Knowledge:        def.Knowledge,
 		AugmentCallbacks: def.Callbacks,
 		InteractiveShell: def.InteractiveShell,
 

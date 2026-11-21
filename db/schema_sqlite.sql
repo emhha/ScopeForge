@@ -1088,3 +1088,23 @@ CREATE TABLE IF NOT EXISTS node_sources (
     PRIMARY KEY (node_id, activity_id, relation)
 );
 CREATE INDEX IF NOT EXISTS node_sources_activity ON node_sources(activity_id);
+
+-- Uploaded originals are authoritative; native tRPC owns the vector index.
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id TEXT PRIMARY KEY,
+    import_id TEXT NOT NULL DEFAULT '',
+    relative_path TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    error TEXT NOT NULL DEFAULT '',
+    chunks INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (utc_now())
+);
+CREATE TABLE IF NOT EXISTS memory_promotions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (utc_now())
+);

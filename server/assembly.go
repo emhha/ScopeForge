@@ -11,9 +11,12 @@ import (
 
 	"github.com/emhha/scopeforge/agent"
 	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/learning"
 	"github.com/emhha/scopeforge/skillcatalog"
 	"github.com/emhha/scopeforge/traffic"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	"trpc.group/trpc-go/trpc-agent-go/knowledge"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -24,7 +27,7 @@ import (
 // hostTools, if set, returns runtime host tools (currently the traffic tools when
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
-func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CallableTool, map[string][]string)) {
+func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CallableTool, map[string][]string), memories *learning.Memories, kb *learning.Knowledge) {
 	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CallableTool, agent.AugmentInfo, func()) {
 		role, err := pg.GetAgentByKey(agentKey)
 		if err != nil || role == nil {
@@ -33,6 +36,25 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cal
 		var extra []actool.CallableTool
 		var closers []io.Closer
 		var opts []llmagent.Option
+		var taskMemory memory.Service
+		if memories != nil {
+			settings := memories.Settings()
+			if settings.GlobalEnabled {
+				extra = append(extra, memories.GlobalSearchTool())
+			}
+			if ri := agent.RunInfoFrom(ctx); ri.TaskID > 0 && settings.TaskEnabled {
+				taskMemory = memories.Task(ri.TaskID)
+				for _, t := range taskMemory.Tools() {
+					if c, ok := t.(actool.CallableTool); ok {
+						extra = append(extra, c)
+					}
+				}
+			}
+		}
+		var nativeKnowledge knowledge.Knowledge
+		if kb != nil {
+			nativeKnowledge = kb
+		}
 		visible, _ := pg.AgentSkillNames(role.ID)
 		allowed := map[string]bool{}
 		for _, n := range visible {
@@ -93,7 +115,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cal
 			recordNativeSkill(ctx, pg, agentKey, &actool.BeforeToolArgs{ToolName: args.ToolName, Arguments: args.Arguments}, args.Error == nil)
 			return nil, nil
 		})
-		return extra, agent.AugmentInfo{AgentOptions: opts, Callbacks: callbacks, InteractiveShell: role.InteractiveShell}, func() {
+		return extra, agent.AugmentInfo{Memory: taskMemory, Knowledge: nativeKnowledge, AgentOptions: opts, Callbacks: callbacks, InteractiveShell: role.InteractiveShell}, func() {
 			for _, c := range closers {
 				_ = c.Close()
 			}

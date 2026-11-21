@@ -149,6 +149,19 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+	if m.memories != nil {
+		m.memories.SetModelProvider(func() llm.Model { s.cfgMu.Lock(); defer s.cfgMu.Unlock(); return s.llmProv })
+		m.memories.SetTaskModelProvider(func(id int64) llm.Model {
+			runtime := &taskLLMRuntime{s: s, taskID: strconv.FormatInt(id, 10), agentKey: "planner"}
+			if _, ok := runtime.activeCfg(); ok {
+				return runtime
+			}
+			return nil
+		})
+		if m.retrieval != nil {
+			m.memories.SetSemanticIndex(m.retrieval.SemanticIndex())
+		}
+	}
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -215,7 +228,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return a.TaskTimeoutWrapupMaxTurns, true
 		}
-		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
+		wireAgentAugment(m.pg, s.skillDir, s.hostTools, m.memories, m.knowledge)
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
@@ -655,6 +668,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
 
 	mux.HandleFunc("GET /api/health", s.health)
+	s.registerLearningRoutes(mux)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
 	mux.HandleFunc("GET /api/logs/history", s.getLogsHistory)

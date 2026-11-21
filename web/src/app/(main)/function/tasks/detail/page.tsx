@@ -9,6 +9,7 @@ import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, Paus
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
+import { MemoryPanel } from "@/components/memory-panel";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -53,6 +54,7 @@ import { SessionsTab } from "./_tabs/sessions-tab";
 const TABS = [
   { value: "sessions", label: "会话" },
   { value: "overview", label: "总览" },
+  { value: "memories", label: "记忆" },
   { value: "graph", label: "探索链路" },
   { value: "broadcast", label: "播报板" },
   { value: "findings", label: "发现" },
@@ -420,6 +422,7 @@ function TaskDetailInner() {
         <TabsContent value="sessions" className="mt-0">
           <SessionsTab taskId={id} />
         </TabsContent>
+        <TabsContent value="memories" className="mt-0"><MemoryPanel taskId={id} /></TabsContent>
         <TabsContent value="overview" className="mt-0">
           <OverviewTab taskId={id} />
         </TabsContent>

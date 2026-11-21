@@ -35,7 +35,7 @@ func TestNodeSourcesUpgradePreservesSQLiteV2Data(t *testing.T) {
 		t.Fatal(value, err)
 	}
 	var version, count int
-	if err = d.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 3 {
+	if err = d.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != sqliteSchemaVersion {
 		t.Fatal(version, err)
 	}
 	if err = d.QueryRow(`SELECT count(*) FROM node_sources`).Scan(&count); err != nil || count != 0 {
