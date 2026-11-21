@@ -34,9 +34,24 @@ func TestNetworkToolsAndMappingConfigThroughNativeRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m.Close()
+	// Simulate an existing, edited catalog from before verbose was added.
+	legacySchema := json.RawMessage(`{"type":"object","additionalProperties":false,"required":["url"],"properties":{"url":{"type":"string"},"timeout_seconds":{"type":"integer","default":9}}}`)
+	if err := m.pg.SeedTool("http_request", "custom HTTP description", legacySchema, json.RawMessage(`["worker"]`)); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	s := New(ctx, m, t.TempDir(), m.dir, t.TempDir())
+	row, err := m.pg.GetTool("http_request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upgraded struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(row.Schema, &upgraded); err != nil || upgraded.Properties["verbose"]["type"] != "boolean" || upgraded.Properties["timeout_seconds"]["default"] != float64(9) || row.Description != "custom HTTP description" || len(row.Agents) != 1 || row.Agents[0] != "worker" {
+		t.Fatalf("catalog upgrade overwrote custom settings: row=%+v schema=%s err=%v", row, row.Schema, err)
+	}
 	if err := m.SetTrafficEnabled(true); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +154,12 @@ func TestNetworkToolsAndMappingConfigThroughNativeRunner(t *testing.T) {
 		found := false
 		for _, message := range req.Messages {
 			found = found || (message.Role == model.RoleTool && strings.Contains(message.Content, "native-http-result") && strings.Contains(message.Content, "exchange_ids"))
+			if message.Role == model.RoleTool && strings.Contains(message.Content, "native-http-result") {
+				meta, body, ok := strings.Cut(message.Content, "\n\n")
+				if !ok || !json.Valid([]byte(meta)) || body != "native-http-result" {
+					t.Errorf("native HTTP message was JSON-escaped: %q", message.Content)
+				}
+			}
 		}
 		if !found {
 			t.Error("native tool result was not included in context")
@@ -199,5 +220,69 @@ func TestNetworkToolsAndMappingConfigThroughNativeRunner(t *testing.T) {
 		}
 	} else {
 		t.Fatal(fmt.Sprintf("sources status=%d", code))
+	}
+}
+
+func TestHTTPRequestPartialResponseAndVerboseThroughNativeRunner(t *testing.T) {
+	const body = "<html>\nreceived body & 中文\n</html>\n"
+	var calls atomic.Int32
+	target := nettest.Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Length", "4096")
+		_, _ = io.WriteString(w, body)
+	}), false)
+	m, err := NewManager(t.TempDir(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s := New(ctx, m, t.TempDir(), m.dir, t.TempDir())
+	var httpTool interface {
+		Call(context.Context, []byte) (any, error)
+	}
+	for _, tool := range s.networkTools() {
+		if tool.Declaration().Name == "http_request" {
+			httpTool = tool
+		}
+	}
+	for _, verbose := range []bool{false, true} {
+		raw, _ := json.Marshal(map[string]any{"url": target.URL + "/ftp", "follow_redirects": true, "fresh_connection": true, "verbose": verbose})
+		result, err := httpTool.Call(t.Context(), raw)
+		text := toolkit.TextOf(result)
+		if err != nil || !toolkit.Failed(result) || !strings.HasSuffix(text, "\n\n"+body) || !strings.Contains(text, `"complete":false`) || !strings.Contains(text, "unexpected EOF") {
+			t.Fatalf("partial tool result=%q err=%v", text, err)
+		}
+		if strings.Contains(text, "< HTTP/1.1 200 OK") != verbose || strings.Contains(text, "> GET /ftp HTTP/1.1") != verbose {
+			t.Fatalf("verbose=%v trace=%s", verbose, text)
+		}
+	}
+	turns := 0
+	provider := modeltest.Func(func(_ context.Context, req *model.Request) (<-chan *model.Response, error) {
+		turns++
+		if turns == 1 {
+			args, _ := json.Marshal(map[string]any{"url": target.URL + "/ftp", "follow_redirects": true, "fresh_connection": true, "verbose": true})
+			return modeltest.Responses(&model.Response{Choices: []model.Choice{{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "partial-1", Type: "function", Function: model.FunctionDefinitionParam{Name: "http_request", Arguments: args}}}}}}}), nil
+		}
+		found := false
+		for _, message := range req.Messages {
+			if message.Role == model.RoleTool && message.ToolID == "partial-1" {
+				found = true
+				if !strings.HasSuffix(message.Content, "\n\n"+body) || !toolkit.FailedJSON(message.Content) || !strings.Contains(message.Content, "> GET /ftp HTTP/1.1") {
+					t.Errorf("partial HTTP result lost in native runner: %q", message.Content)
+				}
+			}
+		}
+		if !found {
+			t.Error("partial tool result did not reach the model")
+		}
+		return modeltest.Responses(modeltest.Final("partial received")), nil
+	})
+	chat := agent.NewChatAgent(provider, "fixture", m.dir, m.sessions, 100000)
+	text, err := chat.Chat(t.Context(), "worker", "conv-partial-http", "request partial fixture", 3, 0, false, nil)
+	if err != nil || text != "partial received" || calls.Load() != 3 {
+		t.Fatalf("native partial response text=%q err=%v calls=%d", text, err, calls.Load())
 	}
 }

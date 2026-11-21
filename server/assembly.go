@@ -17,6 +17,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -114,6 +115,21 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cal
 		callbacks := actool.NewCallbacks().RegisterAfterTool(func(ctx context.Context, args *actool.AfterToolArgs) (*actool.AfterToolResult, error) {
 			recordNativeSkill(ctx, pg, agentKey, &actool.BeforeToolArgs{ToolName: args.ToolName, Arguments: args.Arguments}, args.Error == nil)
 			return nil, nil
+		})
+		// Native tool messages keep HTTP bodies as readable text rather than
+		// serializing the entire curl-style transcript into a JSON string.
+		callbacks.RegisterToolResultMessages(func(_ context.Context, in *actool.ToolResultMessagesInput) (any, error) {
+			if in.ToolName != "http_request" {
+				return nil, nil
+			}
+			out, ok := in.Result.(toolkit.Output)
+			if !ok {
+				return nil, nil
+			}
+			if out.IsError && !toolkit.FailedJSON(out.Text) {
+				return nil, nil // preserve callback/approval errors in their original envelope
+			}
+			return model.Message{Role: model.RoleTool, ToolID: in.ToolCallID, Content: out.Text}, nil
 		})
 		return extra, agent.AugmentInfo{Memory: taskMemory, Knowledge: nativeKnowledge, AgentOptions: opts, Callbacks: callbacks, InteractiveShell: role.InteractiveShell}, func() {
 			for _, c := range closers {

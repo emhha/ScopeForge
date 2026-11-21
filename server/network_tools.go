@@ -13,6 +13,7 @@ import (
 	"github.com/emhha/scopeforge/agent"
 	"github.com/emhha/scopeforge/db"
 	"github.com/emhha/scopeforge/discovery"
+	"github.com/emhha/scopeforge/netrequest"
 	"github.com/emhha/scopeforge/toolkit"
 	"github.com/emhha/scopeforge/traffic"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -32,26 +33,30 @@ func (s *Server) networkTools() []tool.CallableTool {
 		"follow_redirects": map[string]any{"type": "boolean"}, "max_redirects": map[string]any{"type": "integer", "minimum": 0, "maximum": 20},
 		"insecure_tls": map[string]any{"type": "boolean", "description": "显式跳过目标证书校验；默认校验"},
 		"http_version": map[string]any{"type": "string", "enum": []string{"auto", "1.1", "2", "2-only"}},
+		"verbose":      map[string]any{"type": "boolean", "description": "默认 false；设为 true 时额外显示 curl 风格的每跳请求行、请求头、响应头、连接 IP 和 TLS 信息"},
 	}}
 	return []tool.CallableTool{
-		toolkit.New("http_request", "使用 netloom 发送结构化 HTTP 请求，不调用 shell/curl。支持方法、重复头、查询、表单、正文、Basic 认证、TLS 和重定向；遵循全局及任务资产拦截规则，每个跳转单独检查。显式使用全局出口代理；流量捕获启用时保存每跳请求/响应并返回 exchange_ids，不经过录制代理重复抓包。正文预览最多 16 KiB，响应采集最多 8 MiB，complete=false 表示正文不完整。", httpSchema, func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
-			if s.m.httpRequests == nil {
-				return toolkit.Error("HTTP 请求服务未就绪"), nil
+		toolkit.New("http_request", "使用 netloom 发送 HTTP 请求，支持方法、重复头、查询、表单、正文、认证、TLS 和重定向。输出为一行精简 JSON 元信息、空行、实际正文；verbose=true 在正文前增加 curl 风格的每跳请求/响应头。遵循全局出口代理及每跳资产规则。流量捕获开启时返回 exchange_ids。正文展示最多 16 KiB，采集最多 8 MiB；EOF 等读取错误仍返回已收到的正文，complete=false 表示采集不完整。", httpSchema, func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
+			failure := func(err error) (toolkit.Output, error) {
+				return toolkit.Error(netrequest.Format(nil, err, false)), nil
 			}
-			var input sdkhttp.RequestInput
+			if s.m.httpRequests == nil {
+				return failure(errors.New("HTTP 请求服务未就绪"))
+			}
+			var input struct {
+				sdkhttp.RequestInput
+				Verbose bool `json:"verbose"`
+			}
 			if err := json.Unmarshal(raw, &input); err != nil {
-				return toolkit.Error(err.Error()), nil
+				return failure(err)
 			}
 			task := agent.RunInfoFrom(ctx).TaskID
 			var store *traffic.Traffic
 			if s.m.TrafficEnabled() {
 				store = s.m.Traffic()
 			}
-			out, err := s.m.httpRequests.Do(ctx, input, store, func(ctx context.Context, target string) error { return s.validateHTTPURL(ctx, task, target) })
-			if err != nil {
-				return toolkit.Error(err.Error()), nil
-			}
-			return jsonResult(out)
+			out, err := s.m.httpRequests.Do(ctx, input.RequestInput, store, func(ctx context.Context, target string) error { return s.validateHTTPURL(ctx, task, target) })
+			return toolkit.Output{Text: netrequest.Format(out, err, input.Verbose), IsError: err != nil}, nil
 		}),
 		toolkit.New("list_recon_sources", "列出已启用的 FOFA/Hunter/Quake 测绘源及 API Key 配置状态，不返回凭据。", objSchema(map[string]any{}), func(context.Context, json.RawMessage) (toolkit.Output, error) {
 			if s.m.mapping == nil {
