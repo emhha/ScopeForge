@@ -1,0 +1,33 @@
+{
+  "name": "assessment",
+  "description": "Experimental target assessment flow using a deterministic fixture tool",
+  "version": 1,
+  "input_schema": {
+    "type": "object",
+    "required": ["target"],
+    "additionalProperties": false,
+    "properties": {"target": {"type": "string"}}
+  },
+  "entry": "begin",
+  "nodes": [
+    {"id": "begin", "type": "start", "next": "inspect"},
+    {
+      "id": "inspect",
+      "type": "tool",
+      "tool": "inspect",
+      "arguments": {"target": {"$ref": "input.target"}},
+      "next": "decide"
+    },
+    {
+      "id": "decide",
+      "type": "branch",
+      "condition": {"ref": "steps.inspect.text", "equals": "allowed", "then": "accepted", "else": "rejected"}
+    },
+    {
+      "id": "accepted",
+      "type": "end",
+      "output": {"decision": "accepted", "target": {"$ref": "input.target"}}
+    },
+    {"id": "rejected", "type": "end", "output": {"decision": "rejected"}}
+  ]
+}
