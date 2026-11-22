@@ -797,6 +797,14 @@ func (s *Server) pgUpdateTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agents, _ := json.Marshal(body.Agents)
+	if cur.Kind == "workflow" {
+		if err := s.updateWorkflowTool(cur, customToolReq{Kind: "workflow", Description: body.Description, Schema: body.Schema, Agents: body.Agents, Enabled: body.Enabled, Deferred: cur.Deferred}); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
+	}
 	if err := pg.UpdateTool(key, body.Description, body.Schema, agents, body.Enabled); err != nil {
 		writeErr(w, 500, err.Error())
 		return

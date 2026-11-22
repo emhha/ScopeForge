@@ -54,6 +54,7 @@ type PassiveHop struct {
 }
 
 type Output struct {
+	FullBody         []byte                `json:"-"`
 	Passive          []PassiveHop          `json:"passive,omitempty"`
 	Method           string                `json:"method"`
 	URL              string                `json:"url"`
@@ -117,7 +118,7 @@ func (s *Service) Do(ctx context.Context, in sdkhttp.RequestInput, store *traffi
 	if !utf8.Valid(preview) || rawPreview {
 		encoding, body = "base64", base64.StdEncoding.EncodeToString(preview)
 	}
-	return &Output{Passive: sender.analysis, Method: exchange.Request.Method, URL: exchange.Request.URL, Status: r.StatusCode, Headers: http.Header(r.Header), Body: body, BodyEncoding: encoding, BodyBytes: len(r.Body), PreviewTruncated: previewTruncated, PreviewError: previewError, Complete: !r.BodyTruncated && r.Error == nil, ExchangeIDs: sender.ids, Redirects: exchange.Hops, ResponseTimeMS: r.TotalTime.Milliseconds(), Hops: sender.hops}, err
+	return &Output{FullBody: r.Body, Passive: sender.analysis, Method: exchange.Request.Method, URL: exchange.Request.URL, Status: r.StatusCode, Headers: http.Header(r.Header), Body: body, BodyEncoding: encoding, BodyBytes: len(r.Body), PreviewTruncated: previewTruncated, PreviewError: previewError, Complete: !r.BodyTruncated && r.Error == nil, ExchangeIDs: sender.ids, Redirects: exchange.Hops, ResponseTimeMS: r.TotalTime.Milliseconds(), Hops: sender.hops}, err
 }
 
 // Native Do owns redirects and sensitive-header policy; this sender only persists each exchange.

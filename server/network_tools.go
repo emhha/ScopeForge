@@ -56,7 +56,15 @@ func (s *Server) networkTools() []tool.CallableTool {
 				store = s.m.Traffic()
 			}
 			out, err := s.m.httpRequests.Do(ctx, input.RequestInput, store, func(ctx context.Context, target string) error { return s.validateHTTPURL(ctx, task, target) })
-			return toolkit.Output{Text: netrequest.Format(out, err, input.Verbose), IsError: err != nil}, nil
+			result := toolkit.Output{Text: netrequest.Format(out, err, input.Verbose), IsError: err != nil}
+			if artifacts := toolkit.ArtifactsFrom(ctx); artifacts != nil && out != nil {
+				artifact, saveErr := artifacts.Put(ctx, out.FullBody, out.Headers.Get("Content-Type"), out.Complete)
+				if saveErr != nil {
+					return toolkit.Output{}, saveErr
+				}
+				result.Data = map[string]any{"status_code": out.Status, "headers": out.Headers, "body": out.Body, "body_encoding": out.BodyEncoding, "body_preview_truncated": out.PreviewTruncated, "body_artifact": artifact, "content_encoding": out.Headers.Get("Content-Encoding"), "complete": out.Complete, "final_url": out.URL, "exchange_ids": out.ExchangeIDs, "passive": out.Passive}
+			}
+			return result, nil
 		}),
 		toolkit.New("list_recon_sources", "列出已启用的 FOFA/Hunter/Quake 测绘源及 API Key 配置状态，不返回凭据。", objSchema(map[string]any{}), func(context.Context, json.RawMessage) (toolkit.Output, error) {
 			if s.m.mapping == nil {

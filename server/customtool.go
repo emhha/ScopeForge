@@ -101,6 +101,14 @@ func (s *Server) pgUpdateCustomTool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if existing.Kind == "workflow" {
+		if err := s.updateWorkflowTool(existing, req); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
+	}
 	if req.Kind != "command" && req.Kind != "script" && req.Kind != "http" && req.Kind != "shell" {
 		writeErr(w, 400, "kind 需为 command / script / http / shell")
 		return
@@ -125,6 +133,16 @@ func (s *Server) pgDeleteCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("key")
+	if row, err := pg.GetTool(key); err == nil && row != nil && row.Kind == "workflow" {
+		var ref struct {
+			ID int64 `json:"flow_id"`
+		}
+		_ = json.Unmarshal(row.Exec, &ref)
+		if err := pg.UnpublishFlow(ref.ID, key); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	if err := pg.DeleteCustomTool(key); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -254,7 +272,7 @@ func (s *Server) customTools() ([]actool.CallableTool, error) {
 	}
 	out := make([]actool.CallableTool, 0, len(rows))
 	for _, t := range rows {
-		if t.Kind == "shell" {
+		if t.Kind == "shell" || t.Kind == "workflow" {
 			continue // shell hints are handled by ToolResolve → Bash description
 		}
 		out = append(out, s.buildCustomTool(t))
@@ -265,6 +283,9 @@ func (s *Server) customTools() ([]actool.CallableTool, error) {
 // buildCustomTool turns one custom-tool row into a CoreTool. Empty schema → a thin
 // {args:string} (薄壳工具), so command/http templates can use {args}.
 func (s *Server) buildCustomTool(t *db.Tool) actool.CallableTool {
+	if t.Kind == "workflow" {
+		return s.publishedWorkflowTool(t)
+	}
 	schema := ensureSchema(t.Schema)
 	key, kind, execRaw := t.Key, t.Kind, t.Exec
 	run := func(ctx context.Context, in json.RawMessage) (toolkit.Output, error) {
@@ -339,6 +360,9 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 		ctx, cancel = context.WithTimeout(ctx, timeoutOr(spec.TimeoutMs, 120000))
 		defer cancel()
 	}
+	if toolkit.ArtifactsFrom(ctx) != nil {
+		return s.runWorkflowShell(ctx, cmd)
+	}
 	result, err := agent.ExecuteCommand(ctx, bashIn)
 	return toolkit.Output{Text: toolkit.TextOf(result), IsError: toolkit.Failed(result)}, err
 }
@@ -367,7 +391,15 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 	if err != nil {
 		return toolkit.Error(err.Error()), nil
 	}
-	return toolkit.Text(toolkit.Capture(ctx, body)), nil
+	var data any = body
+	if json.Valid([]byte(body)) {
+		_ = json.Unmarshal([]byte(body), &data)
+	}
+	result := toolkit.Text(toolkit.Capture(ctx, body))
+	if toolkit.ArtifactsFrom(ctx) != nil {
+		result.Data = data
+	}
+	return result, nil
 }
 
 // execPython writes the code to a temp .py under workDir/.tools, runs it via interp
@@ -450,7 +482,11 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	out := map[string]any{"status": resp.StatusCode, "body": string(respBody)}
 	b, _ := json.Marshal(out)
-	return toolkit.Text(toolkit.Capture(ctx, string(b))), nil
+	result := toolkit.Text(toolkit.Capture(ctx, string(b)))
+	if toolkit.ArtifactsFrom(ctx) != nil {
+		result.Data = out
+	}
+	return result, nil
 }
 
 // httpProxyTransport builds a Transport for the http tool's proxy config, or nil

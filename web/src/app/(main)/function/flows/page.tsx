@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { sseUrl } from "@/lib/api";
-import { reconcileFlowRun } from "@/lib/flow-state";
+import { reconcileFlowRun, renameFlowNode, removeFlowNodes } from "@/lib/flow-state";
 import {
   flowAPI,
   type FlowDefinition,
@@ -27,9 +27,18 @@ import {
   type FlowRun,
   type FlowEvent,
   type FlowRunSummary,
+  type FlowVersion,
 } from "@/lib/flow-api";
 
-const labels = { start: "开始", tool: "工具调用", branch: "条件分支", end: "结束" };
+const labels = {
+  start: "开始",
+  tool: "工具调用",
+  transform: "数据转换",
+  parallel: "并行分叉",
+  join: "等待汇合",
+  branch: "条件分支",
+  end: "结束",
+};
 function NodeCard({ data, selected }: NodeProps) {
   const type = data.kind as FlowNode["type"];
   const status = String(data.status ?? "");
@@ -48,7 +57,20 @@ function NodeCard({ data, selected }: NodeProps) {
       {type === "tool" && (
         <div className="mt-1 font-mono text-xs text-muted-foreground">{String(data.tool ?? "未选择工具")}</div>
       )}
-      {type === "branch" ? (
+      {type === "parallel" ? (
+        <>
+          <Handle id="new" type="source" position={Position.Right} />
+          {((data.branches as string[]) ?? []).map((_, i, list) => (
+            <Handle
+              key={i}
+              id={`branch-${i}`}
+              type="source"
+              position={Position.Right}
+              style={{ top: `${20 + (i * 60) / Math.max(1, list.length - 1)}%` }}
+            />
+          ))}
+        </>
+      ) : type === "branch" ? (
         <>
           <Handle id="then" type="source" position={Position.Right} style={{ top: "35%" }} />
           <Handle id="else" type="source" position={Position.Right} style={{ top: "75%" }} />
@@ -65,21 +87,28 @@ function exampleInput(def: FlowDefinition) {
   const properties = (def.input_schema.properties ?? {}) as Record<string, { default?: unknown; type?: string }>;
   return pretty(
     Object.fromEntries(
-      Object.entries(properties).map(([key, schema]) => [
-        key,
-        schema.default ??
-          (schema.type === "string"
-            ? key === "domain"
-              ? "example.com"
-              : "https://example.test"
-            : schema.type === "array"
-              ? []
-              : schema.type === "number" || schema.type === "integer"
-                ? 0
-                : schema.type === "boolean"
-                  ? false
-                  : {}),
-      ]),
+      Object.entries(properties)
+        .filter(
+          ([key, schema]) =>
+            schema.default !== undefined || ((def.input_schema.required as string[] | undefined) ?? []).includes(key),
+        )
+        .map(([key, schema]) => [
+          key,
+          schema.default ??
+            (schema.type === "string"
+              ? key === "domain"
+                ? "example.com"
+                : key === "target" || key === "url"
+                  ? "https://example.test"
+                  : ""
+              : schema.type === "array"
+                ? []
+                : schema.type === "number" || schema.type === "integer"
+                  ? 0
+                  : schema.type === "boolean"
+                    ? false
+                    : {}),
+        ]),
     ),
   );
 }
@@ -94,7 +123,7 @@ function JsonField({
   onCommit: (value: unknown) => void;
   onError: (message: string) => void;
 }) {
-  const serialized = pretty(value ?? {});
+  const serialized = pretty(value === undefined ? {} : value);
   const [text, setText] = React.useState(serialized);
   React.useEffect(() => setText(serialized), [serialized]);
   return (
@@ -118,7 +147,7 @@ function JsonField({
 }
 
 export default function FlowsPage() {
-  const [catalog, setCatalog] = React.useState<{ tools: FlowTool[]; example: FlowDefinition }>();
+  const [catalog, setCatalog] = React.useState<{ tools: FlowTool[]; example: FlowDefinition; operations: string[] }>();
   const [rows, setRows] = React.useState<SavedFlow[]>([]);
   const [saved, setSaved] = React.useState<SavedFlow | null>(null);
   const [draft, setDraft] = React.useState<FlowDefinition>();
@@ -135,9 +164,23 @@ export default function FlowsPage() {
   const [runID, setRunID] = React.useState("");
   const [events, setEvents] = React.useState<FlowEvent[]>([]);
   const [runs, setRuns] = React.useState<FlowRunSummary[]>([]);
+  const [showNative, setShowNative] = React.useState(false);
+  const [toolQuery, setToolQuery] = React.useState("");
+  const [versions, setVersions] = React.useState<FlowVersion[]>([]);
+  const [artifacts, setArtifacts] = React.useState<
+    { id: string; media_type: string; size: number; complete: boolean }[]
+  >([]);
+  const [allRuns, setAllRuns] = React.useState<FlowRun[]>([]);
   const [measurements, setMeasurements] = React.useState<Record<string, { width: number; height: number }>>({});
   const [connection, setConnection] = React.useState("");
-  const dirty = !!draft && (!saved || pretty(draft) !== pretty(saved.definition));
+  let dirty = !!draft && (!saved || pretty(draft) !== pretty(saved.definition));
+  if (mode === "json") {
+    try {
+      dirty = !saved || pretty(JSON.parse(json)) !== pretty(saved.definition);
+    } catch {
+      dirty = true;
+    }
+  }
   const active = draft?.nodes.find((node) => node.id === selected);
 
   React.useEffect(() => {
@@ -147,7 +190,8 @@ export default function FlowsPage() {
         if (!alive) return;
         setCatalog(c);
         setRows(items);
-        const initial = items[0];
+        const requested = Number(new URLSearchParams(window.location.search).get("id"));
+        const initial = items.find((item) => item.id === requested) ?? items[0];
         setSaved(initial ?? null);
         setDraft(initial?.definition ?? c.example);
         setInput(exampleInput(initial?.definition ?? c.example));
@@ -161,6 +205,29 @@ export default function FlowsPage() {
     };
   }, []);
 
+  React.useEffect(() => {
+    const reload = () => {
+      void flowAPI
+        .catalog()
+        .then(setCatalog)
+        .catch((err) => setError(err.message));
+      void flowAPI
+        .allRuns()
+        .then(setAllRuns)
+        .catch(() => {});
+    };
+    window.addEventListener("focus", reload);
+    reload();
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+  React.useEffect(() => {
+    setVersions([]);
+    if (saved?.id)
+      void flowAPI
+        .versions(saved.id)
+        .then(setVersions)
+        .catch((err) => setError(err.message));
+  }, [saved?.id, saved?.revision, saved?.published]);
   React.useEffect(() => {
     setRuns([]);
     setRunID("");
@@ -183,8 +250,15 @@ export default function FlowsPage() {
     };
   }, [saved?.id]);
   React.useEffect(() => {
+    setArtifacts([]);
     if (!runID) return;
     let alive = true;
+    void flowAPI
+      .artifacts(runID)
+      .then((items) => {
+        if (alive) setArtifacts(items);
+      })
+      .catch(() => {});
     const source = new EventSource(sseUrl(`/api/flow-runs/${runID}/events?since=0`));
     source.onopen = () => {
       if (alive) setConnection("实时连接正常");
@@ -205,9 +279,23 @@ export default function FlowsPage() {
       if (!alive) return;
       const finished = JSON.parse((event as MessageEvent).data) as FlowRun;
       setRun(finished);
-      void flowAPI.runs(finished.flow_id).then((items) => {
-        if (alive) setRuns(items);
-      });
+      void flowAPI
+        .artifacts(finished.id)
+        .then(setArtifacts)
+        .catch(() => {});
+      if (finished.flow_id > 0)
+        void flowAPI
+          .runs(finished.flow_id)
+          .then((items) => {
+            if (alive) setRuns(items);
+          })
+          .catch((err) => {
+            if (alive) setError(err.message);
+          });
+      void flowAPI
+        .allRuns()
+        .then(setAllRuns)
+        .catch(() => {});
       setConnection("运行结束，记录已保存");
       source.close();
     });
@@ -228,22 +316,38 @@ export default function FlowsPage() {
   const statuses = React.useMemo(() => {
     const states: Record<string, string> = {};
     for (const item of events) {
-      const id = item.author.replace(/^(node_|tool_|collect_)/, "");
+      if (item.run_id !== runID) continue;
+      const payload = item.payload as { branch?: string } | undefined;
+      const branchNode = payload?.branch?.match(/(?:^|\/)tool_([^/]+)/)?.[1];
+      const id = branchNode ?? item.author.replace(/^(node_|tool_|collect_)/, "");
       if (item.object === "graph.node.error" || item.error) states[id] = "failed";
       else if (item.object === "graph.node.start") states[id] = "running";
       else if (item.object === "graph.node.complete") states[id] = "completed";
     }
     return states;
-  }, [events]);
+  }, [events, runID]);
+  const visibleEvents = showNative
+    ? events
+    : events.filter((item) => {
+        if (item.error) return true;
+        if (!["graph.node.start", "graph.node.complete", "graph.node.error"].includes(item.object)) return false;
+        if (item.author.startsWith("tool_")) return true;
+        if (item.author.startsWith("node_")) {
+          const node = draft?.nodes.find((node) => `node_${node.id}` === item.author);
+          return node?.type !== "tool";
+        }
+        return false;
+      });
   const nodes = React.useMemo(
     () =>
       draft?.nodes.map((node, index) => ({
         id: node.id,
         measured: measurements[node.id],
+        deletable: node.type !== "start",
         type: "flow",
         selected: node.id === selected,
         position: node.position ?? { x: Math.min(index, 3) * 240 + 40, y: node.id === "rejected" ? 250 : 70 },
-        data: { label: node.id, kind: node.type, tool: node.tool, status: statuses[node.id] },
+        data: { label: node.id, kind: node.type, tool: node.tool, branches: node.branches, status: statuses[node.id] },
       })) ?? [],
     [draft, selected, statuses, measurements],
   );
@@ -251,12 +355,14 @@ export default function FlowsPage() {
     () =>
       draft?.nodes.flatMap((node) => {
         const targets =
-          node.type === "branch"
-            ? [
-                { target: node.condition?.then, handle: "then", label: "成立" },
-                { target: node.condition?.else, handle: "else", label: "不成立" },
-              ]
-            : [{ target: node.next, handle: undefined, label: "" }];
+          node.type === "parallel"
+            ? (node.branches ?? []).map((target, i) => ({ target, handle: `branch-${i}`, label: "" }))
+            : node.type === "branch"
+              ? [
+                  { target: node.condition?.then, handle: "then", label: "成立" },
+                  { target: node.condition?.else, handle: "else", label: "不成立" },
+                ]
+              : [{ target: node.next, handle: undefined, label: "" }];
         return targets
           .filter((item) => item.target)
           .map((item) => ({
@@ -284,7 +390,17 @@ export default function FlowsPage() {
         ? {
             ...current,
             nodes: current.nodes.map((node) => {
+              if (node.id === connection.target && node.type === "join")
+                return { ...node, from: Array.from(new Set([...(node.from ?? []), connection.source])) };
               if (node.id !== connection.source) return node;
+              if (node.type === "parallel") {
+                const branches = [...(node.branches ?? [])];
+                const index = Number(connection.sourceHandle?.replace("branch-", ""));
+                if (connection.sourceHandle?.startsWith("branch-") && Number.isFinite(index))
+                  branches[index] = connection.target;
+                else if (!branches.includes(connection.target)) branches.push(connection.target);
+                return { ...node, branches };
+              }
               if (node.type === "branch")
                 return {
                   ...node,
@@ -318,18 +434,20 @@ export default function FlowsPage() {
       });
     if (!changes.some((change) => change.type === "position" || change.type === "remove")) return;
 
-    setDraft((current) =>
-      current
-        ? {
-            ...current,
-            nodes: current.nodes.flatMap((node) => {
-              if (changes.some((change) => change.type === "remove" && change.id === node.id)) return [];
-              const move = changes.find((change) => change.type === "position" && change.id === node.id);
-              return [{ ...node, ...(move?.type === "position" && move.position ? { position: move.position } : {}) }];
-            }),
-          }
-        : current,
-    );
+    setDraft((current) => {
+      if (!current) return current;
+      const next = removeFlowNodes(
+        current,
+        changes.filter((change) => change.type === "remove").map((change) => change.id),
+      );
+      return {
+        ...next,
+        nodes: next.nodes.map((node) => {
+          const move = changes.find((change) => change.type === "position" && change.id === node.id);
+          return { ...node, ...(move?.type === "position" && move.position ? { position: move.position } : {}) };
+        }),
+      };
+    });
   }
   function addNode(type: FlowNode["type"]) {
     if (!draft) return;
@@ -339,6 +457,9 @@ export default function FlowsPage() {
       type,
       position: { x: 240, y: 300 },
       ...(type === "tool" ? { tool: "inspect", arguments: { target: { $ref: "input.target" } } } : {}),
+      ...(type === "transform" ? { operation: "json.parse", arguments: { text: "" } } : {}),
+      ...(type === "parallel" ? { branches: [] } : {}),
+      ...(type === "join" ? { from: [] } : {}),
       ...(type === "branch" ? { condition: { ref: "steps.inspect.text", equals: "allowed", then: "", else: "" } } : {}),
       ...(type === "end" ? { output: {} } : {}),
     };
@@ -351,19 +472,38 @@ export default function FlowsPage() {
     return value as FlowDefinition;
   }
   async function persist() {
-    const value = await flowAPI.save(currentDefinition(), saved);
+    const definition = currentDefinition();
+    if (saved && pretty(definition) === pretty(saved.definition)) {
+      setJSON(pretty(saved.definition));
+      return saved;
+    }
+    const value = await flowAPI.save(definition, saved);
     setSaved(value);
     setDraft(value.definition);
     setJSON(pretty(value.definition));
     setRows((previous) => [value, ...previous.filter((item) => item.id !== value.id)]);
     return value;
   }
-  async function action(kind: "save" | "publish" | "run") {
+  async function action(kind: "save" | "publish" | "run" | "inline" | "validate") {
     setError("");
     setNotice("");
     setBusy(true);
     try {
       // Save/validate before executing. In-flight runs keep their own frozen version.
+      if (kind === "validate") {
+        const checked = await flowAPI.validate(currentDefinition());
+        if (!checked.valid) throw Error(checked.diagnostics.join("\n"));
+        setNotice("校验通过：原生 Graph 编译及工具依赖有效");
+        return;
+      }
+      if (kind === "inline") {
+        const started = await flowAPI.inline(currentDefinition(), JSON.parse(input));
+        setEvents([]);
+        setRun(null);
+        setRunID(started.id);
+        setNotice("临时运行已开始，不保存草稿、不注册工具；过程会落盘");
+        return;
+      }
       const value = await persist();
       if (kind === "publish") {
         const published = await flowAPI.publish(
@@ -454,7 +594,39 @@ export default function FlowsPage() {
               </button>
             ))}
             <div className="border-t pt-3 text-xs leading-relaxed text-muted-foreground">
-              示例 inspect 只判断字符串，不发网络请求。HTTPS 输入走接受分支，HTTP 输入走拒绝分支。
+              工具目录包含已启用的自定义工具和 MCP。命令环境声明可用 argv 输入；通用 workflow_command 支持 stdin
+              和工件。
+            </div>
+            <div className="border-t pt-3 space-y-2">
+              <div className="text-xs font-medium">全部运行（含临时 / Agent 调用）</div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  void flowAPI
+                    .allRuns()
+                    .then(setAllRuns)
+                    .catch((e) => setError(e.message))
+                }
+              >
+                刷新运行
+              </Button>
+              {allRuns.slice(0, 30).map((item) => (
+                <button
+                  key={item.id}
+                  className="block w-full rounded border p-2 text-left text-xs"
+                  onClick={() => {
+                    setEvents([]);
+                    setRun(null);
+                    setRunID(item.id);
+                    setInput(pretty(item.input));
+                  }}
+                >
+                  {item.definition.name} · {item.source ?? "manual"}
+                  <br />
+                  {item.status} · {new Date(item.created_at).toLocaleTimeString()}
+                </button>
+              ))}
             </div>
           </aside>
           <main className="min-w-0 space-y-4">
@@ -477,6 +649,9 @@ export default function FlowsPage() {
                   />
                 </label>
                 <div className="flex items-end gap-2">
+                  <Button variant="outline" onClick={() => void action("validate")} disabled={busy}>
+                    校验
+                  </Button>
                   <Button variant="outline" onClick={() => void action("save")} disabled={busy}>
                     <Save className="size-4" />
                     保存
@@ -502,6 +677,73 @@ export default function FlowsPage() {
                 </span>
               </div>
             </section>
+            {saved && (
+              <section className="rounded-xl border bg-card p-3 space-y-2 text-xs">
+                <div className="flex gap-3 items-center">
+                  <a className="text-primary underline" href="/system/tools">
+                    在自定义工具中管理发布工具
+                  </a>
+                  {saved.published && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        void flowAPI
+                          .unpublish(saved.id)
+                          .then(async () => {
+                            const items = await flowAPI.list();
+                            setRows(items);
+                            setSaved(items.find((item) => item.id === saved.id) ?? null);
+                            setNotice("已下架，禁止新调用；历史版本和记录保留");
+                          })
+                          .catch((e) => setError(e.message))
+                      }
+                    >
+                      下架工具
+                    </Button>
+                  )}
+                </div>
+                <details>
+                  <summary>发布版本历史（{versions.length}）</summary>
+                  {versions.map((version) => (
+                    <div key={version.id} className="flex items-center justify-between border-t py-2">
+                      <span>
+                        v{version.revision} · {new Date(version.created_at).toLocaleString()}
+                      </span>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setDraft(version.definition);
+                            setMode("graph");
+                            setNotice(`已载入 v${version.revision} 为编辑草稿，尚未保存`);
+                          }}
+                        >
+                          载入编辑
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            void flowAPI
+                              .rollback(saved.id, version.id)
+                              .then((value) => {
+                                setSaved(value);
+                                setRows((items) => items.map((item) => (item.id === value.id ? value : item)));
+                                setNotice(`工具已回滚到 v${version.revision}`);
+                              })
+                              .catch((e) => setError(e.message))
+                          }
+                        >
+                          回滚工具
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </details>
+              </section>
+            )}
             <section className="overflow-hidden rounded-xl border bg-card">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
                 <div className="flex gap-1">
@@ -533,7 +775,7 @@ export default function FlowsPage() {
                 </div>
                 {mode === "graph" && (
                   <div className="flex gap-1">
-                    {(["tool", "branch", "end"] as const).map((type) => (
+                    {(["tool", "transform", "branch", "parallel", "join", "end"] as const).map((type) => (
                       <Button key={type} size="sm" variant="outline" onClick={() => addNode(type)}>
                         <Plus className="size-3" />
                         {labels[type]}
@@ -564,9 +806,29 @@ export default function FlowsPage() {
                           current
                             ? {
                                 ...current,
-                                nodes: current.nodes.map((node) => {
+                                nodes: current.nodes.map((original) => {
+                                  const node =
+                                    original.type === "join"
+                                      ? {
+                                          ...original,
+                                          from: original.from?.filter(
+                                            (id) =>
+                                              !deleted.some(
+                                                (edge) => edge.source === id && edge.target === original.id,
+                                              ),
+                                          ),
+                                        }
+                                      : original;
                                   const edge = deleted.find((item) => item.source === node.id);
                                   if (!edge) return node;
+                                  if (node.type === "parallel")
+                                    return {
+                                      ...node,
+                                      branches: (node.branches ?? []).filter(
+                                        (target) =>
+                                          !deleted.some((item) => item.source === node.id && item.target === target),
+                                      ),
+                                    };
                                   if (node.type === "branch" && node.condition)
                                     return {
                                       ...node,
@@ -581,6 +843,7 @@ export default function FlowsPage() {
                             : current,
                         );
                       }}
+                      key={saved?.id ?? "new"}
                       fitView
                       minZoom={0.3}
                     >
@@ -593,25 +856,147 @@ export default function FlowsPage() {
                       <>
                         <div>
                           <div className="text-xs text-muted-foreground">{labels[active.type]}</div>
-                          <h2 className="font-mono text-sm font-semibold">{active.id}</h2>
+                          <label className="block space-y-1 text-xs">
+                            节点 ID
+                            <Input
+                              aria-label="节点 ID"
+                              key={active.id}
+                              defaultValue={active.id}
+                              className="font-mono"
+                              onBlur={(event) => {
+                                try {
+                                  const id = event.target.value.trim();
+                                  setDraft(renameFlowNode(draft, active.id, id));
+                                  setSelected(id);
+                                } catch (error) {
+                                  event.target.value = active.id;
+                                  setError((error as Error).message);
+                                }
+                              }}
+                            />
+                          </label>
                         </div>
+                        {(active.type === "parallel" || active.type === "join") && (
+                          <label className="block text-xs space-y-2">
+                            {active.type === "parallel"
+                              ? "并行分支入口 ID（逗号分隔）"
+                              : "等待的上游节点 ID（逗号分隔）"}
+                            <Input
+                              value={(active.type === "parallel" ? active.branches : active.from)?.join(",") ?? ""}
+                              onChange={(event) =>
+                                updateNode({
+                                  [active.type === "parallel" ? "branches" : "from"]: event.target.value
+                                    .split(",")
+                                    .map((s) => s.trim()),
+                                })
+                              }
+                              onBlur={() =>
+                                updateNode({
+                                  [active.type === "parallel" ? "branches" : "from"]:
+                                    (active.type === "parallel" ? active.branches : active.from)?.filter(Boolean) ?? [],
+                                })
+                              }
+                            />
+                          </label>
+                        )}
+                        {active.type === "transform" && (
+                          <>
+                            <label className="block text-xs">
+                              转换操作
+                              <select
+                                aria-label="转换操作"
+                                className="h-9 w-full rounded border bg-background"
+                                value={active.operation ?? "json.parse"}
+                                onChange={(event) => updateNode({ operation: event.target.value })}
+                              >
+                                {catalog?.operations.map((op) => (
+                                  <option key={op}>{op}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <JsonField
+                              key={`${active.id}-transform`}
+                              label="转换参数 JSON"
+                              value={active.arguments}
+                              onCommit={(value) => updateNode({ arguments: value as Record<string, unknown> })}
+                              onError={setError}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              text：文本；value：JSON 值；artifact：工件对象或 ID。结果引用 steps.节点ID.data。
+                            </p>
+                          </>
+                        )}
                         {active.type === "tool" && (
                           <>
+                            <a
+                              className="text-xs text-primary underline"
+                              href="/system/tools"
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              添加 command / shell 工具（如 nmap），返回后刷新目录
+                            </a>
+                            <Input
+                              aria-label="搜索节点工具"
+                              placeholder="搜索工具（例如 nmap）"
+                              value={toolQuery}
+                              onChange={(event) => setToolQuery(event.target.value)}
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                void flowAPI
+                                  .catalog()
+                                  .then((value) => {
+                                    setCatalog(value);
+                                    setNotice(`已刷新 ${value.tools.length} 个可调用工具`);
+                                  })
+                                  .catch((err) => setError(err.message))
+                              }
+                            >
+                              刷新工具目录
+                            </Button>
                             <label className="block space-y-1 text-xs">
                               工具
                               <select
                                 aria-label="节点工具"
                                 className="h-9 w-full rounded-md border bg-background px-2"
                                 value={active.tool ?? ""}
-                                onChange={(event) => updateNode({ tool: event.target.value })}
+                                onChange={(event) => {
+                                  const tool = catalog?.tools.find((item) => item.name === event.target.value);
+                                  updateNode({
+                                    tool: event.target.value,
+                                    arguments: tool?.input_schema
+                                      ? JSON.parse(exampleInput({ input_schema: tool.input_schema } as FlowDefinition))
+                                      : {},
+                                  });
+                                }}
                               >
-                                {catalog?.tools.map((item) => (
-                                  <option key={item.name} value={item.name}>
-                                    {item.name}
-                                  </option>
-                                ))}
+                                {catalog?.tools
+                                  .filter(
+                                    (item) =>
+                                      item.name === active.tool ||
+                                      `${item.name} ${item.description}`
+                                        .toLowerCase()
+                                        .includes(toolQuery.toLowerCase()),
+                                  )
+                                  .map((item) => (
+                                    <option key={item.name} value={item.name}>
+                                      {item.name}
+                                    </option>
+                                  ))}
                               </select>
                             </label>
+                            <p className="text-xs text-muted-foreground">
+                              {catalog?.tools.find((item) => item.name === active.tool)?.description}
+                            </p>
+                            <details className="text-xs">
+                              <summary>参数 Schema / 输入类型</summary>
+                              <pre className="max-h-52 overflow-auto whitespace-pre-wrap">
+                                {pretty(catalog?.tools.find((item) => item.name === active.tool)?.input_schema)}
+                              </pre>
+                            </details>
                             <JsonField
                               key={`${active.id}-args`}
                               label="工具参数 JSON"
@@ -679,7 +1064,7 @@ export default function FlowsPage() {
                             size="sm"
                             variant="outline"
                             onClick={() => {
-                              setDraft({ ...draft, nodes: draft.nodes.filter((node) => node.id !== active.id) });
+                              setDraft(removeFlowNodes(draft, [active.id]));
                               setSelected(draft.entry);
                             }}
                           >
@@ -710,6 +1095,12 @@ export default function FlowsPage() {
                         setRunID(event.target.value);
                       }}
                     >
+                      {runID && !runs.some((item) => item.id === runID) && (
+                        <option value={runID}>
+                          当前运行 · {run?.source === "inline" ? "临时" : run?.source === "tool" ? "工具调用" : "手动"}{" "}
+                          · {run?.status ?? "连接中"}
+                        </option>
+                      )}
                       {runs.map((item) => (
                         <option key={item.id} value={item.id}>
                           v{item.version} · {item.status} · {new Date(item.created_at).toLocaleTimeString()}
@@ -741,6 +1132,13 @@ export default function FlowsPage() {
                     <Play className="size-4" />
                     试运行
                   </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy || run?.status === "running"}
+                    onClick={() => void action("inline")}
+                  >
+                    临时运行
+                  </Button>
                   {run?.status === "running" && (
                     <Button
                       variant="outline"
@@ -752,7 +1150,7 @@ export default function FlowsPage() {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  试运行会保存并校验当前草稿。运行最长 5 分钟；模型和网络工具使用现有系统配置。
+                  试运行校验当前草稿，保存后执行；临时运行不增加工作流或工具。运行最长 5 分钟，所有过程落盘。
                 </p>
               </div>
               <div className="min-w-0 space-y-2">
@@ -761,17 +1159,41 @@ export default function FlowsPage() {
                     节点执行过程{" "}
                     {run && <span className="ml-2 font-mono text-xs text-muted-foreground">{run.status}</span>}
                   </h2>
-                  <span className="text-xs text-muted-foreground">{connection}</span>
+                  <div className="flex gap-2 items-center">
+                    <Button size="sm" variant="ghost" onClick={() => setShowNative((value) => !value)}>
+                      {showNative ? "显示节点过程" : `原生事件 (${events.length})`}
+                    </Button>
+                    <span className="text-xs text-muted-foreground">{connection}</span>
+                  </div>
                 </div>
                 <div
                   aria-label="节点执行日志"
                   className="h-44 overflow-auto rounded-lg border bg-muted/30 p-2 font-mono text-xs"
                 >
-                  {events.length ? (
-                    events.map((item) => (
+                  {visibleEvents.length ? (
+                    visibleEvents.map((item) => (
                       <div key={item.id} className="border-b border-border/40 py-1">
                         <span className="text-muted-foreground">{new Date(item.created_at).toLocaleTimeString()} </span>
-                        {item.author} · {item.object}
+                        {item.run_id !== runID && (
+                          <button
+                            className="text-primary underline"
+                            onClick={() => {
+                              setEvents([]);
+                              setRun(null);
+                              setRunID(item.run_id);
+                            }}
+                          >
+                            子流程 {item.run_id.slice(0, 8)} ·{" "}
+                          </button>
+                        )}
+                        <details>
+                          <summary>
+                            {showNative
+                              ? `${item.author} · ${item.object}`
+                              : `${item.author.replace(/^(node_|tool_)/, "")} · ${item.object === "graph.node.start" ? "开始" : item.object === "graph.node.complete" ? "完成" : "失败"}`}
+                          </summary>
+                          <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{pretty(item.payload ?? {})}</pre>
+                        </details>
                         {item.error && <span className="text-red-600"> {item.error}</span>}
                       </div>
                     ))
@@ -779,6 +1201,63 @@ export default function FlowsPage() {
                     <p className="p-3 text-muted-foreground">运行后在这里实时查看节点开始、完成或失败。</p>
                   )}
                 </div>
+                {run?.parent_run_id && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setEvents([]);
+                      setRun(null);
+                      setRunID(run.parent_run_id!);
+                    }}
+                  >
+                    返回父流程运行
+                  </Button>
+                )}
+                {run && (
+                  <details className="text-xs rounded border p-2">
+                    <summary>
+                      运行输入与冻结定义 · {run.source} · {run.agent_key || "手动"}
+                    </summary>
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap">
+                      {pretty({ input: run.input, definition: run.definition })}
+                    </pre>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const name = window.prompt("另存为工作流名称", `${run.definition.name}_copy`);
+                        if (name)
+                          void flowAPI
+                            .saveRun(run.id, name)
+                            .then((value) => {
+                              setRows((items) => [value, ...items]);
+                              openFlow(value);
+                              setNotice("已另存为草稿");
+                            })
+                            .catch((e) => setError(e.message));
+                      }}
+                    >
+                      另存为工作流
+                    </Button>
+                  </details>
+                )}
+                {artifacts.length > 0 && (
+                  <div className="rounded border p-2 text-xs space-y-1">
+                    <div>完整输出文件</div>
+                    {artifacts.map((artifact) => (
+                      <a
+                        key={artifact.id}
+                        className="block text-primary underline"
+                        href={sseUrl(`/api/flow-artifacts/${artifact.id}`)}
+                        download
+                      >
+                        {artifact.media_type || "文件"} · {artifact.size} 字节 · {artifact.complete ? "完整" : "不完整"}{" "}
+                        · {artifact.id.slice(0, 8)}
+                      </a>
+                    ))}
+                  </div>
+                )}
                 {run?.error && (
                   <p role="alert" className="text-sm text-red-600">
                     {run.error}

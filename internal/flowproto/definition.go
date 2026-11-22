@@ -1,5 +1,5 @@
-// Package flowproto experiments with compiling declarative flows into native
-// tRPC-Agent-Go graphs. It is not registered with the production tool catalog.
+// Package flowproto compiles declarative workflows into native tRPC-Agent-Go
+// graphs. The server exposes them as registered custom tools and inline runs.
 package flowproto
 
 import (
@@ -10,12 +10,14 @@ import (
 )
 
 type Definition struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Version     int            `json:"version"`
-	InputSchema map[string]any `json:"input_schema"`
-	Entry       string         `json:"entry"`
-	Nodes       []Node         `json:"nodes"`
+	SchemaVersion int            `json:"schema_version,omitempty"`
+	OutputSchema  map[string]any `json:"output_schema,omitempty"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	Version       int            `json:"version"`
+	InputSchema   map[string]any `json:"input_schema"`
+	Entry         string         `json:"entry"`
+	Nodes         []Node         `json:"nodes"`
 }
 
 type Position struct {
@@ -24,6 +26,9 @@ type Position struct {
 }
 
 type Node struct {
+	Branches  []string       `json:"branches,omitempty"`
+	From      []string       `json:"from,omitempty"`
+	Operation string         `json:"operation,omitempty"`
 	Position  *Position      `json:"position,omitempty"`
 	ID        string         `json:"id"`
 	Type      string         `json:"type"` // start, tool, branch, end
@@ -64,14 +69,38 @@ func (d Definition) validate(tools map[string]tool.CallableTool) error {
 		}
 		nodes[n.ID] = n
 		switch n.Type {
+		case "parallel":
+			if len(n.Branches) < 2 || n.Next != "" {
+				return fmt.Errorf("parallel %s requires at least two branches and no next", n.ID)
+			}
+		case "join":
+			if len(n.From) < 2 || n.Next == "" {
+				return fmt.Errorf("join %s requires from and next", n.ID)
+			}
 		case "start":
 			starts++
 			if n.Next == "" {
 				return fmt.Errorf("start %s requires next", n.ID)
 			}
-		case "tool":
-			if tools[n.Tool] == nil || tools[n.Tool].Declaration().Name != n.Tool {
+		case "tool", "transform":
+			if n.Type == "tool" && (tools[n.Tool] == nil || tools[n.Tool].Declaration().Name != n.Tool) {
 				return fmt.Errorf("node %s references unavailable tool %q", n.ID, n.Tool)
+			}
+			if n.Type == "transform" && !ValidOperation(n.Operation) {
+				return fmt.Errorf("unknown transform %q", n.Operation)
+			}
+			_, wholeReference := n.Arguments["$ref"]
+			if n.Type == "tool" && !(wholeReference && len(n.Arguments) == 1) {
+				if schema := tools[n.Tool].Declaration().InputSchema; schema != nil {
+					for _, key := range schema.Required {
+						if _, exists := n.Arguments[key]; !exists {
+							if property := schema.Properties[key]; property != nil && property.Default != nil && (property.Type == "string" || property.Type == "integer" || property.Type == "number" || property.Type == "boolean") {
+								continue
+							}
+							return fmt.Errorf("node %s missing required argument %s", n.ID, key)
+						}
+					}
+				}
 			}
 			if n.Next == "" {
 				return fmt.Errorf("tool %s requires next", n.ID)
@@ -108,7 +137,9 @@ func (d Definition) validate(tools map[string]tool.CallableTool) error {
 		}
 		visiting[id] = true
 		next := []string{}
-		if n.Type == "branch" {
+		if n.Type == "parallel" {
+			next = append(next, n.Branches...)
+		} else if n.Type == "branch" {
 			next = append(next, n.Condition.Then, n.Condition.Else)
 		} else if n.Type != "end" {
 			next = append(next, n.Next)
@@ -128,5 +159,21 @@ func (d Definition) validate(tools map[string]tool.CallableTool) error {
 	if len(visited) != len(nodes) {
 		return fmt.Errorf("flow contains unreachable nodes")
 	}
-	return nil
+	for _, n := range d.Nodes {
+		if n.Type == "join" {
+			seen := map[string]bool{}
+			for _, from := range n.From {
+				if seen[from] || nodes[from].Next != n.ID {
+					return fmt.Errorf("join %s has invalid predecessor %s", n.ID, from)
+				}
+				seen[from] = true
+			}
+			for _, other := range d.Nodes {
+				if other.Next == n.ID && !seen[other.ID] {
+					return fmt.Errorf("join %s missing predecessor %s", n.ID, other.ID)
+				}
+			}
+		}
+	}
+	return validateGraphReferences(d, nodes)
 }

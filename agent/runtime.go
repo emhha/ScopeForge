@@ -187,7 +187,9 @@ func (t *turn) Run(ctx context.Context, input string, settling bool) (<-chan *ev
 	if cfg.Knowledge != nil {
 		tools = append(tools, knowledgeSearchTool{knowledgetool.NewKnowledgeSearchTool(cfg.Knowledge).(tool.CallableTool)})
 	}
-	opts := []llmagent.Option{llmagent.WithModel(&usageModel{inner: cfg.Model, turn: t}), llmagent.WithInstruction(strings.Join(cfg.Instructions, "\n\n")), llmagent.WithTools(tools), llmagent.WithGenerationConfig(gen), llmagent.WithToolCallbacks(t.callbacks()), llmagent.WithMaxLLMCalls(maxCalls), llmagent.WithEnableParallelTools(false), llmagent.WithAddSessionSummary(true), llmagent.WithSyncSummaryIntraRun(true)}
+	callbacks := t.callbacks()
+	ctx = toolkit.WithCallHooks(ctx, callbacks)
+	opts := []llmagent.Option{llmagent.WithModel(&usageModel{inner: cfg.Model, turn: t}), llmagent.WithInstruction(strings.Join(cfg.Instructions, "\n\n")), llmagent.WithTools(tools), llmagent.WithGenerationConfig(gen), llmagent.WithToolCallbacks(callbacks), llmagent.WithMaxLLMCalls(maxCalls), llmagent.WithEnableParallelTools(false), llmagent.WithAddSessionSummary(true), llmagent.WithSyncSummaryIntraRun(true)}
 	opts = append(opts, cfg.AgentOptions...)
 	if cfg.Memory != nil {
 		opts = append(opts, llmagent.WithPreloadMemory(5))

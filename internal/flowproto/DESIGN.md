@@ -1,6 +1,6 @@
 # ScopeForge 工作流设计
 
-状态：待按阶段实现的完整设计。基线为 `experiment/graph-flow-tools` 分支 `8d647a3`。本文件不是上线完成说明。
+状态：分阶段设计记录。初始基线为 `experiment/graph-flow-tools` 分支 `8d647a3`；后续核心生命周期、统一目录、HTTP 工件和原生并行子图已实现，当前可用能力和操作方式以 [README.md](README.md) 为准。本文保留了 checkpoint、循环、Agent 节点等长期设计，不表示这些扩展已经接入。
 
 ## 1. 结论与目标
 

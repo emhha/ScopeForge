@@ -16,6 +16,7 @@ import (
 type Output struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"is_error,omitempty"`
+	Data    any    `json:"data,omitempty"`
 }
 
 func Text(s string) Output  { return Output{Text: s} }

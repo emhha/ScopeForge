@@ -119,7 +119,26 @@ func DecorateTool(t actool.CallableTool, desc string, schema map[string]any) act
 	if len(schema) == 0 {
 		schema = toolkit.SchemaMap(t.Declaration().InputSchema)
 	}
-	return &overriddenTool{CallableTool: t, desc: desc, schema: schema}
+	wrapped := &overriddenTool{CallableTool: t, desc: desc, schema: schema}
+	if stream, ok := t.(actool.StreamableTool); ok {
+		return &overriddenStreamTool{overriddenTool: wrapped, stream: stream}
+	}
+	return wrapped
+}
+
+type overriddenStreamTool struct {
+	*overriddenTool
+	stream actool.StreamableTool
+}
+
+func (o *overriddenStreamTool) StreamableCall(ctx context.Context, in []byte) (*actool.StreamReader, error) {
+	return o.stream.StreamableCall(ctx, injectDefaults(in, o.schema))
+}
+func (o *overriddenStreamTool) StructuredStreamErrors() bool {
+	if v, ok := o.stream.(interface{ StructuredStreamErrors() bool }); ok {
+		return v.StructuredStreamErrors()
+	}
+	return false
 }
 
 // overriddenTool is a CoreTool decorator: it embeds the original (so all behavioral

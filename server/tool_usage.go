@@ -29,10 +29,18 @@ func meterTool(t actool.CallableTool, recorder toolUsageRecorder, toolKey, agent
 	if recorder == nil {
 		return t
 	}
-	return &meteredTool{CallableTool: t, recorder: recorder, toolKey: toolKey, agentKey: agentKey, ri: ri}
+	wrapped := &meteredTool{CallableTool: t, recorder: recorder, toolKey: toolKey, agentKey: agentKey, ri: ri}
+	if stream, ok := t.(actool.StreamableTool); ok {
+		return &meteredStreamTool{meteredTool: wrapped, stream: stream}
+	}
+	return wrapped
 }
 
 func (m *meteredTool) Call(ctx context.Context, input []byte) (any, error) {
+	m.record()
+	return m.CallableTool.Call(ctx, input)
+}
+func (m *meteredTool) record() {
 	if err := m.recorder.InsertToolUsage(&db.ToolUsage{
 		ToolKey:       m.toolKey,
 		AgentKey:      m.agentKey,
@@ -43,5 +51,20 @@ func (m *meteredTool) Call(ctx context.Context, input []byte) (any, error) {
 	}); err != nil {
 		log.Printf("[toolusage] insert %s: %v", m.toolKey, err)
 	}
-	return m.CallableTool.Call(ctx, input)
+}
+
+type meteredStreamTool struct {
+	*meteredTool
+	stream actool.StreamableTool
+}
+
+func (m *meteredStreamTool) StreamableCall(ctx context.Context, input []byte) (*actool.StreamReader, error) {
+	m.record()
+	return m.stream.StreamableCall(ctx, input)
+}
+func (m *meteredStreamTool) StructuredStreamErrors() bool {
+	if v, ok := m.stream.(interface{ StructuredStreamErrors() bool }); ok {
+		return v.StructuredStreamErrors()
+	}
+	return false
 }

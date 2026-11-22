@@ -19,14 +19,20 @@ CREATE TABLE IF NOT EXISTS flows (
 );
 CREATE TABLE IF NOT EXISTS flow_runs (
  id TEXT PRIMARY KEY,
- flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE RESTRICT,
+ flow_id INTEGER REFERENCES flows(id) ON DELETE RESTRICT,
  definition TEXT NOT NULL CHECK(json_valid(definition)),
  status TEXT NOT NULL,
  input TEXT NOT NULL CHECK(json_valid(input)),
  result TEXT NOT NULL DEFAULT '',
  error TEXT NOT NULL DEFAULT '',
  created_at TIMESTAMP NOT NULL DEFAULT (utc_now()),
- completed_at TIMESTAMP
+ completed_at TIMESTAMP,
+ source TEXT NOT NULL DEFAULT 'manual',
+ agent_key TEXT NOT NULL DEFAULT '',
+ session_id TEXT NOT NULL DEFAULT '',
+ task_id INTEGER NOT NULL DEFAULT 0,
+ parent_run_id TEXT NOT NULL DEFAULT '',
+ version_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS flow_run_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,6 +40,7 @@ CREATE TABLE IF NOT EXISTS flow_run_events (
  object TEXT NOT NULL,
  author TEXT NOT NULL,
  error TEXT NOT NULL DEFAULT '',
+ payload TEXT NOT NULL DEFAULT '{}',
  created_at TIMESTAMP NOT NULL DEFAULT (utc_now())
 );
 CREATE INDEX IF NOT EXISTS idx_flow_run_events ON flow_run_events(run_id,id);
@@ -53,7 +60,7 @@ type Flow struct {
 var ErrFlowConflict = errors.New("flow was changed; reload before saving")
 
 func (d *DB) ListFlows() ([]Flow, error) {
-	rows, err := d.Query(`SELECT id,name,definition,COALESCE(published,'null'),revision,agents,updated_at FROM flows ORDER BY updated_at DESC,id DESC`)
+	rows, err := d.Query(`SELECT id,name,definition,COALESCE(published,'null'),revision,COALESCE((SELECT agents FROM tools WHERE kind='workflow' AND json_extract(exec,'$.flow_id')=flows.id LIMIT 1),agents),updated_at FROM flows ORDER BY updated_at DESC,id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +82,7 @@ func (d *DB) ListFlows() ([]Flow, error) {
 func (d *DB) GetFlow(id int64) (*Flow, error) {
 	var f Flow
 	var agents string
-	err := d.QueryRow(`SELECT id,name,definition,COALESCE(published,'null'),revision,agents,updated_at FROM flows WHERE id=?1`, id).Scan(&f.ID, &f.Name, &f.Definition, &f.Published, &f.Revision, &agents, &f.UpdatedAt)
+	err := d.QueryRow(`SELECT id,name,definition,COALESCE(published,'null'),revision,COALESCE((SELECT agents FROM tools WHERE kind='workflow' AND json_extract(exec,'$.flow_id')=flows.id LIMIT 1),agents),updated_at FROM flows WHERE id=?1`, id).Scan(&f.ID, &f.Name, &f.Definition, &f.Published, &f.Revision, &agents, &f.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +126,12 @@ func (d *DB) PublishFlow(id int64, revision int, definition json.RawMessage, age
 }
 
 type FlowRun struct {
+	SessionID   string          `json:"session_id"`
+	Source      string          `json:"source"`
+	AgentKey    string          `json:"agent_key"`
+	TaskID      int64           `json:"task_id"`
+	ParentRunID string          `json:"parent_run_id"`
+	VersionID   int64           `json:"version_id"`
 	ID          string          `json:"id"`
 	FlowID      int64           `json:"flow_id"`
 	Definition  json.RawMessage `json:"definition"`
@@ -130,21 +143,22 @@ type FlowRun struct {
 	CompletedAt *time.Time      `json:"completed_at,omitempty"`
 }
 type FlowRunEvent struct {
-	ID        int64     `json:"id"`
-	RunID     string    `json:"run_id"`
-	Object    string    `json:"object"`
-	Author    string    `json:"author"`
-	Error     string    `json:"error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Payload   json.RawMessage `json:"payload"`
+	ID        int64           `json:"id"`
+	RunID     string          `json:"run_id"`
+	Object    string          `json:"object"`
+	Author    string          `json:"author"`
+	Error     string          `json:"error,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 func (d *DB) CreateFlowRun(id string, flowID int64, definition, input json.RawMessage) error {
-	_, err := d.Exec(`INSERT INTO flow_runs(id,flow_id,definition,status,input) VALUES(?1,?2,?3,'running',?4)`, id, flowID, definition, input)
+	_, err := d.Exec(`INSERT INTO flow_runs(id,flow_id,definition,status,input) VALUES(?1,NULLIF(?2,0),?3,'running',?4)`, id, flowID, definition, input)
 	return err
 }
 func (d *DB) GetFlowRun(id string) (*FlowRun, error) {
 	var r FlowRun
-	err := d.QueryRow(`SELECT id,flow_id,definition,status,input,result,error,created_at,completed_at FROM flow_runs WHERE id=?1`, id).Scan(&r.ID, &r.FlowID, &r.Definition, &r.Status, &r.Input, &r.Result, &r.Error, &r.CreatedAt, &r.CompletedAt)
+	err := d.QueryRow(`SELECT id,COALESCE(flow_id,0),definition,status,input,result,error,created_at,completed_at,source,agent_key,task_id,parent_run_id,COALESCE(version_id,0),session_id FROM flow_runs WHERE id=?1`, id).Scan(&r.ID, &r.FlowID, &r.Definition, &r.Status, &r.Input, &r.Result, &r.Error, &r.CreatedAt, &r.CompletedAt, &r.Source, &r.AgentKey, &r.TaskID, &r.ParentRunID, &r.VersionID, &r.SessionID)
 	return &r, err
 }
 func (d *DB) FinishFlowRun(id, status, result, message string) error {
@@ -159,7 +173,7 @@ func (d *DB) AppendFlowEvent(run, object, author, message string) error {
 	return err
 }
 func (d *DB) FlowEvents(run string, since int64) ([]FlowRunEvent, error) {
-	rows, err := d.Query(`SELECT id,run_id,object,author,error,created_at FROM flow_run_events WHERE run_id=?1 AND id>?2 ORDER BY id LIMIT 500`, run, since)
+	rows, err := d.Query(`SELECT id,run_id,object,author,error,created_at,payload FROM flow_run_events WHERE run_id=?1 AND id>?2 ORDER BY id LIMIT 500`, run, since)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +181,7 @@ func (d *DB) FlowEvents(run string, since int64) ([]FlowRunEvent, error) {
 	events := []FlowRunEvent{}
 	for rows.Next() {
 		var e FlowRunEvent
-		if err := rows.Scan(&e.ID, &e.RunID, &e.Object, &e.Author, &e.Error, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.RunID, &e.Object, &e.Author, &e.Error, &e.CreatedAt, &e.Payload); err != nil {
 			return nil, err
 		}
 		events = append(events, e)

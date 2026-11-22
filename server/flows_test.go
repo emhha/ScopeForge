@@ -119,7 +119,7 @@ func TestFlowEditorPublishRunAndReplay(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.flowTools(ctx, "auto", nil)) != 0 {
+	if len(onlyPublishedFlows(s.flowTools(ctx, "auto", nil))) != 0 {
 		t.Fatal("draft exposed as tool")
 	}
 	path := fmt.Sprintf("/api/flows/%d", saved.ID)
@@ -127,11 +127,11 @@ func TestFlowEditorPublishRunAndReplay(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatal(rec.Body.String())
 	}
-	tools := s.flowTools(ctx, "auto", nil)
+	tools := onlyPublishedFlows(s.flowTools(ctx, "auto", nil))
 	if len(tools) != 1 || tools[0].Declaration().Name != "flow_assessment" {
 		t.Fatalf("published tool missing: %+v", tools)
 	}
-	if len(s.flowTools(ctx, "worker", nil)) != 0 {
+	if len(onlyPublishedFlows(s.flowTools(ctx, "worker", nil))) != 0 {
 		t.Fatal("published tool leaked to unbound worker")
 	}
 	result, err := tools[0].Call(ctx, []byte(`{"target":"https://example.test"}`))
@@ -164,7 +164,7 @@ func TestFlowEditorPublishRunAndReplay(t *testing.T) {
 	if rec.Code != 409 {
 		t.Fatal("stale publication was accepted")
 	}
-	tools = s.flowTools(ctx, "auto", nil)
+	tools = onlyPublishedFlows(s.flowTools(ctx, "auto", nil))
 	result, err = tools[0].Call(ctx, []byte(`{"target":"https://example.test"}`))
 	if err != nil || !strings.Contains(toolkit.TextOf(result), "accepted") {
 		t.Fatalf("draft modified publication: %v %v", result, err)
@@ -234,7 +234,17 @@ func TestFlowCannotPublishUnavailableDependenciesToAgent(t *testing.T) {
 	previous := agent.ToolResolve
 	agent.ToolResolve = nil
 	defer func() { agent.ToolResolve = previous }()
-	if len(s.flowTools(ctx, "auto", nil)) != 0 {
+	if len(onlyPublishedFlows(s.flowTools(ctx, "auto", nil))) != 0 {
 		t.Fatal("flow bypassed missing dependency permission")
 	}
+}
+
+func onlyPublishedFlows(items []actool.CallableTool) []actool.CallableTool {
+	out := []actool.CallableTool{}
+	for _, item := range items {
+		if strings.HasPrefix(item.Declaration().Name, "flow_") {
+			out = append(out, item)
+		}
+	}
+	return out
 }

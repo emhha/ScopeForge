@@ -2,6 +2,7 @@ package flowproto
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/graph"
@@ -45,11 +46,25 @@ func resolve(value any, state graph.State) (any, error) {
 
 func lookup(path string, state graph.State) (any, error) {
 	parts := strings.Split(path, ".")
+	if strings.HasPrefix(path, "#/") {
+		parts = strings.Split(strings.TrimPrefix(path, "#/"), "/")
+		for i := range parts {
+			parts[i] = strings.ReplaceAll(strings.ReplaceAll(parts[i], "~1", "/"), "~0", "~")
+		}
+	}
 	if len(parts) < 1 || (parts[0] != "input" && parts[0] != "steps") {
 		return nil, fmt.Errorf("reference must start with input or steps: %s", path)
 	}
 	var current any = state["flow_"+parts[0]]
 	for _, key := range parts[1:] {
+		if array, ok := current.([]any); ok {
+			i, err := strconv.Atoi(key)
+			if err != nil || i < 0 || i >= len(array) {
+				return nil, fmt.Errorf("invalid array reference %s", path)
+			}
+			current = array[i]
+			continue
+		}
 		object, ok := current.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("reference is not an object: %s", path)

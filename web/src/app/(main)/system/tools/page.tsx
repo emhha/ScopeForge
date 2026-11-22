@@ -172,7 +172,7 @@ function ToolEditor({
     try {
       await api.saveTool(tool.key, {
         description,
-        schema: applyRows(tool.schema, rows),
+        schema: tool.kind === "workflow" ? tool.schema : applyRows(tool.schema, rows),
         agents: bound,
         enabled,
       });
@@ -243,7 +243,7 @@ function ToolEditor({
         </div>
 
         {/* params */}
-        <div className="grid gap-2">
+        <div className={tool.kind === "workflow" ? "hidden" : "grid gap-2"}>
           <Label className="text-muted-foreground text-xs">
             参数（名称 / 类型 / 必填只读；描述与默认值可改）
           </Label>
@@ -296,12 +296,18 @@ function ToolEditor({
         </div>
       </div>
 
+      {tool.kind === "workflow" && (
+        <div className="p-4 text-sm space-y-2">
+          <p>工作流参数由发布版本固定，在工作流页面编辑并重新发布。</p>
+          <a className="text-primary underline" href={`/function/flows?id=${tool.exec?.flow_id}`}>编辑工作流 · 查看版本与运行记录</a>
+        </div>
+      )}
       <Separator className="mt-4" />
       <div className="flex flex-wrap gap-2 p-4">
         <Button size="sm" onClick={save} disabled={saving}>
           <SaveIcon /> 保存
         </Button>
-        <Button size="sm" variant="outline" onClick={reset}>
+        <Button size="sm" variant="outline" onClick={reset} disabled={tool.kind === "workflow"}>
           <RotateCcwIcon /> 恢复默认
         </Button>
       </div>
@@ -396,7 +402,7 @@ export default function ToolsPage() {
   const allSystemCount = tools.filter((t) => t.system).length;
   const allCustomCount = tools.filter((t) => !t.system).length;
   // clicking a built-in tool opens the binding drawer; a custom tool opens its full editor.
-  const openTool = (t: Tool) => (t.system ? setSelectedKey(t.key) : setCustomEdit(t));
+  const openTool = (t: Tool) => (t.system || t.kind === "workflow" ? setSelectedKey(t.key) : setCustomEdit(t));
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
