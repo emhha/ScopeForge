@@ -65,7 +65,36 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CallableTo
 }
 
 // guardPanic reports a domain tool panic as an ordinary tool result with diagnostics.
-func guardPanic(t actool.CallableTool) actool.CallableTool { return &guardedTool{CallableTool: t} }
+func guardPanic(t actool.CallableTool) actool.CallableTool {
+	guarded := &guardedTool{CallableTool: t}
+	if stream, ok := t.(actool.StreamableTool); ok {
+		return &guardedStreamTool{guardedTool: guarded, stream: stream}
+	}
+	return guarded
+}
+
+// Preserve native AgentTool streaming when adding the platform panic guard.
+type guardedStreamTool struct {
+	*guardedTool
+	stream actool.StreamableTool
+}
+
+func (g *guardedStreamTool) StreamableCall(ctx context.Context, in []byte) (reader *actool.StreamReader, err error) {
+	defer func() {
+		if cause := recover(); cause != nil {
+			log.Printf("[tools] %s stream panic: %v\n%s", g.Declaration().Name, cause, debug.Stack())
+			reader = nil
+			err = fmt.Errorf("工具 %s 流式执行异常：%v", g.Declaration().Name, cause)
+		}
+	}()
+	return g.stream.StreamableCall(ctx, in)
+}
+func (g *guardedStreamTool) StructuredStreamErrors() bool {
+	if structured, ok := g.stream.(interface{ StructuredStreamErrors() bool }); ok {
+		return structured.StructuredStreamErrors()
+	}
+	return false
+}
 
 type guardedTool struct{ actool.CallableTool }
 

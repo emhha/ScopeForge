@@ -119,7 +119,10 @@ func Compile(def Definition, tools map[string]tool.CallableTool) (*Compiled, err
 				}
 				var result any
 				if err := json.Unmarshal([]byte(raw), &result); err != nil {
-					return nil, fmt.Errorf("node %s requires JSON tool output: %w", n.ID, err)
+					// Native result-message formatters may expose HTTP previews
+					// as plain text. Preserve that content under the same text
+					// field used by toolkit.Output; never infer new evidence.
+					result = map[string]any{"text": raw}
 				}
 				steps, _ := state["flow_steps"].(map[string]any)
 				next := maps.Clone(steps)

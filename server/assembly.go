@@ -28,7 +28,7 @@ import (
 // hostTools, if set, returns runtime host tools (currently the traffic tools when
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
-func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CallableTool, map[string][]string), memories *learning.Memories, kb *learning.Knowledge) {
+func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CallableTool, map[string][]string), memories *learning.Memories, kb *learning.Knowledge, flows ...func(context.Context, string, []actool.CallableTool) []actool.CallableTool) {
 	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CallableTool, agent.AugmentInfo, func()) {
 		role, err := pg.GetAgentByKey(agentKey)
 		if err != nil || role == nil {
@@ -111,6 +111,9 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cal
 		if hostTools != nil {
 			tools, _ := hostTools()
 			extra = append(extra, tools...)
+		}
+		if len(flows) > 0 {
+			extra = append(extra, flows[0](ctx, agentKey, extra)...)
 		}
 		callbacks := actool.NewCallbacks().RegisterAfterTool(func(ctx context.Context, args *actool.AfterToolArgs) (*actool.AfterToolResult, error) {
 			recordNativeSkill(ctx, pg, agentKey, &actool.BeforeToolArgs{ToolName: args.ToolName, Arguments: args.Arguments}, args.Error == nil)

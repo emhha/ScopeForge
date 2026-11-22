@@ -14,6 +14,7 @@ const Login = lazy(() => import("./app/(auth)/login/page"));
 const Setup = lazy(() => import("./app/(auth)/setup/page"));
 const PageChat = lazy(() => import("./app/(main)/chat/page"));
 const PageDashboard = lazy(() => import("./app/(main)/dashboard/page"));
+const PageFunctionFlows = lazy(() => import("./app/(main)/function/flows/page"));
 const PageFunctionAssets = lazy(() => import("./app/(main)/function/assets/page"));
 const PageFunctionCommands = lazy(() => import("./app/(main)/function/commands/page"));
 const PageFunctionSync = lazy(() => import("./app/(main)/function/sync/page"));
@@ -71,6 +72,7 @@ export function App() {
               >
                 <Route path="/chat" element={<PageChat />} />
                 <Route path="/dashboard" element={<PageDashboard />} />
+                <Route path="/function/flows" element={<PageFunctionFlows />} />
                 <Route path="/function/assets" element={<PageFunctionAssets />} />
                 <Route path="/function/commands" element={<PageFunctionCommands />} />
                 <Route path="/function/sync" element={<PageFunctionSync />} />

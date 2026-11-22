@@ -117,6 +117,7 @@ type Server struct {
 	archiveWake chan struct{}
 	archiveWG   sync.WaitGroup
 	side        *sideQuestionState
+	flowCancels sync.Map
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -228,7 +229,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return a.TaskTimeoutWrapupMaxTurns, true
 		}
-		wireAgentAugment(m.pg, s.skillDir, s.hostTools, m.memories, m.knowledge)
+		wireAgentAugment(m.pg, s.skillDir, s.hostTools, m.memories, m.knowledge, s.flowTools)
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
@@ -660,6 +661,7 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerFlowRoutes(mux)
 	s.registerNetworkRoutes(mux)
 	s.registerSideRoutes(mux)
 

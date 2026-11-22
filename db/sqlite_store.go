@@ -213,7 +213,7 @@ func openSQLite(path string) (*DB, error) {
 	return d, nil
 }
 
-const sqliteSchemaVersion = 8
+const sqliteSchemaVersion = 9
 
 const activityMessageIndexes = `-- Message revisions share an identity while activity.id remains the SSE cursor.
 CREATE INDEX IF NOT EXISTS idx_activity_message_revision ON activity (exploration_id, json_extract(metadata,'$.message.id'), id);
@@ -248,7 +248,7 @@ func initializeSQLite(writer *sql.DB) error {
 		if tables != 0 {
 			return errors.New("refusing to initialize an unrecognized nonempty SQLite database")
 		}
-		if _, err = tx.Exec(schemaSQL + knowledgeImportsSchema + activityMessageIndexes); err != nil {
+		if _, err = tx.Exec(schemaSQL + knowledgeImportsSchema + activityMessageIndexes + flowSchema); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(fmt.Sprintf(`PRAGMA application_id=%d`, sqliteApplicationID)); err != nil {
@@ -357,6 +357,11 @@ PRAGMA user_version=4`); err != nil {
 	}
 	if version < 8 {
 		if _, err = tx.Exec(activityMessageIndexes + `PRAGMA user_version=8`); err != nil {
+			return err
+		}
+	}
+	if version < 9 {
+		if _, err = tx.Exec(flowSchema + `PRAGMA user_version=9`); err != nil {
 			return err
 		}
 	}

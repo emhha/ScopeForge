@@ -18,7 +18,13 @@ type Definition struct {
 	Nodes       []Node         `json:"nodes"`
 }
 
+type Position struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
 type Node struct {
+	Position  *Position      `json:"position,omitempty"`
 	ID        string         `json:"id"`
 	Type      string         `json:"type"` // start, tool, branch, end
 	Tool      string         `json:"tool,omitempty"`
