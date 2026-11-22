@@ -61,6 +61,28 @@ function NodeCard({ data, selected }: NodeProps) {
 }
 const nodeTypes = { flow: NodeCard };
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
+function exampleInput(def: FlowDefinition) {
+  const properties = (def.input_schema.properties ?? {}) as Record<string, { default?: unknown; type?: string }>;
+  return pretty(
+    Object.fromEntries(
+      Object.entries(properties).map(([key, schema]) => [
+        key,
+        schema.default ??
+          (schema.type === "string"
+            ? key === "domain"
+              ? "example.com"
+              : "https://example.test"
+            : schema.type === "array"
+              ? []
+              : schema.type === "number" || schema.type === "integer"
+                ? 0
+                : schema.type === "boolean"
+                  ? false
+                  : {}),
+      ]),
+    ),
+  );
+}
 function JsonField({
   label,
   value,
@@ -128,6 +150,7 @@ export default function FlowsPage() {
         const initial = items[0];
         setSaved(initial ?? null);
         setDraft(initial?.definition ?? c.example);
+        setInput(exampleInput(initial?.definition ?? c.example));
         if (initial?.agents.length) setBindings(initial.agents.join(","));
       })
       .catch((err) => {
@@ -378,6 +401,7 @@ export default function FlowsPage() {
       (catalog ? { ...structuredClone(catalog.example), name: `assessment_${Date.now().toString(36)}` } : undefined);
     setSaved(value ?? null);
     setDraft(def);
+    if (def) setInput(exampleInput(def));
     setSelected(def?.entry ?? "");
     setMode("graph");
     setError("");

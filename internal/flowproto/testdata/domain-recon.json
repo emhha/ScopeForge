@@ -1,0 +1,21 @@
+{
+  "name": "domain_recon",
+  "description": "输入域名，依次执行 subfinder 与 amass，被动枚举结果合并去重后交给 ProjectDiscovery httpx 探活，再用 EHole 3.x 识别指纹，返回子域名、存活 URL 和原始指纹 JSON。需要环境中安装对应 CLI。",
+  "version": 1,
+  "input_schema": {
+    "type": "object",
+    "required": ["domain"],
+    "additionalProperties": false,
+    "properties": {"domain": {"type": "string", "description": "根域名，例如 example.com，不含协议或路径", "default": "example.com"}}
+  },
+  "entry": "begin",
+  "nodes": [
+    {"id":"begin","type":"start","next":"subfinder","position":{"x":0,"y":100}},
+    {"id":"subfinder","type":"tool","tool":"subfinder","arguments":{"domain":{"$ref":"input.domain"}},"next":"amass","position":{"x":230,"y":100}},
+    {"id":"amass","type":"tool","tool":"amass","arguments":{"domain":{"$ref":"input.domain"}},"next":"merge","position":{"x":460,"y":100}},
+    {"id":"merge","type":"tool","tool":"merge_subdomains","arguments":{"domain":{"$ref":"input.domain"},"lists":[{"$ref":"steps.subfinder.subdomains"},{"$ref":"steps.amass.subdomains"}]},"next":"httpx","position":{"x":690,"y":100}},
+    {"id":"httpx","type":"tool","tool":"httpx","arguments":{"hosts":{"$ref":"steps.merge.subdomains"}},"next":"ehole","position":{"x":920,"y":100}},
+    {"id":"ehole","type":"tool","tool":"ehole","arguments":{"urls":{"$ref":"steps.httpx.urls"}},"next":"result","position":{"x":1150,"y":100}},
+    {"id":"result","type":"end","output":{"domain":{"$ref":"input.domain"},"subdomains":{"$ref":"steps.merge.subdomains"},"urls":{"$ref":"steps.httpx.urls"},"fingerprints":{"$ref":"steps.ehole.fingerprints"}},"position":{"x":1380,"y":100}}
+  ]
+}

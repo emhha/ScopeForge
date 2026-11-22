@@ -52,3 +52,13 @@
 5. 运行记录、输入、最终结果与原生节点事件保存于 SQLite，刷新后可从运行记录重新查看。SSE 使用事件 ID 断线补读；HTTP 初始状态不能覆盖已收到的 SSE 终态。
 
 SQLite schema v9 增加 flows、flow_runs、flow_run_events 表，旧数据通过启动迁移保留。前端没有独立执行器，所有运行请求交给后端的原生 GraphAgent/AgentTool。
+
+## 域名枚举与指纹流程
+
+[domain-recon.json](testdata/domain-recon.json) 接受 `{"domain":"example.com"}`，顺序执行 subfinder、amass、合并去重、httpx、ehole，最后返回 `domain / subdomains / urls / fingerprints`。这是原生工具节点，不需要模型生成或拼接命令。
+
+CLI 适配位于 `internal/flowcli`，通过项目已有 `agent.ExecuteCommand`（原生 hostexec）执行固定命令，使用独立临时输入输出文件传递完整数据；不是另一个 shell 执行器。发布给 Agent 的 CLI Flow 要求该 Agent 拥有启用的 Bash 权限。试运行是管理员显式操作。空枚举结果继续传递空数组，不向后续程序传空输入以免误用 stdin。
+
+约定已安装并配置 [subfinder](https://docs.projectdiscovery.io/opensource/subfinder/usage)、[Amass enum -passive](https://github.com/owasp-amass/amass/wiki/User-Guide)、[ProjectDiscovery httpx](https://docs.projectdiscovery.io/opensource/httpx/usage) 和 [EHole 3.x finger](https://github.com/EdgeSecurityTeam/EHole/blob/main/cmd/finger.go)。EHole 使用 `ehole finger -l input.txt -o output.json`，保留默认规则和原始 JSON；上游成功扫描也会退出 1，仅在实际产出有效 JSON 文件时接受该特殊退出码。其他 CLI 大版本需要按对应命令接口另行适配。
+
+已发布 Flow 当前保存在 flows 表，并在 Agent 运行时动态注入；「系统 → 工具」页面只展示 tools 表，因此暂不列出 `flow_<name>`。应在「功能 → 工作流」查看发布版本和绑定关系。

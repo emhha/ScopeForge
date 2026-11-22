@@ -14,6 +14,7 @@ import (
 
 	"github.com/emhha/scopeforge/agent"
 	"github.com/emhha/scopeforge/db"
+	"github.com/emhha/scopeforge/internal/flowcli"
 	"github.com/emhha/scopeforge/internal/flowproto"
 	"github.com/emhha/scopeforge/toolkit"
 	"github.com/google/uuid"
@@ -53,12 +54,16 @@ func (s *Server) flowPool() map[string]actool.CallableTool {
 	for _, item := range s.networkTools() {
 		out[item.Declaration().Name] = item
 	}
+	for _, item := range flowcli.Tools(agent.ExecuteCommand) {
+		out[item.Declaration().Name] = item
+	}
 	return out
 }
 func (s *Server) flowCatalog(w http.ResponseWriter, r *http.Request) {
 	tools := []*actool.Declaration{}
-	for _, name := range []string{"inspect", "http_request", "search_mapping", "list_recon_sources"} {
-		if item := s.flowPool()[name]; item != nil {
+	pool := s.flowPool()
+	for _, name := range []string{"inspect", "http_request", "search_mapping", "list_recon_sources", "subfinder", "amass", "merge_subdomains", "httpx", "ehole"} {
+		if item := pool[name]; item != nil {
 			tools = append(tools, item.Declaration())
 		}
 	}
@@ -352,6 +357,14 @@ func (s *Server) flowTools(ctx context.Context, key string, pool []actool.Callab
 	}
 	deps := map[string]actool.CallableTool{"inspect": flowInspect()}
 	palette := s.flowPool()
+	deps["merge_subdomains"] = palette["merge_subdomains"]
+	// These fixed CLI adapters share the native host executor with Bash.
+	// An agent without the Bash capability must not gain it via a Flow.
+	if bash, err := s.m.pg.GetTool("Bash"); err == nil && (bash == nil || (bash.Enabled && contains(bash.Agents, key))) {
+		for _, name := range []string{"subfinder", "amass", "httpx", "ehole"} {
+			deps[name] = palette[name]
+		}
+	}
 	for _, item := range allowed {
 		if palette[item.Declaration().Name] != nil {
 			deps[item.Declaration().Name] = item
