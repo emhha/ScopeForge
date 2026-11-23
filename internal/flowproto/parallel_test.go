@@ -114,3 +114,84 @@ func TestRejectFutureStepReference(t *testing.T) {
 		t.Fatalf("future result reference accepted: %v", err)
 	}
 }
+
+func parallelFixture() Definition {
+	return Definition{Name: "parallel_domain", Version: 1, InputSchema: map[string]any{"type": "object"}, Entry: "begin", Nodes: []Node{
+		{ID: "begin", Type: "start", Next: "fork"}, {ID: "fork", Type: "parallel", Branches: []string{"left", "right"}},
+		{ID: "left", Type: "transform", Operation: "lines", Arguments: map[string]any{"text": "left"}, Next: "join"},
+		{ID: "right", Type: "transform", Operation: "lines", Arguments: map[string]any{"text": "right"}, Next: "join"},
+		{ID: "join", Type: "join", From: []string{"left", "right"}, Next: "end"},
+		{ID: "end", Type: "end", Output: "done"},
+	}}
+}
+
+func TestParallelRequiresExplicitSynchronizedConvergence(t *testing.T) {
+	for _, mode := range []string{"duplicate", "no_join", "early_end", "shared_command"} {
+		t.Run(mode, func(t *testing.T) {
+			def := parallelFixture()
+			switch mode {
+			case "duplicate":
+				def.Nodes[1].Branches = []string{"left", "left", "right"}
+			case "no_join":
+				def.Nodes[2].Next, def.Nodes[3].Next = "end", "end"
+				def.Nodes = append(def.Nodes[:4], def.Nodes[5])
+			case "early_end":
+				def.Nodes[3].Type, def.Nodes[3].Next = "branch", ""
+				def.Nodes[3].Condition = &Condition{Ref: "input.domain", Then: "right_done", Else: "end"}
+				def.Nodes = append(def.Nodes, Node{ID: "right_done", Type: "transform", Operation: "lines", Next: "join"})
+				def.Nodes[4].From = []string{"left", "right_done"}
+			case "shared_command":
+				def.Nodes[1].Branches = []string{"left", "middle", "right"}
+				def.Nodes = append(def.Nodes, Node{ID: "middle", Type: "transform", Operation: "lines", Next: "left"})
+			}
+			if _, err := Compile(def, nil); err == nil {
+				t.Fatal("unsafe parallel graph accepted")
+			}
+		})
+	}
+}
+
+func TestNestedParallelJoinsAreSupported(t *testing.T) {
+	def := parallelFixture()
+	def.Nodes[2].Next = "inner"
+	def.Nodes[4].From = []string{"inner_join", "right"}
+	def.Nodes = append(def.Nodes,
+		Node{ID: "inner", Type: "parallel", Branches: []string{"a", "b"}},
+		Node{ID: "a", Type: "transform", Operation: "lines", Arguments: map[string]any{"text": "a"}, Next: "inner_join"},
+		Node{ID: "b", Type: "transform", Operation: "lines", Arguments: map[string]any{"text": "b"}, Next: "inner_join"},
+		Node{ID: "inner_join", Type: "join", From: []string{"a", "b"}, Next: "join"},
+	)
+	compiled, err := Compile(def, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := compiled.Tool.Call(ctx, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParallelBranchCanContainConditionalMerge(t *testing.T) {
+	def := parallelFixture()
+	def.Nodes[2].Next = "choose"
+	def.Nodes[4].From = []string{"merge", "right"}
+	def.Nodes = append(def.Nodes,
+		Node{ID: "choose", Type: "branch", Condition: &Condition{Ref: "input.domain", Equals: "left", Then: "a", Else: "b"}},
+		Node{ID: "a", Type: "transform", Operation: "lines", Arguments: map[string]any{"text": "a"}, Next: "merge"},
+		Node{ID: "b", Type: "transform", Operation: "lines", Arguments: map[string]any{"text": "b"}, Next: "merge"},
+		Node{ID: "merge", Type: "transform", Operation: "lines", Arguments: map[string]any{"text": "merged"}, Next: "join"},
+	)
+	compiled, err := Compile(def, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{`{"domain":"left"}`, `{"domain":"right"}`} {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		_, err := compiled.Tool.Call(ctx, []byte(input))
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}

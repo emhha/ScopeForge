@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/emhha/scopeforge/db"
 	"github.com/emhha/scopeforge/internal/modeltest"
@@ -35,7 +37,22 @@ func TestNativeToolWritesRecordExactProvenanceWithReusedCallIDs(t *testing.T) {
 		return modeltest.Responses(modeltest.Final("done")), nil
 	})
 	var records []db.Activity
-	_, _, err = captureRun(t.Context(), RunConfig{Model: provider, Tools: []tool.CallableTool{ts.recordFact()}, DisableHostTools: true, MaxTurns: 4}, "record twice", func(a db.Activity) {
+	secondDone := make(chan struct{})
+	var completed atomic.Int32
+	hooks := tool.NewCallbacks().RegisterAfterTool(func(context.Context, *tool.AfterToolArgs) (*tool.AfterToolResult, error) {
+		if completed.Add(1) == 2 {
+			close(secondDone)
+		}
+		return nil, nil
+	})
+	_, _, err = captureRun(t.Context(), RunConfig{Model: provider, Tools: []tool.CallableTool{ts.recordFact()}, Hooks: hooks, DisableHostTools: true, MaxTurns: 4}, "record twice", func(a db.Activity) {
+		if a.Kind == "tool_use" {
+			select {
+			case <-secondDone:
+			case <-time.After(3 * time.Second):
+				t.Error("fixture did not execute both calls before delayed consumption")
+			}
+		}
 		if a.Kind != "tool_result" {
 			return
 		}

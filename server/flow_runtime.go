@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/emhha/scopeforge/agent"
 	"github.com/emhha/scopeforge/db"
@@ -70,14 +70,17 @@ func (s *Server) flowToolPool(ctx context.Context, key string) (map[string]actoo
 	if restricted {
 		for name, item := range surface.Tools {
 			if !workflowMetaTool(name) {
+				if name == "Bash" {
+					item = &workflowBashResult{CallableTool: item}
+				}
 				pool[name] = item
 			}
 		}
 		_, bashAllowed := surface.Tools["Bash"]
 		for name, item := range pool {
 			_, visible := surface.Tools[name]
-			pure := name == "inspect" || name == "merge_subdomains"
-			hostAdapter := bashAllowed && (name == "workflow_command" || name == "subfinder" || name == "amass" || name == "httpx" || name == "ehole")
+			pure := name == "inspect"
+			hostAdapter := bashAllowed && name == "workflow_command"
 			if !visible && !pure && !hostAdapter {
 				row, _ := s.m.pg.GetTool(name)
 				if !bashAllowed || row == nil || row.Kind != "shell" {
@@ -118,9 +121,6 @@ func (s *Server) flowToolPool(ctx context.Context, key string) (map[string]actoo
 			if row.Kind == "shell" {
 				delete(pool, row.Key)
 			}
-		}
-		for _, name := range []string{"subfinder", "amass", "httpx", "ehole"} {
-			delete(pool, name)
 		}
 	}
 	allowed := map[int64]bool{}
@@ -183,6 +183,15 @@ func (s *Server) flowToolPool(ctx context.Context, key string) (map[string]actoo
 		pool[name] = &workflowCapability{s: s, key: key, CallableTool: item}
 	}
 	return pool, closeAll, nil
+}
+
+// Keep Bash's native declaration/executor and normalize its data contract just
+// as the manual editor does. Agent-originated graphs must expose the same paths.
+type workflowBashResult struct{ actool.CallableTool }
+
+func (t *workflowBashResult) Call(ctx context.Context, raw []byte) (any, error) {
+	result, err := t.CallableTool.Call(ctx, raw)
+	return toolkit.Output{Text: toolkit.TextOf(result), Data: result, IsError: toolkit.Failed(result)}, err
 }
 
 func (s *Server) bashWorkflowTool() actool.CallableTool {
@@ -265,17 +274,17 @@ func (s *Server) commandWorkflowTool(program string) actool.CallableTool {
 		}
 		command := strings.Join(argv, " ") + " < " + shellQuote(filepath.Join(dir, "stdin")) + " > " + shellQuote(filepath.Join(dir, "stdout")) + " 2> " + shellQuote(filepath.Join(dir, "stderr"))
 		request, _ := json.Marshal(map[string]any{"command": command})
-		result, err := s.executeWorkflowHost(ctx, request)
+		result, err := executeWithWorkflowOutputLimit(ctx, []string{filepath.Join(dir, "stdout"), filepath.Join(dir, "stderr")}, func(ctx context.Context) (any, error) { return s.executeWorkflowHost(ctx, request) })
 		if err != nil {
 			return toolkit.Output{}, err
 		}
-		stdout, readErr := os.ReadFile(filepath.Join(dir, "stdout"))
+		stdout, readErr := readWorkflowOutput(filepath.Join(dir, "stdout"), workflowOutputLimit)
 		if readErr != nil {
 			return toolkit.Output{}, readErr
 		}
-		stderr, _ := os.ReadFile(filepath.Join(dir, "stderr"))
-		if len(stdout) > 32<<20 || len(stderr) > 32<<20 {
-			return toolkit.Output{}, fmt.Errorf("command output exceeds 32 MiB")
+		stderr, err := readWorkflowOutput(filepath.Join(dir, "stderr"), workflowOutputLimit-int64(len(stdout)))
+		if err != nil {
+			return toolkit.Output{}, err
 		}
 		var value any = string(stdout)
 		switch in.Parse {
@@ -477,24 +486,29 @@ func (s *Server) beginWorkflow(parent context.Context, flowID, version int64, de
 	if def.Name == "" {
 		def.Name = "temporary"
 	}
-	if err := s.checkWorkflowCycles(flowID, def, map[int64]bool{}); err != nil {
+	ctx, cancel, release, err := s.workflowExecutionContext(parent)
+	if err != nil {
 		return "", nil, nil, err
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+	if err := s.checkWorkflowCycles(flowID, def, map[int64]bool{}); err != nil {
+		release()
+		return "", nil, nil, err
+	}
 	pool, cleanup, err := s.flowToolPool(ctx, key)
 	if err != nil {
-		cancel()
+		cleanup()
+		release()
 		return "", nil, nil, err
 	}
 	compiled, err := flowproto.Compile(def, pool, toolkit.CallHooksFrom(parent))
 	if err != nil {
 		cleanup()
-		cancel()
+		release()
 		return "", nil, nil, err
 	}
 	if err := toolkit.Validate(compiled.Tool.Declaration().InputSchema, input); err != nil {
 		cleanup()
-		cancel()
+		release()
 		return "", nil, nil, err
 	}
 	raw, _ := json.Marshal(def)
@@ -502,16 +516,16 @@ func (s *Server) beginWorkflow(parent context.Context, flowID, version int64, de
 	s.flowCancels.Store(id, cancel)
 	s.flowContexts.Store(id, ctx)
 	if err := ctx.Err(); err != nil {
-		cancel()
 		cleanup()
+		release()
 		s.flowCancels.Delete(id)
 		s.flowContexts.Delete(id)
 		return "", nil, nil, err
 	}
 	info := agent.RunInfoFrom(ctx)
 	if err := s.m.pg.CreateWorkflowRun(db.FlowRun{ID: id, FlowID: flowID, Definition: raw, Input: input, Source: source, AgentKey: key, TaskID: info.TaskID, SessionID: info.SessionID, ParentRunID: ancestry.ID, VersionID: version}); err != nil {
-		cancel()
 		cleanup()
+		release()
 		s.flowCancels.Delete(id)
 		s.flowContexts.Delete(id)
 		return "", nil, nil, err
@@ -526,24 +540,28 @@ func (s *Server) beginWorkflow(parent context.Context, flowID, version int64, de
 	if toolkit.WorkspaceFrom(ctx).Directory == "" {
 		ctx = toolkit.WithWorkspace(ctx, toolkit.Workspace{Directory: s.m.dir})
 	}
+	var finished sync.Once
 	finish := func(result string, err error) {
-		if err == nil {
-			err = ctx.Err()
-		}
-		status, message := "completed", ""
-		if err != nil {
-			status, message = "failed", err.Error()
-			if errors.Is(err, context.Canceled) {
-				status = "cancelled"
+		finished.Do(func() {
+			defer release()
+			if err == nil {
+				err = ctx.Err()
 			}
-		}
-		cancel()
-		if err := s.m.pg.FinishFlowRun(id, status, result, message); err != nil {
-			log.Printf("[workflow] finish %s: %v", id, err)
-		}
-		s.flowCancels.Delete(id)
-		s.flowContexts.Delete(id)
-		cleanup()
+			status, message := "completed", ""
+			if err != nil {
+				status, message = "failed", err.Error()
+				if errors.Is(err, context.Canceled) {
+					status = "cancelled"
+				}
+			}
+			cancel()
+			if err := s.m.pg.FinishFlowRun(id, status, result, message); err != nil {
+				log.Printf("[workflow] finish %s: %v", id, err)
+			}
+			s.flowCancels.Delete(id)
+			s.flowContexts.Delete(id)
+			cleanup()
+		})
 	}
 	reader, err := compiled.Tool.StreamableCall(ctx, input)
 	if err != nil {
@@ -609,7 +627,7 @@ func (s *Server) pipeWorkflow(ctx context.Context, id string, reader *actool.Str
 }
 
 func (s *Server) workflowControlTools(key string) []actool.CallableTool {
-	catalog := toolkit.New("workflow_catalog", "获取当前调用者允许的工作流工具 Schema、DSL 和转换操作。添加新工具后重新查询即可使用，不需要改代码", objSchema(map[string]any{"query": strParam("按工具名或说明过滤；可留空")}), func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
+	catalog := toolkit.New("workflow_catalog", "获取当前调用者允许的工作流工具 Schema、DSL 和转换操作。CLI 可直接用 workflow_command 的 program/argv/stdin，shell/管道用 Bash，无须注册每条命令。并行分支必须在显式 join 汇合；各节点以 $ref 引用同一输入或上游结果", objSchema(map[string]any{"query": strParam("按工具名或说明过滤；可留空")}), func(ctx context.Context, raw json.RawMessage) (toolkit.Output, error) {
 		var in struct {
 			Query string `json:"query"`
 		}

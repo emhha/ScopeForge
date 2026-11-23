@@ -63,10 +63,11 @@ type TaskDeleteResult struct {
 
 // TaskDeletePreparation is produced inside the SQLite deletion transaction
 // after asset and anchor writers have been excluded. Prepare callbacks may use
-// TrafficHosts to stage an external traffic deletion before SQLite commits.
+// TrafficHosts and WorkflowArtifactIDs to stage external deletion before SQLite commits.
 type TaskDeletePreparation struct {
-	ExplorationID int64
-	TrafficHosts  []string
+	ExplorationID       int64
+	TrafficHosts        []string
+	WorkflowArtifactIDs []string
 }
 
 // IsTerminal reports whether a task status is a terminal (finished) state.
@@ -567,14 +568,19 @@ func (d *DB) DeleteTaskCascadePrepared(
 	// prevents phantoms (a distinct asset row for the same host) as well as new
 	// ownership/anchor references until the deletion transaction commits.
 
+	workflowArtifacts, err := taskWorkflowArtifacts(tx, id)
+	if err != nil {
+		return result, err
+	}
 	if prepare != nil {
 		hosts, err := hostsForTaskDeletion(tx, id, expID)
 		if err != nil {
 			return result, err
 		}
 		if err := prepare(TaskDeletePreparation{
-			ExplorationID: expID,
-			TrafficHosts:  hosts,
+			ExplorationID:       expID,
+			TrafficHosts:        hosts,
+			WorkflowArtifactIDs: workflowArtifacts,
 		}); err != nil {
 			return result, err
 		}
@@ -636,6 +642,9 @@ DELETE FROM assets WHERE id IN (SELECT id FROM deletable)`, id, expID)
 	}
 	// llm_usage (the token metering ledger) is intentionally NOT deleted with the
 	// task — it is kept as historical accounting even after the task is gone.
+	if err := deleteTaskWorkflows(tx, id); err != nil {
+		return result, err
+	}
 	if _, err := tx.Exec(`DELETE FROM tasks WHERE id=?1`, id); err != nil {
 		return result, err
 	}

@@ -73,6 +73,13 @@ func (d Definition) validate(tools map[string]tool.CallableTool) error {
 			if len(n.Branches) < 2 || n.Next != "" {
 				return fmt.Errorf("parallel %s requires at least two branches and no next", n.ID)
 			}
+			seen := map[string]bool{}
+			for _, branch := range n.Branches {
+				if seen[branch] {
+					return fmt.Errorf("parallel %s has duplicate branch %s", n.ID, branch)
+				}
+				seen[branch] = true
+			}
 		case "join":
 			if len(n.From) < 2 || n.Next == "" {
 				return fmt.Errorf("join %s requires from and next", n.ID)
@@ -169,11 +176,87 @@ func (d Definition) validate(tools map[string]tool.CallableTool) error {
 				seen[from] = true
 			}
 			for _, other := range d.Nodes {
-				if other.Next == n.ID && !seen[other.ID] {
-					return fmt.Errorf("join %s missing predecessor %s", n.ID, other.ID)
+				for _, target := range destinations(other) {
+					if target == n.ID && !seen[other.ID] {
+						return fmt.Errorf("join %s missing predecessor %s; connect conditional/parallel branches through execution nodes first", n.ID, other.ID)
+					}
 				}
 			}
 		}
 	}
+	if err := validateParallelPaths(nodes); err != nil {
+		return err
+	}
 	return validateGraphReferences(d, nodes)
+}
+
+// A fork must meet at an explicit all-of join before reaching an end. Otherwise
+// the native graph can run a shared downstream command twice or finish while a
+// sibling is still running. Conditional merges remain ordinary edges.
+func validateParallelPaths(nodes map[string]Node) error {
+	post := map[string]map[string]bool{}
+	var after func(string) map[string]bool
+	after = func(id string) map[string]bool {
+		if result := post[id]; result != nil {
+			return result
+		}
+		result := map[string]bool{}
+		for i, next := range destinations(nodes[id]) {
+			child := after(next)
+			if i == 0 {
+				for key := range child {
+					result[key] = true
+				}
+			} else {
+				for key := range result {
+					if !child[key] {
+						delete(result, key)
+					}
+				}
+			}
+		}
+		result[id] = true
+		post[id] = result
+		return result
+	}
+	for _, fork := range nodes {
+		if fork.Type != "parallel" {
+			continue
+		}
+		common := after(fork.ID)
+		join := ""
+		for id := range common {
+			if nodes[id].Type == "join" && (join == "" || after(id)[join]) {
+				join = id
+			}
+		}
+		if join == "" {
+			return fmt.Errorf("parallel %s requires an explicit join reached by every branch before ending", fork.ID)
+		}
+		owners := map[string]int{}
+		for index, branch := range fork.Branches {
+			seen := map[string]bool{}
+			var visit func(string) error
+			visit = func(id string) error {
+				if id == join || seen[id] {
+					return nil
+				}
+				seen[id] = true
+				if owner, exists := owners[id]; exists && owner != index {
+					return fmt.Errorf("parallel %s branches meet at %s before join %s; connect branch ends to the join first", fork.ID, id, join)
+				}
+				owners[id] = index
+				for _, next := range destinations(nodes[id]) {
+					if err := visit(next); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			if err := visit(branch); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

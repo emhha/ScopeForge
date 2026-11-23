@@ -7,7 +7,7 @@ BINARY ?= dist/scopeforge$(EXE)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 TARGET_OS := $(if $(GOOS),$(GOOS),$(shell $(GO) env GOHOSTOS))
 TARGET_ARCH := $(if $(GOARCH),$(GOARCH),$(shell $(GO) env GOHOSTARCH))
-WEB_TESTS := $(filter-out web/src/lib/finding-lineage-browser.test.mjs web/src/lib/task-live-browser.test.mjs,$(wildcard web/src/lib/*.test.mjs web/src/features/conversation/*.test.mjs))
+WEB_TESTS := $(filter-out web/src/lib/finding-lineage-browser.test.mjs web/src/lib/task-live-browser.test.mjs web/src/lib/flow-editor-browser.test.mjs,$(wildcard web/src/lib/*.test.mjs web/src/features/conversation/*.test.mjs))
 BUILD_TARGETS := linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 EXE := $(if $(filter windows,$(TARGET_OS)),.exe,)
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
@@ -96,7 +96,7 @@ test-web: web/node_modules/.scopeforge-deps
 	cd web && $(NPM) run typecheck && node --test $(patsubst web/%,%,$(WEB_TESTS))
 
 test-web-browser: web/node_modules/.scopeforge-deps
-	cd web && node --test src/lib/finding-lineage-browser.test.mjs src/lib/task-live-browser.test.mjs
+	cd web && node --test src/lib/finding-lineage-browser.test.mjs src/lib/task-live-browser.test.mjs src/lib/flow-editor-browser.test.mjs
 
 clean:
 	$(RM) $(BINARY)

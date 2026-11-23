@@ -155,7 +155,8 @@ func (d *DB) SetFlowRunContext(id, source, key, parent string, task, version int
 func (d *DB) CreateWorkflowRun(run FlowRun) error {
 	result, err := d.Exec(`INSERT INTO flow_runs(id,flow_id,definition,status,input,source,agent_key,task_id,session_id,parent_run_id,version_id)
  SELECT ?1,NULLIF(?2,0),?3,'running',?4,?5,?6,?7,?8,?9,NULLIF(?10,0)
- WHERE ?9='' OR EXISTS(SELECT 1 FROM flow_runs WHERE id=?9 AND status='running')`, run.ID, run.FlowID, run.Definition, run.Input, run.Source, run.AgentKey, run.TaskID, run.SessionID, run.ParentRunID, run.VersionID)
+ WHERE (?9='' OR EXISTS(SELECT 1 FROM flow_runs WHERE id=?9 AND status='running'))
+ AND (?7=0 OR EXISTS(SELECT 1 FROM tasks WHERE id=?7 AND deleted_at IS NULL AND archived_at IS NULL))`, run.ID, run.FlowID, run.Definition, run.Input, run.Source, run.AgentKey, run.TaskID, run.SessionID, run.ParentRunID, run.VersionID)
 	if err != nil {
 		return err
 	}
@@ -164,7 +165,7 @@ func (d *DB) CreateWorkflowRun(run FlowRun) error {
 		return err
 	}
 	if count != 1 {
-		return fmt.Errorf("parent workflow already finished")
+		return fmt.Errorf("parent workflow finished or task is no longer available")
 	}
 	return nil
 }

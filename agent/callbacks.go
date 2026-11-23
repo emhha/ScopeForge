@@ -10,6 +10,11 @@ import (
 
 func (t *turn) callbacks() *tool.Callbacks {
 	callbacks := tool.NewCallbacks().RegisterBeforeTool(func(ctx context.Context, args *tool.BeforeToolArgs) (*tool.BeforeToolResult, error) {
+		if sources, _ := ctx.Value(nodeSourcesKey{}).(*nodeSources); sources != nil {
+			return &tool.BeforeToolResult{Context: sources.begin(ctx, args.ToolCallID)}, nil
+		}
+		return nil, nil
+	}).RegisterBeforeTool(func(ctx context.Context, args *tool.BeforeToolArgs) (*tool.BeforeToolResult, error) {
 		if args.Declaration == nil {
 			return nil, nil
 		}
@@ -41,6 +46,20 @@ func (t *turn) callbacks() *tool.Callbacks {
 					return next(ctx, in)
 				})
 			}
+		}
+	}
+	// The pinned SDK carries context between callbacks internally but returns the
+	// last result without merging earlier context. Preserve it when a later hook
+	// only modifies arguments, so execution still owns its provenance batch.
+	for i, callback := range callbacks.BeforeTool {
+		callbacks.BeforeTool[i] = func(ctx context.Context, args *tool.BeforeToolArgs) (*tool.BeforeToolResult, error) {
+			result, err := callback(ctx, args)
+			if result != nil && result.Context == nil {
+				copy := *result
+				copy.Context = ctx
+				result = &copy
+			}
+			return result, err
 		}
 	}
 	return callbacks

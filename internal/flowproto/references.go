@@ -137,14 +137,23 @@ func validateGraphReferences(def Definition, nodes map[string]Node) error {
 			if condition.Type != "branch" {
 				continue
 			}
+			// Only compare prerequisites controlled by this condition. A sibling
+			// parallel branch is independent and must not make a local conditional
+			// merge look like a join of mutually exclusive paths.
+			required := []string{}
+			for _, source := range join.From {
+				if dominates[source][condition.ID] {
+					required = append(required, source)
+				}
+			}
 			for _, arm := range []string{condition.Condition.Then, condition.Condition.Else} {
 				count := 0
-				for _, source := range join.From {
-					if dominates[condition.ID][source] || reachable(arm, source, map[string]bool{}) {
+				for _, source := range required {
+					if reachable(arm, source, map[string]bool{}) {
 						count++
 					}
 				}
-				if count > 0 && count < len(join.From) {
+				if count > 0 && count < len(required) {
 					return fmt.Errorf("join %s waits for mutually exclusive conditional paths", join.ID)
 				}
 			}

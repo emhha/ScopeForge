@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -21,20 +20,20 @@ func (s *Server) runWorkflowShell(ctx context.Context, command string) (toolkit.
 	defer os.RemoveAll(dir)
 	stdoutPath, stderrPath := filepath.Join(dir, "stdout"), filepath.Join(dir, "stderr")
 	raw, _ := json.Marshal(map[string]any{"command": "(\n" + command + "\n) > " + shellQuote(stdoutPath) + " 2> " + shellQuote(stderrPath)})
-	result, err := agent.ExecuteCommand(ctx, raw)
+	result, err := executeWithWorkflowOutputLimit(ctx, []string{stdoutPath, stderrPath}, func(ctx context.Context) (any, error) { return agent.ExecuteCommand(ctx, raw) })
 	if err != nil {
 		return toolkit.Output{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return toolkit.Output{}, err
 	}
-	stdout, err := os.ReadFile(stdoutPath)
+	stdout, err := readWorkflowOutput(stdoutPath, workflowOutputLimit)
 	if err != nil {
 		return toolkit.Output{}, err
 	}
-	stderr, _ := os.ReadFile(stderrPath)
-	if len(stdout) > 32<<20 || len(stderr) > 32<<20 {
-		return toolkit.Output{}, fmt.Errorf("command output exceeds 32 MiB")
+	stderr, err := readWorkflowOutput(stderrPath, workflowOutputLimit-int64(len(stdout)))
+	if err != nil {
+		return toolkit.Output{}, err
 	}
 	var value any = string(stdout)
 	if json.Valid(stdout) {

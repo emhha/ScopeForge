@@ -25,6 +25,7 @@ import (
 	"github.com/emhha/scopeforge/learning"
 	"github.com/emhha/scopeforge/netrequest"
 	"github.com/emhha/scopeforge/traffic"
+	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -1528,26 +1529,38 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	}
 
 	var trafficStage *traffic.HostDeleteStage
-	var prepare func(pgdb.TaskDeletePreparation) error
-	if opts.DeleteTraffic && m.traffic != nil {
-		prepare = func(p pgdb.TaskDeletePreparation) error {
-			if len(p.TrafficHosts) == 0 {
-				return nil
+	var workflowStage *taskFileDeleteStage
+	prepare := func(p pgdb.TaskDeletePreparation) error {
+		if opts.DeleteFiles {
+			paths := make([]string, 0, len(p.WorkflowArtifactIDs))
+			for _, id := range p.WorkflowArtifactIDs {
+				if _, err := uuid.Parse(id); err != nil {
+					return fmt.Errorf("invalid workflow artifact ID: %w", err)
+				}
+				paths = append(paths, filepath.Join(m.dir, "flow-artifacts", id))
 			}
+			var err error
+			workflowStage, err = stageTaskPaths(m.dir, id, paths)
+			if err != nil {
+				return err
+			}
+		}
+		if opts.DeleteTraffic && m.traffic != nil && len(p.TrafficHosts) > 0 {
+			var err error
 			trafficStage, err = m.traffic.StageDeleteHostsExact(p.TrafficHosts)
 			if err != nil {
 				return err
 			}
 			result.TrafficDeleted = trafficStage.Deleted()
-			return nil
 		}
+		return nil
 	}
 
 	dbResult, err := m.pg.DeleteTaskCascadePrepared(
 		n, opts.DeleteAssets, opts.DeleteFindings, opts.DeleteLLMRecords, prepare,
 	)
 	if err != nil {
-		return result, rollbackTaskDelete(err, trafficStage, fileStage)
+		return result, errors.Join(rollbackTaskDelete(err, trafficStage, fileStage), workflowStage.rollback())
 	}
 	m.forgetTaskSessions(n, registered.ExplorationID)
 	result.AssetsDeleted = dbResult.AssetsDeleted
@@ -1560,6 +1573,12 @@ func (m *Manager) DeleteTask(id string, opts DeleteTaskOptions) (DeleteTaskResul
 	// typed so the HTTP layer can still tear down the task runtime instead of
 	// incorrectly reviving a task whose database row is already gone.
 	var finalizeErrs []error
+	if workflowStage != nil {
+		result.FilesDeleted = result.FilesDeleted || workflowStage.deleted
+		if err := workflowStage.commit(); err != nil {
+			finalizeErrs = append(finalizeErrs, fmt.Errorf("finalize workflow artifact deletion: %w", err))
+		}
+	}
 	if m.memories != nil {
 		if err := m.memories.ClearTask(context.Background(), n); err != nil {
 			finalizeErrs = append(finalizeErrs, fmt.Errorf("clear task memories: %w", err))
@@ -1649,7 +1668,6 @@ type taskFileDeleteStage struct {
 // a same-filesystem staging directory. The trailing dash in the transcript
 // prefix is significant: exploration 12 must not match exploration 123.
 func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDeleteStage, error) {
-	stage := &taskFileDeleteStage{}
 	var targets []string
 	taskDir := filepath.Join(dataDir, "tasks", taskID)
 	if _, err := os.Lstat(taskDir); err == nil {
@@ -1674,6 +1692,19 @@ func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDelet
 		}
 		targets = append(targets, filepath.Join(transcriptDir, name))
 	}
+	return stageTaskPaths(dataDir, taskID, targets)
+}
+
+func stageTaskPaths(dataDir, taskID string, candidates []string) (*taskFileDeleteStage, error) {
+	stage := &taskFileDeleteStage{}
+	var targets []string
+	for _, path := range candidates {
+		if _, err := os.Lstat(path); err == nil {
+			targets = append(targets, path)
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
 	if len(targets) == 0 {
 		stage.done = true
 		return stage, nil
@@ -1683,6 +1714,7 @@ func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDelet
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, err
 	}
+	var err error
 	stage.stageDir, err = os.MkdirTemp(parent, "task-"+taskID+"-")
 	if err != nil {
 		return nil, err

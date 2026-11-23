@@ -230,6 +230,11 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return a.TaskTimeoutWrapupMaxTurns, true
 		}
+		// There is no checkpoint replay. Resolve abandoned runs before task
+		// deletion checks their status; recovery must cover more than one page.
+		if _, err := m.pg.Exec(`UPDATE flow_runs SET status='interrupted',error='服务重启后，工作流已中断',completed_at=utc_now() WHERE status='running'`); err != nil {
+			log.Printf("[workflow] recover interrupted runs: %v", err)
+		}
 		s.initWorkflows()
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools, m.memories, m.knowledge, s.flowTools)
 		domainReg := buildDomainReg(m.Assets())

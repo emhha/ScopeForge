@@ -26,7 +26,7 @@ func captureRun(ctx context.Context, cfg RunConfig, input string, emit func(db.A
 }
 func captureRunSession(ctx context.Context, t *turn, input string, emit func(db.Activity)) (text string, reason runstate.Reason, runErr error) {
 	ctx = sessionctx.WithID(ctx, t.key.SessionID)
-	sources := &nodeSources{calls: map[string][]db.NodeSource{}}
+	sources := &nodeSources{calls: map[string][]*nodeSourceBatch{}}
 	ctx = context.WithValue(ctx, nodeSourcesKey{}, sources)
 	ctx, audit := intercept.WithTrace(ctx, input, approvalHistory(t.History(ctx)))
 	defer audit.Finish()

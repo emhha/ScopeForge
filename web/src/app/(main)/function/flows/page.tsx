@@ -7,6 +7,7 @@ import {
   Controls,
   Handle,
   Position,
+  MarkerType,
   type Connection,
   type NodeProps,
   type NodeChange,
@@ -17,7 +18,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { sseUrl } from "@/lib/api";
-import { reconcileFlowRun, renameFlowNode, removeFlowNodes } from "@/lib/flow-state";
+import {
+  reconcileFlowRun,
+  renameFlowNode,
+  removeFlowNodes,
+  flowWires,
+  connectFlowNodes,
+  disconnectFlowWires,
+  parallelDomainExample,
+  layoutFlow,
+  type FlowWire,
+} from "@/lib/flow-state";
 import {
   flowAPI,
   type FlowDefinition,
@@ -58,18 +69,7 @@ function NodeCard({ data, selected }: NodeProps) {
         <div className="mt-1 font-mono text-xs text-muted-foreground">{String(data.tool ?? "未选择工具")}</div>
       )}
       {type === "parallel" ? (
-        <>
-          <Handle id="new" type="source" position={Position.Right} />
-          {((data.branches as string[]) ?? []).map((_, i, list) => (
-            <Handle
-              key={i}
-              id={`branch-${i}`}
-              type="source"
-              position={Position.Right}
-              style={{ top: `${20 + (i * 60) / Math.max(1, list.length - 1)}%` }}
-            />
-          ))}
-        </>
+        <Handle id="branches" type="source" position={Position.Right} aria-label="并行输出，可连接多个节点" />
       ) : type === "branch" ? (
         <>
           <Handle id="then" type="source" position={Position.Right} style={{ top: "35%" }} />
@@ -78,6 +78,12 @@ function NodeCard({ data, selected }: NodeProps) {
       ) : (
         type !== "end" && <Handle type="source" position={Position.Right} />
       )}
+      {type === "parallel" && (
+        <div className="mt-1 text-xs text-muted-foreground">
+          {(data.branches as string[] | undefined)?.length ?? 0} 个并行分支
+        </div>
+      )}
+      {type === "join" && <div className="mt-1 text-xs text-muted-foreground">等待全部上游完成</div>}
     </div>
   );
 }
@@ -146,6 +152,162 @@ function JsonField({
   );
 }
 
+function ValueField({
+  label,
+  value,
+  onChange,
+  references,
+}: {
+  label: string;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  references: string[];
+}) {
+  const listID = React.useId();
+  const ref = value && typeof value === "object" && "$ref" in value ? String(value.$ref) : undefined;
+  return (
+    <label className="block space-y-1 text-xs">
+      <span>{label}</span>
+      <div className="flex gap-1">
+        <select
+          aria-label={`${label}来源`}
+          className="h-9 w-20 shrink-0 rounded border bg-background"
+          value={ref === undefined ? "literal" : "ref"}
+          onChange={(event) => onChange(event.target.value === "ref" ? { $ref: references[0] ?? "input" } : "")}
+        >
+          <option value="literal">固定值</option>
+          <option value="ref">引用</option>
+        </select>
+        <Input
+          aria-label={label}
+          className="min-w-0 font-mono text-xs"
+          list={ref === undefined ? undefined : listID}
+          value={ref ?? String(value ?? "")}
+          onChange={(event) => onChange(ref === undefined ? event.target.value : { $ref: event.target.value })}
+        />
+        <datalist id={listID}>
+          {references.map((path) => (
+            <option key={path} value={path} />
+          ))}
+        </datalist>
+      </div>
+    </label>
+  );
+}
+
+function CommandFields({
+  node,
+  update,
+  references,
+}: {
+  node: FlowNode;
+  update: (patch: Partial<FlowNode>) => void;
+  references: string[];
+}) {
+  const commandID = React.useId();
+  const args = node.arguments ?? {};
+  const set = (name: string, value: unknown) => update({ arguments: { ...args, [name]: value } });
+  const argv = Array.isArray(args.argv) ? args.argv : [];
+  return (
+    <div className="space-y-3 rounded-lg border p-2">
+      {node.tool === "Bash" ? (
+        <>
+          {typeof args.command === "object" ? (
+            <ValueField
+              label="Shell 命令"
+              value={args.command}
+              onChange={(value) => set("command", value)}
+              references={references}
+            />
+          ) : (
+            <label htmlFor={commandID} className="block space-y-1 text-xs">
+              Shell 命令
+              <Textarea
+                id={commandID}
+                aria-label="Shell 命令"
+                className="nodrag nowheel min-h-28 font-mono text-xs"
+                value={String(args.command ?? "")}
+                onChange={(event) => set("command", event.target.value)}
+              />
+            </label>
+          )}
+          <p className="text-xs text-muted-foreground">
+            支持管道和多行命令；程序需已安装在服务运行环境。命令中的 $ref 文本不会自动插值。
+          </p>
+        </>
+      ) : (
+        <>
+          <ValueField
+            label="程序"
+            value={args.program}
+            onChange={(value) => set("program", value)}
+            references={references}
+          />
+          {argv.map((value, i) => (
+            <div key={i} className="space-y-1">
+              <ValueField
+                label={`参数 ${i + 1}`}
+                value={value}
+                onChange={(value) =>
+                  set(
+                    "argv",
+                    argv.map((old, j) => (j === i ? value : old)),
+                  )
+                }
+                references={references}
+              />
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline"
+                onClick={() =>
+                  set(
+                    "argv",
+                    argv.filter((_, j) => j !== i),
+                  )
+                }
+              >
+                删除参数 {i + 1}
+              </button>
+            </div>
+          ))}
+          <Button size="sm" variant="outline" onClick={() => set("argv", [...argv, ""])}>
+            添加参数
+          </Button>
+          <ValueField
+            label="标准输入（可选）"
+            value={args.stdin}
+            onChange={(value) => set("stdin", value)}
+            references={references}
+          />
+          <ValueField
+            label="标准输入工件 ID（可选，优先于文本）"
+            value={args.stdin_artifact}
+            onChange={(value) => set("stdin_artifact", value)}
+            references={references}
+          />
+          <label className="block space-y-1 text-xs">
+            输出解析
+            <select
+              aria-label="命令输出解析"
+              className="h-9 w-full rounded border bg-background"
+              value={String(args.parse ?? "text")}
+              onChange={(event) => set("parse", event.target.value)}
+            >
+              <option value="text">文本</option>
+              <option value="lines">按行数组</option>
+              <option value="json">JSON</option>
+            </select>
+          </label>
+          <p className="text-xs text-muted-foreground">
+            每个参数单独传递，无须添加 shell 引号。结果：steps.{node.id}
+            .data.value；原文：data.stdout，错误输出：data.stderr。
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function FlowsPage() {
   const [catalog, setCatalog] = React.useState<{ tools: FlowTool[]; example: FlowDefinition; operations: string[] }>();
   const [rows, setRows] = React.useState<SavedFlow[]>([]);
@@ -173,6 +335,8 @@ export default function FlowsPage() {
   const [allRuns, setAllRuns] = React.useState<FlowRun[]>([]);
   const [measurements, setMeasurements] = React.useState<Record<string, { width: number; height: number }>>({});
   const [connection, setConnection] = React.useState("");
+  const [connectionTarget, setConnectionTarget] = React.useState("");
+  const [selectedEdges, setSelectedEdges] = React.useState<Set<string>>(new Set());
   let dirty = !!draft && (!saved || pretty(draft) !== pretty(saved.definition));
   if (mode === "json") {
     try {
@@ -182,6 +346,36 @@ export default function FlowsPage() {
     }
   }
   const active = draft?.nodes.find((node) => node.id === selected);
+  const references = React.useMemo(() => {
+    if (!draft) return [];
+    const wires = flowWires(draft);
+    const ancestors = new Set<string>();
+    function visit(id: string) {
+      for (const wire of wires.filter((wire) => wire.target === id)) {
+        if (ancestors.has(wire.source)) continue;
+        ancestors.add(wire.source);
+        visit(wire.source);
+      }
+    }
+    visit(selected);
+    return [
+      ...Object.keys(draft.input_schema.properties ?? {}).map((key) => `input.${key}`),
+      ...draft.nodes
+        .filter((node) => ancestors.has(node.id))
+        .flatMap((node) =>
+          node.type === "tool"
+            ? (node.tool === "workflow_command"
+                ? ["data.value", "data.stdout", "data.stdout_artifact.id"]
+                : node.tool === "Bash"
+                  ? ["data.output", "data.exit_code"]
+                  : ["data", "text"]
+              ).map((field) => `steps.${node.id}.${field}`)
+            : node.type === "transform"
+              ? [`steps.${node.id}.data`]
+              : [],
+        ),
+    ];
+  }, [draft, selected]);
 
   React.useEffect(() => {
     let alive = true;
@@ -338,43 +532,33 @@ export default function FlowsPage() {
         }
         return false;
       });
-  const nodes = React.useMemo(
-    () =>
-      draft?.nodes.map((node, index) => ({
-        id: node.id,
-        measured: measurements[node.id],
-        deletable: node.type !== "start",
-        type: "flow",
-        selected: node.id === selected,
-        position: node.position ?? { x: Math.min(index, 3) * 240 + 40, y: node.id === "rejected" ? 250 : 70 },
-        data: { label: node.id, kind: node.type, tool: node.tool, branches: node.branches, status: statuses[node.id] },
-      })) ?? [],
-    [draft, selected, statuses, measurements],
-  );
+  const nodes = React.useMemo(() => {
+    if (!draft) return [];
+    const arranged = layoutFlow(draft);
+    return draft.nodes.map((node, index) => ({
+      id: node.id,
+      measured: measurements[node.id],
+      deletable: node.type !== "start",
+      type: "flow",
+      selected: node.id === selected,
+      position: node.position ?? arranged.nodes[index].position!,
+      data: { label: node.id, kind: node.type, tool: node.tool, branches: node.branches, status: statuses[node.id] },
+    }));
+  }, [draft, selected, statuses, measurements]);
   const edges = React.useMemo(
     () =>
-      draft?.nodes.flatMap((node) => {
-        const targets =
-          node.type === "parallel"
-            ? (node.branches ?? []).map((target, i) => ({ target, handle: `branch-${i}`, label: "" }))
-            : node.type === "branch"
-              ? [
-                  { target: node.condition?.then, handle: "then", label: "成立" },
-                  { target: node.condition?.else, handle: "else", label: "不成立" },
-                ]
-              : [{ target: node.next, handle: undefined, label: "" }];
-        return targets
-          .filter((item) => item.target)
-          .map((item) => ({
-            id: `${node.id}-${item.handle ?? "next"}`,
-            source: node.id,
-            target: item.target!,
-            sourceHandle: item.handle,
-            label: item.label,
-            animated: statuses[node.id] === "running",
-          }));
-      }) ?? [],
-    [draft, statuses],
+      draft
+        ? flowWires(draft).map((wire) => ({
+            ...wire,
+            selected: selectedEdges.has(wire.id),
+            style: {
+              stroke: selectedEdges.has(wire.id) ? "var(--primary)" : "var(--foreground)",
+              strokeWidth: selectedEdges.has(wire.id) ? 3 : 2,
+            },
+            animated: statuses[wire.source] === "running",
+          }))
+        : [],
+    [draft, statuses, selectedEdges],
   );
 
   function updateNode(patch: Partial<FlowNode>) {
@@ -384,40 +568,15 @@ export default function FlowsPage() {
         : current,
     );
   }
-  function connect(connection: Connection) {
-    setDraft((current) =>
-      current
-        ? {
-            ...current,
-            nodes: current.nodes.map((node) => {
-              if (node.id === connection.target && node.type === "join")
-                return { ...node, from: Array.from(new Set([...(node.from ?? []), connection.source])) };
-              if (node.id !== connection.source) return node;
-              if (node.type === "parallel") {
-                const branches = [...(node.branches ?? [])];
-                const index = Number(connection.sourceHandle?.replace("branch-", ""));
-                if (connection.sourceHandle?.startsWith("branch-") && Number.isFinite(index))
-                  branches[index] = connection.target;
-                else if (!branches.includes(connection.target)) branches.push(connection.target);
-                return { ...node, branches };
-              }
-              if (node.type === "branch")
-                return {
-                  ...node,
-                  condition: {
-                    ref: "input.target",
-                    equals: "",
-                    then: "",
-                    else: "",
-                    ...node.condition,
-                    [connection.sourceHandle === "else" ? "else" : "then"]: connection.target,
-                  },
-                };
-              return { ...node, next: connection.target };
-            }),
-          }
-        : current,
-    );
+  function connect(wire: Connection, previous?: FlowWire) {
+    if (!draft) return;
+    try {
+      const base = previous ? disconnectFlowWires(draft, [previous]) : draft;
+      setDraft(connectFlowNodes(base, wire));
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
   }
   function nodeChanges(changes: NodeChange[]) {
     const sizes = changes.filter((change) => change.type === "dimensions");
@@ -455,8 +614,8 @@ export default function FlowsPage() {
     const node: FlowNode = {
       id,
       type,
-      position: { x: 240, y: 300 },
-      ...(type === "tool" ? { tool: "inspect", arguments: { target: { $ref: "input.target" } } } : {}),
+      position: { x: 240 + (draft.nodes.length % 3) * 250, y: 300 + Math.floor(draft.nodes.length / 3) * 150 },
+      ...(type === "tool" ? { tool: "Bash", arguments: { command: "" } } : {}),
       ...(type === "transform" ? { operation: "json.parse", arguments: { text: "" } } : {}),
       ...(type === "parallel" ? { branches: [] } : {}),
       ...(type === "join" ? { from: [] } : {}),
@@ -549,6 +708,21 @@ export default function FlowsPage() {
     setBindings(value?.agents.length ? value.agents.join(",") : "auto,mainagent,worker");
   }
 
+  function openParallelExample() {
+    if (dirty && !window.confirm("当前更改尚未保存，是否载入并行模板？")) return;
+    const def = parallelDomainExample();
+    setSaved(null);
+    setDraft(def);
+    setInput(exampleInput(def));
+    setSelected("dns");
+    setMode("graph");
+    setRunID("");
+    setRun(null);
+    setEvents([]);
+    setError("");
+    setNotice("已载入同域名并行模板。两个命令仅回显域名，可直接试运行；将 program / argv 改成已安装的 CLI 即可使用。");
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 lg:p-6" data-testid="flows-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -594,9 +768,11 @@ export default function FlowsPage() {
               </button>
             ))}
             <div className="border-t pt-3 text-xs leading-relaxed text-muted-foreground">
-              工具目录包含已启用的自定义工具和 MCP。命令环境声明可用 argv 输入；通用 workflow_command 支持 stdin
-              和工件。
+              添加“工具调用”后选择 Bash，即可运行已安装的命令，无须先注册工具。目录同时包含 MCP、自定义工具和领域工具。
             </div>
+            <Button size="sm" variant="outline" onClick={openParallelExample}>
+              同域名并行模板
+            </Button>
             <div className="border-t pt-3 space-y-2">
               <div className="text-xs font-medium">全部运行（含临时 / Agent 调用）</div>
               <Button
@@ -774,13 +950,16 @@ export default function FlowsPage() {
                   ))}
                 </div>
                 {mode === "graph" && (
-                  <div className="flex gap-1">
+                  <div className="flex flex-wrap gap-1">
                     {(["tool", "transform", "branch", "parallel", "join", "end"] as const).map((type) => (
                       <Button key={type} size="sm" variant="outline" onClick={() => addNode(type)}>
                         <Plus className="size-3" />
                         {labels[type]}
                       </Button>
                     ))}
+                    <Button size="sm" variant="ghost" onClick={() => setDraft(layoutFlow(draft))}>
+                      整理布局
+                    </Button>
                   </div>
                 )}
               </div>
@@ -792,56 +971,40 @@ export default function FlowsPage() {
                   className="min-h-[480px] rounded-none border-0 font-mono text-xs"
                 />
               ) : (
-                <div className="grid lg:grid-cols-[minmax(0,1fr)_280px]">
-                  <div className="h-[480px] min-w-0 bg-muted/20">
+                <div className="grid lg:h-[540px] lg:grid-cols-[minmax(0,1fr)_280px] lg:grid-rows-[minmax(0,1fr)]">
+                  <div className="relative h-[420px] min-h-0 min-w-0 bg-muted/20 lg:h-full" data-testid="flow-canvas">
                     <ReactFlow
                       nodes={nodes}
                       edges={edges}
                       nodeTypes={nodeTypes}
                       onNodesChange={nodeChanges}
                       onNodeClick={(_, node) => setSelected(node.id)}
-                      onConnect={connect}
+                      onEdgeClick={() => setSelected("")}
+                      onPaneClick={() => setSelected("")}
+                      onConnect={(wire) => connect(wire)}
+                      onReconnect={(old, wire) => connect(wire, old)}
+                      onEdgesChange={(changes) =>
+                        setSelectedEdges((old) => {
+                          const next = new Set(old);
+                          for (const change of changes) {
+                            if (change.type === "select") {
+                              if (change.selected) next.add(change.id);
+                              else next.delete(change.id);
+                            }
+                            if (change.type === "remove") next.delete(change.id);
+                          }
+                          return next;
+                        })
+                      }
+                      defaultEdgeOptions={{
+                        type: "smoothstep",
+                        style: { stroke: "var(--foreground)", strokeWidth: 2 },
+                        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--foreground)" },
+                        interactionWidth: 20,
+                      }}
+                      deleteKeyCode={["Backspace", "Delete"]}
                       onEdgesDelete={(deleted) => {
-                        setDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                nodes: current.nodes.map((original) => {
-                                  const node =
-                                    original.type === "join"
-                                      ? {
-                                          ...original,
-                                          from: original.from?.filter(
-                                            (id) =>
-                                              !deleted.some(
-                                                (edge) => edge.source === id && edge.target === original.id,
-                                              ),
-                                          ),
-                                        }
-                                      : original;
-                                  const edge = deleted.find((item) => item.source === node.id);
-                                  if (!edge) return node;
-                                  if (node.type === "parallel")
-                                    return {
-                                      ...node,
-                                      branches: (node.branches ?? []).filter(
-                                        (target) =>
-                                          !deleted.some((item) => item.source === node.id && item.target === target),
-                                      ),
-                                    };
-                                  if (node.type === "branch" && node.condition)
-                                    return {
-                                      ...node,
-                                      condition: {
-                                        ...node.condition,
-                                        [edge.sourceHandle === "else" ? "else" : "then"]: "",
-                                      },
-                                    };
-                                  return { ...node, next: "" };
-                                }),
-                              }
-                            : current,
-                        );
+                        setDraft((current) => (current ? disconnectFlowWires(current, deleted) : current));
                       }}
                       key={saved?.id ?? "new"}
                       fitView
@@ -851,7 +1014,10 @@ export default function FlowsPage() {
                       <Controls />
                     </ReactFlow>
                   </div>
-                  <div className="space-y-4 border-l p-4">
+                  <div
+                    className="max-h-[540px] min-h-0 space-y-4 overflow-y-auto border-t p-4 lg:max-h-none lg:border-t-0 lg:border-l"
+                    data-testid="flow-node-panel"
+                  >
                     {active ? (
                       <>
                         <div>
@@ -876,29 +1042,93 @@ export default function FlowsPage() {
                             />
                           </label>
                         </div>
-                        {(active.type === "parallel" || active.type === "join") && (
-                          <label className="block text-xs space-y-2">
-                            {active.type === "parallel"
-                              ? "并行分支入口 ID（逗号分隔）"
-                              : "等待的上游节点 ID（逗号分隔）"}
-                            <Input
-                              value={(active.type === "parallel" ? active.branches : active.from)?.join(",") ?? ""}
-                              onChange={(event) =>
-                                updateNode({
-                                  [active.type === "parallel" ? "branches" : "from"]: event.target.value
-                                    .split(",")
-                                    .map((s) => s.trim()),
-                                })
-                              }
-                              onBlur={() =>
-                                updateNode({
-                                  [active.type === "parallel" ? "branches" : "from"]:
-                                    (active.type === "parallel" ? active.branches : active.from)?.filter(Boolean) ?? [],
-                                })
-                              }
-                            />
-                          </label>
+                        {active.type === "parallel" && (
+                          <div className="space-y-2 text-xs">
+                            <p>从右侧输出点可连续连接多个工具；各工具引用同一个 input.domain 或上游结果。</p>
+                            <p className="text-muted-foreground">
+                              已有分支：{active.branches?.join("、") || "未连接"}
+                              。各分支末端接入“等待汇合”，再连接结束节点。
+                            </p>
+                          </div>
                         )}
+                        {active.type === "join" && (
+                          <div className="text-xs space-y-2">
+                            <p>等待所有上游完成后执行下一步，保留每个分支的结果。</p>
+                            <p className="text-muted-foreground">
+                              等待：{active.from?.join("、") || "请将各分支末端连到左侧输入点"}
+                            </p>
+                          </div>
+                        )}
+                        {active.type !== "end" && (
+                          <div className="space-y-2 text-xs">
+                            <label className="block space-y-1">
+                              {active.type === "parallel"
+                                ? "添加并行分支"
+                                : active.type === "branch"
+                                  ? "连接条件出口"
+                                  : "下一步"}
+                              <select
+                                aria-label="连接目标"
+                                className="h-9 w-full rounded border bg-background"
+                                value={connectionTarget}
+                                onChange={(event) => setConnectionTarget(event.target.value)}
+                              >
+                                <option value="">选择目标节点</option>
+                                {draft.nodes
+                                  .filter((node) => node.id !== active.id && node.type !== "start")
+                                  .map((node) => (
+                                    <option key={node.id} value={node.id}>
+                                      {node.id} · {labels[node.type]}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                            <div className="flex gap-2">
+                              {(active.type === "branch"
+                                ? ["then", "else"]
+                                : [active.type === "parallel" ? "branches" : "next"]
+                              ).map((handle) => (
+                                <Button
+                                  key={handle}
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={!connectionTarget}
+                                  onClick={() => {
+                                    connect({
+                                      source: active.id,
+                                      target: connectionTarget,
+                                      sourceHandle: handle === "next" ? null : handle,
+                                      targetHandle: null,
+                                    });
+                                    setConnectionTarget("");
+                                  }}
+                                >
+                                  {handle === "then" ? "成立" : handle === "else" ? "不成立" : "连接"}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div className="space-y-1 text-xs">
+                          {edges
+                            .filter((wire) => wire.source === active.id || wire.target === active.id)
+                            .map((wire) => (
+                              <div key={wire.id} className="flex items-center justify-between gap-1">
+                                <span className="break-all">
+                                  {wire.source} → {wire.target}
+                                  {wire.label ? `（${wire.label}）` : ""}
+                                </span>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  aria-label={`断开 ${wire.source} 到 ${wire.target} ${wire.sourceHandle ?? "next"}`}
+                                  onClick={() => setDraft(disconnectFlowWires(draft, [wire]))}
+                                >
+                                  断开
+                                </Button>
+                              </div>
+                            ))}
+                        </div>
                         {active.type === "transform" && (
                           <>
                             <label className="block text-xs">
@@ -928,13 +1158,17 @@ export default function FlowsPage() {
                         )}
                         {active.type === "tool" && (
                           <>
+                            <p className="text-xs text-muted-foreground">
+                              直接选择 Bash 输入 shell 命令，或用 workflow_command 将域名作为 argv / stdin
+                              传入；程序需已安装在服务运行环境。
+                            </p>
                             <a
                               className="text-xs text-primary underline"
                               href="/system/tools"
                               target="_blank"
                               rel="noreferrer"
                             >
-                              添加 command / shell 工具（如 nmap），返回后刷新目录
+                              管理可复用的自定义工具（可选）
                             </a>
                             <Input
                               aria-label="搜索节点工具"
@@ -997,6 +1231,15 @@ export default function FlowsPage() {
                                 {pretty(catalog?.tools.find((item) => item.name === active.tool)?.input_schema)}
                               </pre>
                             </details>
+                            {(active.tool === "Bash" || active.tool === "workflow_command") &&
+                              !Object.hasOwn(active.arguments ?? {}, "$ref") && (
+                                <CommandFields
+                                  key={active.id}
+                                  node={active}
+                                  update={updateNode}
+                                  references={references}
+                                />
+                              )}
                             <JsonField
                               key={`${active.id}-args`}
                               label="工具参数 JSON"
@@ -1004,7 +1247,11 @@ export default function FlowsPage() {
                               onCommit={(value) => updateNode({ arguments: value as Record<string, unknown> })}
                               onError={setError}
                             />
-                            <p className="text-xs text-muted-foreground">引用格式：{'{"$ref":"input.target"}'}</p>
+                            <p className="text-xs text-muted-foreground">
+                              连线控制执行顺序，参数引用决定传入的数据；同一域名可在多个节点引用。引用格式：
+                              {'{"$ref":"input.domain"}'}。可用上游字段：
+                              {references.join("、") || "先定义流程输入或连接上游节点"}。
+                            </p>
                           </>
                         )}
                         {active.type === "branch" && (

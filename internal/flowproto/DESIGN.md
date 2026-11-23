@@ -142,7 +142,7 @@ body 至少包含 raw_artifact、可选 decoded_artifact、media_type、content_
 
 ### 5.2 命令与其他工具
 
-优先直接调用现有工具目录中的类型化工具。CLI 不能一直靠新增 subfinder/amass 专用 Go 分支扩展；现有适配器作为可验证示例保留，随后增加可复用的 command 执行规格：program、argv、stdin、输入文件映射、输出文件声明、stdout/stderr 的解析模式和 timeout。
+优先直接调用现有工具目录中的类型化工具。可选 CLI 不注册为内置工具；subfinder/amass/httpx/ehole 的专用适配器已移除，使用统一工具调用节点中的 Bash 或通用 workflow_command（program、argv、stdin、工件、stdout/stderr 解析）。输入文件映射、输出文件声明和独立 timeout 等扩展按需求再评估。
 
 program/argv 分离，数据不作为 shell 语法执行；从 artifact ID 将文件物化到本次执行目录，只允许声明路径。命令仍经过 SDK hostexec。若当前 hostexec 只接受 shell command，则在唯一适配层严格逐参数引用；真正的 shell 语法只在显式 shell 模式下使用，继承 Bash 权限。不得把 `"{上一个节点输出}"` 直接拼进 shell。
 
@@ -286,7 +286,7 @@ P1/P2 优先解决本次三个目标：临时生成、前端编排、发布为�
 ## 14. 代码落点
 
 - `internal/flowproto`：DSL/迁移、静态校验、原生编译；后续独立为稳定 workflow 编译包时保持旧入口兼容。
-- `internal/flowcli`：固定 CLI 示例和契约测试；逐步迁移到通用 command 规格。
+- `internal/flowproto/testdata/domain-recon.json`：通过 Bash/通用命令与转换节点组合可选 CLI 的定义示例；不引入专用工具注册或自动安装。
 - `netrequest`、`server/network_tools.go`：共享 HTTP 服务的结构化数据/完整正文出口与文本 formatter。
 - `server/flows.go`：拆分为工作流服务、HTTP handler、工具注册、运行观察与 SSE；避免继续堆在一个 handler 文件。
 - `db/flows.go`、迁移：版本、临时运行、节点、事件、工件与事务发布。

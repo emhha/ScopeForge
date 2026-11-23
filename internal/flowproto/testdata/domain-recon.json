@@ -1,21 +1,204 @@
 {
   "name": "domain_recon",
-  "description": "输入域名，依次执行 subfinder 与 amass，被动枚举结果合并去重后交给 ProjectDiscovery httpx 探活，再用 EHole 3.x 识别指纹，返回子域名、存活 URL 和原始指纹 JSON。需要环境中安装对应 CLI。",
+  "description": "可选 CLI 示例：通过通用宿主命令调用 Bash，串联 subfinder、amass、ProjectDiscovery httpx 与 EHole 3.x；这些程序不是内置工具，需自行安装。转换节点合并、去重结果。不在保存或校验时探测或运行 CLI。",
   "version": 1,
   "input_schema": {
     "type": "object",
-    "required": ["domain"],
-    "additionalProperties": false,
-    "properties": {"domain": {"type": "string", "description": "根域名，例如 example.com，不含协议或路径", "default": "example.com"}}
+    "required": [
+      "domain"
+    ],
+    "properties": {
+      "domain": {
+        "type": "string",
+        "description": "已授权的根域名"
+      }
+    }
   },
   "entry": "begin",
   "nodes": [
-    {"id":"begin","type":"start","next":"subfinder","position":{"x":0,"y":100}},
-    {"id":"subfinder","type":"tool","tool":"subfinder","arguments":{"domain":{"$ref":"input.domain"}},"next":"amass","position":{"x":230,"y":100}},
-    {"id":"amass","type":"tool","tool":"amass","arguments":{"domain":{"$ref":"input.domain"}},"next":"merge","position":{"x":460,"y":100}},
-    {"id":"merge","type":"tool","tool":"merge_subdomains","arguments":{"domain":{"$ref":"input.domain"},"lists":[{"$ref":"steps.subfinder.subdomains"},{"$ref":"steps.amass.subdomains"}]},"next":"httpx","position":{"x":690,"y":100}},
-    {"id":"httpx","type":"tool","tool":"httpx","arguments":{"hosts":{"$ref":"steps.merge.subdomains"}},"next":"ehole","position":{"x":920,"y":100}},
-    {"id":"ehole","type":"tool","tool":"ehole","arguments":{"urls":{"$ref":"steps.httpx.urls"}},"next":"result","position":{"x":1150,"y":100}},
-    {"id":"result","type":"end","output":{"domain":{"$ref":"input.domain"},"subdomains":{"$ref":"steps.merge.subdomains"},"urls":{"$ref":"steps.httpx.urls"},"fingerprints":{"$ref":"steps.ehole.fingerprints"}},"position":{"x":1380,"y":100}}
+    {
+      "id": "begin",
+      "type": "start",
+      "next": "subfinder",
+      "position": {
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
+      "id": "subfinder",
+      "type": "tool",
+      "tool": "workflow_command",
+      "arguments": {
+        "program": "bash",
+        "argv": [
+          "-c",
+          "subfinder -silent -d \"$1\"",
+          "scopeforge",
+          {
+            "$ref": "input.domain"
+          }
+        ],
+        "parse": "lines"
+      },
+      "next": "amass",
+      "position": {
+        "x": 250,
+        "y": 100
+      }
+    },
+    {
+      "id": "amass",
+      "type": "tool",
+      "tool": "workflow_command",
+      "arguments": {
+        "program": "bash",
+        "argv": [
+          "-c",
+          "amass enum -passive -d \"$1\"",
+          "scopeforge",
+          {
+            "$ref": "input.domain"
+          }
+        ],
+        "parse": "lines"
+      },
+      "next": "flatten",
+      "position": {
+        "x": 500,
+        "y": 100
+      }
+    },
+    {
+      "id": "flatten",
+      "type": "transform",
+      "operation": "flatten",
+      "arguments": {
+        "value": [
+          {
+            "$ref": "steps.subfinder.data.value"
+          },
+          {
+            "$ref": "steps.amass.data.value"
+          }
+        ]
+      },
+      "next": "unique",
+      "position": {
+        "x": 750,
+        "y": 100
+      }
+    },
+    {
+      "id": "unique",
+      "type": "transform",
+      "operation": "unique",
+      "arguments": {
+        "value": {
+          "$ref": "steps.flatten.data"
+        }
+      },
+      "next": "hosts_text",
+      "position": {
+        "x": 1000,
+        "y": 100
+      }
+    },
+    {
+      "id": "hosts_text",
+      "type": "transform",
+      "operation": "join",
+      "arguments": {
+        "value": {
+          "$ref": "steps.unique.data"
+        },
+        "separator": "\n"
+      },
+      "next": "probe",
+      "position": {
+        "x": 1250,
+        "y": 100
+      }
+    },
+    {
+      "id": "probe",
+      "type": "tool",
+      "tool": "workflow_command",
+      "arguments": {
+        "program": "bash",
+        "argv": [
+          "-c",
+          "httpx -silent -no-color"
+        ],
+        "stdin": {
+          "$ref": "steps.hosts_text.data"
+        },
+        "parse": "lines"
+      },
+      "next": "urls_text",
+      "position": {
+        "x": 1500,
+        "y": 100
+      }
+    },
+    {
+      "id": "urls_text",
+      "type": "transform",
+      "operation": "join",
+      "arguments": {
+        "value": {
+          "$ref": "steps.probe.data.value"
+        },
+        "separator": "\n"
+      },
+      "next": "fingerprint",
+      "position": {
+        "x": 1750,
+        "y": 100
+      }
+    },
+    {
+      "id": "fingerprint",
+      "type": "tool",
+      "tool": "workflow_command",
+      "arguments": {
+        "program": "bash",
+        "argv": [
+          "-c",
+          "set -e\nworkdir=$(mktemp -d)\ntrap 'rm -rf \"$workdir\"' EXIT\ncat > \"$workdir/input.txt\"\nstatus=0\nehole finger -l \"$workdir/input.txt\" -o \"$workdir/output.json\" >&2 || status=$?\nif [ \"$status\" -ne 0 ] && [ \"$status\" -ne 1 ]; then exit \"$status\"; fi\ntest -s \"$workdir/output.json\"\ncat \"$workdir/output.json\""
+        ],
+        "stdin": {
+          "$ref": "steps.urls_text.data"
+        },
+        "parse": "json"
+      },
+      "next": "result",
+      "position": {
+        "x": 2000,
+        "y": 100
+      }
+    },
+    {
+      "id": "result",
+      "type": "end",
+      "output": {
+        "domain": {
+          "$ref": "input.domain"
+        },
+        "subdomains": {
+          "$ref": "steps.unique.data"
+        },
+        "urls": {
+          "$ref": "steps.probe.data.value"
+        },
+        "fingerprints": {
+          "$ref": "steps.fingerprint.data.value"
+        }
+      },
+      "position": {
+        "x": 2250,
+        "y": 100
+      }
+    }
   ]
 }

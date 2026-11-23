@@ -11,7 +11,6 @@ import (
 
 	"github.com/emhha/scopeforge/agent"
 	"github.com/emhha/scopeforge/db"
-	"github.com/emhha/scopeforge/internal/flowcli"
 	"github.com/emhha/scopeforge/internal/flowproto"
 	"github.com/emhha/scopeforge/toolkit"
 	actool "trpc.group/trpc-go/trpc-agent-go/tool"
@@ -55,9 +54,6 @@ func flowInspect() actool.CallableTool {
 func (s *Server) flowPool() map[string]actool.CallableTool {
 	out := map[string]actool.CallableTool{"inspect": flowInspect(), "workflow_command": s.commandWorkflowTool(""), "Bash": s.bashWorkflowTool()}
 	for _, item := range s.networkTools() {
-		out[item.Declaration().Name] = item
-	}
-	for _, item := range flowcli.Tools(s.executeWorkflowHost) {
 		out[item.Declaration().Name] = item
 	}
 	for name, item := range buildDomainReg(s.m.assets) {
